@@ -37,7 +37,6 @@ class CandleSenseAnalyzer:
 
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
-    # Color ranges for Green and Red candles
     lower_green = np.array([35, 50, 50])
     upper_green = np.array([85, 255, 255])
     mask_green = cv2.inRange(hsv, lower_green, upper_green)
@@ -89,7 +88,6 @@ class CandleSenseAnalyzer:
 
     detected_candidates = sorted(detected_candidates, key=lambda k: k['x'])
 
-    # Fallback simulation if screenshot contours are unclear or compressed
     if len(detected_candidates) < 3:
       detected_candidates = [
           {
@@ -189,7 +187,6 @@ class CandleSenseAnalyzer:
       result_text = ''
       points_awarded = '0'
 
-      # 1. Green followed by Green (Buyer scoring)
       if curr['color'] == 'Green' and nxt['color'] == 'Green':
         ref_level = curr['upper_wick_tip']
         if nxt['body_top'] < ref_level - 2:
@@ -208,7 +205,6 @@ class CandleSenseAnalyzer:
           result_text = 'Upper level not tested'
           points_awarded = '0'
 
-      # 2. Red followed by Red (Seller scoring)
       elif curr['color'] == 'Red' and nxt['color'] == 'Red':
         ref_level = curr['lower_wick_tip']
         if nxt['body_bottom'] > ref_level + 2:
@@ -227,7 +223,6 @@ class CandleSenseAnalyzer:
           result_text = 'Lower level not tested'
           points_awarded = '0'
 
-      # 3. Green followed by Red
       elif curr['color'] == 'Green' and nxt['color'] == 'Red':
         ref_level = curr['lower_wick_tip']
         if nxt['body_bottom'] > ref_level + 2:
@@ -246,7 +241,6 @@ class CandleSenseAnalyzer:
           result_text = 'Lower level not tested'
           points_awarded = '0'
 
-      # 4. Red followed by Green
       elif curr['color'] == 'Red' and nxt['color'] == 'Green':
         ref_level = curr['upper_wick_tip']
         if nxt['body_top'] < ref_level - 2:
@@ -262,7 +256,7 @@ class CandleSenseAnalyzer:
           points_awarded = 'Seller +½'
         else:
           self.untouched += 1
-          result_text = 'Upper level not tested'
+          result_text = 'Lower level not tested'
           points_awarded = '0'
 
       self.analysis_report.append({
@@ -281,7 +275,11 @@ uploaded_file = st.file_uploader(
 
 if uploaded_file is not None:
   image_bytes = uploaded_file.read()
-  st.image(image_bytes, caption='Uploaded Chart Screenshot', use_width=True)
+  st.image(
+      image_bytes,
+      caption='Uploaded Chart Screenshot',
+      use_container_width=True,
+  )
 
   if st.button(
       'Scan Chart & Calculate Points', type='primary', use_container_width=True
