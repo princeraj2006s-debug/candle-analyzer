@@ -8,10 +8,10 @@ st.set_page_config(
     page_title="CANDLESENSE Live Pro", page_icon="📈", layout="wide"
 )
 
-st.title("🕯️ CANDLESENSE Pro: XAUTUSD & Forex Signal Bot")
+st.title("🕯️ CANDLESENSE Pro: Multi-Entry Signal & Trade Bot")
 st.markdown(
-    "**Real-Time XAUTUSD ($4000+), Forex & Crypto Candle Analysis, Wick Scoring,"
-    " Entry, Stop-Loss & Target Calculator**"
+    "**Real-Time Candle Analysis with 3 Pro Entries (Weak, Strong & Best"
+    " Setup)**"
 )
 
 col_s1, col_s2, col_s3 = st.columns(3)
@@ -65,32 +65,29 @@ def fetch_live_candles(ticker, interval, asset_name):
     pass
 
   np.random.seed(int(pd.Timestamp.now().timestamp() // 60))
-  base_price = (
-      3870.0
-      if "XAUT" in asset_name or "Gold" in asset_name
-      else (
-          1.08
-          if "EUR" in asset_name
-          else (
-              1.28
-              if "GBP" in asset_name
-              else (152.0 if "JPY" in asset_name else 65000)
-          )
-      )
-  )
+  if "XAUT" in asset_name or "Gold" in asset_name:
+    base_price = 4000.0
+  elif "EUR" in asset_name:
+    base_price = 1.0850
+  elif "GBP" in asset_name:
+    base_price = 1.2850
+  elif "JPY" in asset_name:
+    base_price = 152.50
+  else:
+    base_price = 68000.0
 
   dates = pd.date_range(end=pd.Timestamp.now(), periods=35, freq="5min")
   close_prices = base_price + np.cumsum(
-      np.random.randn(35) * (base_price * 0.001)
+      np.random.randn(35) * (base_price * 0.0005)
   )
-  open_prices = close_prices + np.random.randn(35) * (base_price * 0.0005)
+  open_prices = close_prices + np.random.randn(35) * (base_price * 0.0002)
   high_prices = (
       np.maximum(open_prices, close_prices)
-      + abs(np.random.randn(35)) * (base_price * 0.0008)
+      + abs(np.random.randn(35)) * (base_price * 0.0004)
   )
   low_prices = (
       np.minimum(open_prices, close_prices)
-      - abs(np.random.randn(35)) * (base_price * 0.0008)
+      - abs(np.random.randn(35)) * (base_price * 0.0004)
   )
 
   fallback_df = pd.DataFrame(
@@ -250,13 +247,11 @@ if mode_choice == "Live Market Feed":
   )
 
   if st.button(
-      "Fetch Live Market & Generate Signal",
+      "Fetch Live Market & Generate 3 Pro Entries",
       type="primary",
       use_container_width=True,
   ):
-    with st.spinner(
-        f"Connecting to XAUTUSD live feed and running CANDLESENSE rules..."
-    ):
+    with st.spinner("Analyzing market structure and computing 3 entries..."):
       df_live = fetch_live_candles(
           selected_ticker, selected_interval, asset_choice
       )
@@ -288,29 +283,59 @@ if mode_choice == "Live Market Feed":
         last_c = analyzer.candles[-1]
         is_bullish = analyzer.buyer_score >= analyzer.seller_score
 
-        # Realistic Gold Buffer ($3.50 SL and $7.00 TP for safe trading)
-        is_gold = "XAUT" in asset_choice or "Gold" in asset_choice
-        sl_buffer = 3.50 if is_gold else 0.0020
-        tp_buffer = 7.00 if is_gold else 0.0040
-
-        if is_bullish:
-          entry_price = last_c["close"]
-          stop_loss = entry_price - sl_buffer
-          target_tp = entry_price + tp_buffer
-          signal_type = "BUY / LONG"
+        # Asset specific appropriate spacing
+        if "XAUT" in asset_choice or "Gold" in asset_choice:
+          p1, p2, p3 = 2.0, 4.0, 7.0
+        elif "JPY" in asset_choice:
+          p1, p2, p3 = 0.15, 0.30, 0.55
         else:
-          entry_price = last_c["close"]
-          stop_loss = entry_price + sl_buffer
-          target_tp = entry_price - tp_buffer
-          signal_type = "SELL / SHORT"
+          p1, p2, p3 = 0.0010, 0.0025, 0.0050
+
+        curr_p = last_c["close"]
 
         st.markdown("---")
-        st.subheader("🎯 Safe Trade Setup (Entry, Stop-Loss & Target)")
-        t1, t2, t3, t4 = st.columns(4)
-        t1.metric("Signal Recommendation", signal_type)
-        t2.metric("Suggested Entry", f"{entry_price:.2f}")
-        t3.metric("Stop-Loss (SL)", f"{stop_loss:.2f}")
-        t4.metric("Take-Profit (TP)", f"{target_tp:.2f}")
+        st.subheader(
+            "🎯 3 Suggested Trade Entries (Weak, Strong & Best Setup)"
+        )
+
+        # Entry 1: Aggressive (Weakest)
+        st.markdown("### 1️⃣ Aggressive / Scalping Entry ⚠️ *(Weakest Setup)*")
+        e1 = curr_p
+        sl1 = e1 - p1 if is_bullish else e1 + p1
+        tp1 = e1 + (p1 * 1.5) if is_bullish else e1 - (p1 * 1.5)
+        st.info(
+            f"**Entry:** `{e1:.2f}` | **SL:** `{sl1:.2f}` | **TP:** `{tp1:.2f}`\n\n"
+            "*Why Weak:* Market me instant entry lene se false breakout ka"
+            " khatra sabse zyada hota hai. Spread ki wajah se turant SL hit ho"
+            " sakta hai."
+        )
+
+        # Entry 2: Standard & Balanced (BEST 🔥)
+        st.markdown(
+            "### 2️⃣ Standard Pullback Entry 🔥 *(⭐ BEST & RECOMMENDED)"
+            " Setup)*"
+        )
+        e2 = curr_p - (p1 * 0.5) if is_bullish else curr_p + (p1 * 0.5)
+        sl2 = e2 - p2 if is_bullish else e2 + p2
+        tp2 = e2 + (p2 * 2.0) if is_bullish else e2 - (p2 * 2.0)
+        st.success(
+            f"**Entry:** `{e2:.2f}` | **SL:** `{sl2:.2f}` | **TP:** `{tp2:.2f}`\n\n"
+            "*Why Best:* Ye CANDLESENSE ke +1 aur +½ point system ke sath ekdum"
+            " perfect baithta hai. Iska Risk-to-Reward ratio 1:2 hai jo Gold/Forex"
+            " ke liye sabse safe aur profitable hai."
+        )
+
+        # Entry 3: Conservative / Swing Breakout (Strongest 💪)
+        st.markdown("### 3️⃣ Conservative Breakout Entry 💪 *(Strongest Setup)*")
+        e3 = curr_p + (p1 * 0.8) if is_bullish else curr_p - (p1 * 0.8)
+        sl3 = e3 - p3 if is_bullish else e3 + p3
+        tp3 = e3 + (p3 * 2.5) if is_bullish else e3 - (p3 * 2.5)
+        st.warning(
+            f"**Entry:** `{e3:.2f}` | **SL:** `{sl3:.2f}` | **TP:** `{tp3:.2f}`\n\n"
+            "*Why Strong:* Isme proper level break hone ka wait kiya jata hai."
+            " Bade players (Smart Money) ki direction confirm hoti hai, lekin"
+            " kabhi-kabhi entry thodi late milti hai."
+        )
 
         st.markdown("---")
         st.subheader("📋 Candle-by-Candle Live Report")
