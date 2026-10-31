@@ -1,24 +1,85 @@
-import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
+import yfinance as yf
 
 st.set_page_config(
-    page_title="CANDLESENSE Analyzer", page_icon="📈", layout="wide"
+    page_title="CANDLESENSE Live Pro", page_icon="📈", layout="wide"
 )
 
-st.title("🕯️ CANDLESENSE: Advanced Chart Screenshot Analyzer")
+st.title("🕯️ CANDLESENSE Pro: Real-Time Gold & Forex Signal Bot")
 st.markdown(
-    "**Complete Candle Detection, Wick Analysis, Point Calculation & Future"
-    " Chart Projection System**"
+    "**Live Market Candle Analysis, Wick Scoring, Entry, Stop-Loss & Target"
+    " Calculator**"
 )
 
+# Sidebar / Top Controls for Asset & Timeframe
+col_s1, col_s2, col_s3 = st.columns(3)
+with col_s1:
+  asset_choice = st.selectbox(
+      "Select Asset / Pair",
+      options=[
+          "Gold (XAUUSD)",
+          "EUR/USD",
+          "GBP/USD",
+          "USD/JPY",
+          "Bitcoin (BTCUSD)",
+      ],
+      index=0,
+  )
+with col_s2:
+  tf_choice = st.selectbox(
+      "Select Timeframe", options=["1m", "5m", "15m", "1h", "1d"], index=1
+  )
+with col_s3:
+  mode_choice = st.selectbox(
+      "Analysis Mode", options=["Live Market Feed", "Upload Screenshot"]
+  )
 
-class CandleSenseAnalyzer:
+# Ticker symbol mapping
+symbol_map = {
+    "Gold (XAUUSD)": "GC=X",
+    "EUR/USD": "EURUSD=X",
+    "GBP/USD": "GBPUSD=X",
+    "USD/JPY": "USDJPY=X",
+    "Bitcoin (BTCUSD)": "BTC-USD",
+}
+selected_ticker = symbol_map[asset_choice]
 
-  def __init__(self, image_bytes):
-    self.image_bytes = image_bytes
+# Interval mapping
+interval_map = {
+    "1m": "1m",
+    "5m": "5m",
+    "15m": "15m",
+    "1h": "60m",
+    "1d": "1d",
+}
+selected_interval = interval_map[tf_choice]
+
+
+@st.cache_data(ttl=30)
+def fetch_live_candles(ticker, interval):
+  try:
+    period = (
+        "1d"
+        if interval in ["1m", "5m", "15m"]
+        else ("5d" if interval == "60m" else "1mo")
+    )
+    df = yf.download(ticker, period=period, interval=interval, progress=False)
+    if df.empty:
+      return None
+    if isinstance(df.columns, pd.MultiIndex):
+      df.columns = df.columns.get_level_values(0)
+    return df.tail(35)  # Last 35 candles for accurate pattern scanning
+  except Exception as e:
+    return None
+
+
+class LiveCandleSenseAnalyzer:
+
+  def __init__(self, df):
+    self.df = df
     self.candles = []
     self.analysis_report = []
     self.buyer_score = 0.0
@@ -27,398 +88,253 @@ class CandleSenseAnalyzer:
     self.half_points = 0
     self.untouched = 0
     self.confirmed_breaks = 0
-    self.uncertain = 0
 
-  def process_image(self):
-    nparr = np.frombuffer(self.image_bytes, np.uint8)
-    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    if img is None:
-      return False
+  def parse_candles(self):
+    for idx, row in enumerate(self.df.iterrows()):
+      r = row[1]
+      o, h, l, c = (
+          float(r["Open"]),
+          float(r["High"]),
+          float(r["Low"]),
+          float(r["Close"]),
+      )
+      color = "Green" if c >= o else "Red"
+      body_top = max(o, c)
+      body_bottom = min(o, c)
 
-    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+      self.candles.append({
+          "id": idx + 1,
+          "color": color,
+          "open": o,
+          "high": h,
+          "low": l,
+          "close": c,
+          "body_top": body_top,
+          "body_bottom": body_bottom,
+          "upper_wick_tip": h,
+          "lower_wick_tip": l,
+          "upper_wick_detected": h > body_top,
+          "lower_wick_detected": l < body_bottom,
+      })
 
-    lower_green = np.array([35, 50, 50])
-    upper_green = np.array([85, 255, 255])
-    mask_green = cv2.inRange(hsv, lower_green, upper_green)
-
-    lower_red1 = np.array([0, 50, 50])
-    upper_red1 = np.array([10, 255, 255])
-    lower_red2 = np.array([170, 50, 50])
-    upper_red2 = np.array([180, 255, 255])
-    mask_red = cv2.inRange(hsv, lower_red1, upper_red1) | cv2.inRange(
-        hsv, lower_red2, upper_red2
-    )
-
-    contours_g, _ = cv2.findContours(
-        mask_green, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-    )
-    contours_r, _ = cv2.findContours(
-        mask_red, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-    )
-
-    detected_candidates = []
-
-    for c in contours_g:
-      if cv2.contourArea(c) > 15:
-        x, y, cw, ch = cv2.boundingRect(c)
-        if ch > 3:
-          detected_candidates.append({
-              'x': x,
-              'y': y,
-              'w': cw,
-              'h': ch,
-              'color': 'Green',
-              'body_top': y,
-              'body_bottom': y + ch,
-          })
-
-    for c in contours_r:
-      if cv2.contourArea(c) > 15:
-        x, y, cw, ch = cv2.boundingRect(c)
-        if ch > 3:
-          detected_candidates.append({
-              'x': x,
-              'y': y,
-              'w': cw,
-              'h': ch,
-              'color': 'Red',
-              'body_top': y,
-              'body_bottom': y + ch,
-          })
-
-    detected_candidates = sorted(detected_candidates, key=lambda k: k['x'])
-
-    if len(detected_candidates) < 3:
-      detected_candidates = [
-          {
-              'x': 50,
-              'y': 200,
-              'w': 15,
-              'h': 40,
-              'color': 'Green',
-              'body_top': 200,
-              'body_bottom': 240,
-          },
-          {
-              'x': 90,
-              'y': 180,
-              'w': 15,
-              'h': 50,
-              'color': 'Green',
-              'body_top': 180,
-              'body_bottom': 230,
-          },
-          {
-              'x': 130,
-              'y': 210,
-              'w': 15,
-              'h': 45,
-              'color': 'Red',
-              'body_top': 210,
-              'body_bottom': 255,
-          },
-          {
-              'x': 170,
-              'y': 230,
-              'w': 15,
-              'h': 35,
-              'color': 'Red',
-              'body_top': 230,
-              'body_bottom': 265,
-          },
-          {
-              'x': 210,
-              'y': 190,
-              'w': 15,
-              'h': 60,
-              'color': 'Green',
-              'body_top': 190,
-              'body_bottom': 250,
-          },
-          {
-              'x': 250,
-              'y': 220,
-              'w': 15,
-              'h': 40,
-              'color': 'Red',
-              'body_top': 220,
-              'body_bottom': 260,
-          },
-      ]
-
-    for idx, cand in enumerate(detected_candidates):
-      cand['id'] = idx + 1
-      cand['upper_wick_detected'] = True
-      cand['lower_wick_detected'] = True
-      cand['upper_wick_tip'] = cand['body_top'] - np.random.randint(5, 15)
-      cand['lower_wick_tip'] = cand['body_bottom'] + np.random.randint(5, 15)
-      self.candles.append(cand)
-
-    return True
-
-  def calculate_points(self):
-    self.analysis_report = []
-    self.buyer_score = 0.0
-    self.seller_score = 0.0
-    self.full_points = 0
-    self.half_points = 0
-    self.untouched = 0
-    self.confirmed_breaks = 0
-    self.uncertain = 0
-
+  def calculate_rules(self):
     for i in range(len(self.candles)):
       curr = self.candles[i]
       if i == len(self.candles) - 1:
         self.analysis_report.append({
-            'Candle #': curr['id'],
-            'Colour': curr['color'],
-            'Upper Wick': (
-                'Detected' if curr['upper_wick_detected'] else 'None'
-            ),
-            'Lower Wick': (
-                'Detected' if curr['lower_wick_detected'] else 'None'
-            ),
-            'Next Candle Result': 'End of sequence (No pair)',
-            'Points': '0',
+            "Candle #": curr["id"],
+            "Colour": curr["color"],
+            "Close": f"{curr['close']:.2f}",
+            "Next Candle Result": "Latest Live Candle (Current)",
+            "Points": "0",
         })
         continue
 
       nxt = self.candles[i + 1]
-      result_text = ''
-      points_awarded = '0'
+      result_text = ""
+      points_awarded = "0"
 
-      if curr['color'] == 'Green' and nxt['color'] == 'Green':
-        ref_level = curr['upper_wick_tip']
-        if nxt['body_top'] < ref_level - 2:
+      # 1. Green followed by Green (Buyer scoring)
+      if curr["color"] == "Green" and nxt["color"] == "Green":
+        ref_level = curr["upper_wick_tip"]
+        if nxt["body_top"] < ref_level:
           self.buyer_score += 1.0
           self.full_points += 1
           self.confirmed_breaks += 1
-          result_text = 'Upper level crossed (Proper Break)'
-          points_awarded = 'Buyer +1'
-        elif abs(nxt['body_top'] - ref_level) <= 5:
+          result_text = "Upper wick crossed (Proper Break)"
+          points_awarded = "Buyer +1"
+        elif abs(nxt["body_top"] - ref_level) <= (ref_level * 0.0005):
           self.buyer_score += 0.5
           self.half_points += 1
-          result_text = 'Upper level touched (No break)'
-          points_awarded = 'Buyer +½'
+          result_text = "Upper wick touched (No break)"
+          points_awarded = "Buyer +½"
         else:
           self.untouched += 1
-          result_text = 'Upper level not tested'
-          points_awarded = '0'
+          result_text = "Level untouched"
+          points_awarded = "0"
 
-      elif curr['color'] == 'Red' and nxt['color'] == 'Red':
-        ref_level = curr['lower_wick_tip']
-        if nxt['body_bottom'] > ref_level + 2:
+      # 2. Red followed by Red (Seller scoring)
+      elif curr["color"] == "Red" and nxt["color"] == "Red":
+        ref_level = curr["lower_wick_tip"]
+        if nxt["body_bottom"] > ref_level:
           self.seller_score += 1.0
           self.full_points += 1
           self.confirmed_breaks += 1
-          result_text = 'Lower level crossed (Proper Break)'
-          points_awarded = 'Seller +1'
-        elif abs(nxt['body_bottom'] - ref_level) <= 5:
+          result_text = "Lower wick crossed (Proper Break)"
+          points_awarded = "Seller +1"
+        elif abs(nxt["body_bottom"] - ref_level) <= (ref_level * 0.0005):
           self.seller_score += 0.5
           self.half_points += 1
-          result_text = 'Lower level touched (No break)'
-          points_awarded = 'Seller +½'
+          result_text = "Lower wick touched (No break)"
+          points_awarded = "Seller +½"
         else:
           self.untouched += 1
-          result_text = 'Lower level not tested'
-          points_awarded = '0'
+          result_text = "Level untouched"
+          points_awarded = "0"
 
-      elif curr['color'] == 'Green' and nxt['color'] == 'Red':
-        ref_level = curr['lower_wick_tip']
-        if nxt['body_bottom'] > ref_level + 2:
+      # 3. Green followed by Red
+      elif curr["color"] == "Green" and nxt["color"] == "Red":
+        ref_level = curr["lower_wick_tip"]
+        if nxt["body_bottom"] > ref_level:
           self.seller_score += 1.0
           self.full_points += 1
           self.confirmed_breaks += 1
-          result_text = 'Lower level crossed (Downward break)'
-          points_awarded = 'Seller +1'
-        elif abs(nxt['body_bottom'] - ref_level) <= 5:
+          result_text = "Lower wick crossed (Downward break)"
+          points_awarded = "Seller +1"
+        elif abs(nxt["body_bottom"] - ref_level) <= (ref_level * 0.0005):
           self.buyer_score += 0.5
           self.half_points += 1
-          result_text = 'Lower level touched (No break)'
-          points_awarded = 'Buyer +½'
+          result_text = "Lower wick touched"
+          points_awarded = "Buyer +½"
         else:
           self.untouched += 1
-          result_text = 'Lower level not tested'
-          points_awarded = '0'
+          result_text = "Level untouched"
+          points_awarded = "0"
 
-      elif curr['color'] == 'Red' and nxt['color'] == 'Green':
-        ref_level = curr['upper_wick_tip']
-        if nxt['body_top'] < ref_level - 2:
+      # 4. Red followed by Green
+      elif curr["color"] == "Red" and nxt["color"] == "Green":
+        ref_level = curr["upper_wick_tip"]
+        if nxt["body_top"] < ref_level:
           self.buyer_score += 1.0
           self.full_points += 1
           self.confirmed_breaks += 1
-          result_text = 'Upper level crossed (Upward break)'
-          points_awarded = 'Buyer +1'
-        elif abs(nxt['body_top'] - ref_level) <= 5:
+          result_text = "Upper wick crossed (Upward break)"
+          points_awarded = "Buyer +1"
+        elif abs(nxt["body_top"] - ref_level) <= (ref_level * 0.0005):
           self.seller_score += 0.5
           self.half_points += 1
-          result_text = 'Upper level touched (No break)'
-          points_awarded = 'Seller +½'
+          result_text = "Upper wick touched"
+          points_awarded = "Seller +½"
         else:
           self.untouched += 1
-          result_text = 'Lower level not tested'
-          points_awarded = '0'
+          result_text = "Level untouched"
+          points_awarded = "0"
 
       self.analysis_report.append({
-          'Candle #': curr['id'],
-          'Colour': curr['color'],
-          'Upper Wick': 'Detected' if curr['upper_wick_detected'] else 'None',
-          'Lower Wick': 'Detected' if curr['lower_wick_detected'] else 'None',
-          'Next Candle Result': result_text,
-          'Points': points_awarded,
+          "Candle #": curr["id"],
+          "Colour": curr["color"],
+          "Close": f"{curr['close']:.2f}",
+          "Next Candle Result": result_text,
+          "Points": points_awarded,
       })
 
 
-uploaded_file = st.file_uploader(
-    'Upload Candlestick Chart Screenshot', type=['png', 'jpg', 'jpeg']
-)
-
-if uploaded_file is not None:
-  image_bytes = uploaded_file.read()
-  st.image(
-      image_bytes,
-      caption='Uploaded Chart Screenshot',
-      use_container_width=True,
+if mode_choice == "Live Market Feed":
+  st.subheader(
+      f"📡 Real-Time Data Feed: {asset_choice} ({tf_choice} Timeframe)"
   )
 
   if st.button(
-      'Scan Chart & Calculate Points', type='primary', use_container_width=True
+      "Fetch Live Market & Generate Signal",
+      type="primary",
+      use_container_width=True,
   ):
-    with st.spinner('Analyzing chart and applying CANDLESENSE rules...'):
-      analyzer = CandleSenseAnalyzer(image_bytes)
-      if analyzer.process_image():
-        analyzer.calculate_points()
+    with st.spinner(
+        f"Connecting to live feed for {asset_choice} and running CANDLESENSE"
+        " rules..."
+    ):
+      df_live = fetch_live_candles(selected_ticker, selected_interval)
 
-        st.success(f'Successfully scanned {len(analyzer.candles)} candles!')
+      if df_live is not None and not df_live.empty:
+        analyzer = LiveCandleSenseAnalyzer(df_live)
+        analyzer.parse_candles()
+        analyzer.calculate_rules()
 
-        st.markdown('---')
-        st.subheader('📊 CANDLESENSE Scorecard & Summary')
+        st.success(
+            f"Successfully analyzed {len(analyzer.candles)} live candles!"
+        )
 
-        col1, col2, col3 = st.columns(3)
-        with col1:
-          st.metric(
-              label='Total Buyer Score',
-              value=f'{analyzer.buyer_score:.1f} Points',
-          )
-        with col2:
-          st.metric(
-              label='Total Seller Score',
-              value=f'{analyzer.seller_score:.1f} Points',
-          )
-        with col3:
-          diff = analyzer.buyer_score - analyzer.seller_score
-          bias = (
-              'Bullish Point Bias'
-              if diff > 0
-              else ('Bearish Point Bias' if diff < 0 else 'Neutral / Mixed')
-          )
-          st.metric(
-              label='Point Difference & Bias', value=f'{diff:+.1f}', delta=bias
-          )
+        # Scorecard
+        st.markdown("---")
+        st.subheader("📊 Live Scorecard & Market Bias")
+        c1, c2, c3 = st.columns(3)
+        c1.metric(
+            "Total Buyer Score", f"{analyzer.buyer_score:.1f} Points"
+        )
+        c2.metric(
+            "Total Seller Score", f"{analyzer.seller_score:.1f} Points"
+        )
+        diff = analyzer.buyer_score - analyzer.seller_score
+        bias = (
+            "🚀 Bullish Momentum"
+            if diff > 0
+            else ("🔻 Bearish Momentum" if diff < 0 else "⚖️ Neutral / Mixed")
+        )
+        c3.metric("Point Balance & Bias", f"{diff:+.1f}", delta=bias)
 
-        m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric('Full-Point Events', analyzer.full_points)
-        m2.metric('Half-Point Events', analyzer.half_points)
-        m3.metric('Confirmed Breaks', analyzer.confirmed_breaks)
-        m4.metric('Untouched Wicks', analyzer.untouched)
-        m5.metric('Uncertain Detections', analyzer.uncertain)
+        # Safe Entry, SL, TP Calculation
+        last_c = analyzer.candles[-1]
+        is_bullish = analyzer.buyer_score >= analyzer.seller_score
 
-        st.markdown('---')
-        st.subheader('📋 Candle-by-Candle Detection & Scoring Report')
-        st.dataframe(pd.DataFrame(analyzer.analysis_report), use_container_width=True)
+        if is_bullish:
+          entry_price = last_c["close"]
+          stop_loss = last_c["low"] - (
+              (last_c["high"] - last_c["low"]) * 0.2
+          )  # Safe buffer below lower wick
+          risk = entry_price - stop_loss
+          target_tp = entry_price + (risk * 2.0)  # 1:2 Risk-Reward ratio
+          signal_type = "BUY / LONG"
+        else:
+          entry_price = last_c["close"]
+          stop_loss = last_c["high"] + (
+              (last_c["high"] - last_c["low"]) * 0.2
+          )  # Safe buffer above upper wick
+          risk = stop_loss - entry_price
+          target_tp = entry_price - (risk * 2.0)  # 1:2 Risk-Reward ratio
+          signal_type = "SELL / SHORT"
 
-        st.markdown('---')
-        st.subheader('📈 Analyzed Chart with Wick Reference Levels')
+        st.markdown("---")
+        st.subheader("🎯 Safe Trade Setup (Entry, Stop-Loss & Target)")
+        t1, t2, t3, t4 = st.columns(4)
+        t1.metric("Signal Recommendation", signal_type)
+        t2.metric("Suggested Entry", f"{entry_price:.2f}")
+        t3.metric("Stop-Loss (SL)", f"{stop_loss:.2f}")
+        t4.metric("Take-Profit (TP)", f"{target_tp:.2f}")
+
+        # Detailed Report Table
+        st.markdown("---")
+        st.subheader("📋 Candle-by-Candle Live Report")
+        st.dataframe(
+            pd.DataFrame(analyzer.analysis_report), use_container_width=True
+        )
+
+        # Visual Chart Plot
+        st.markdown("---")
+        st.subheader("📈 Live Chart Price & Wick Structure")
         fig, ax = plt.subplots(figsize=(10, 4))
         for c in analyzer.candles:
-          color = 'green' if c['color'] == 'Green' else 'red'
+          col = "green" if c["color"] == "Green" else "red"
           ax.bar(
-              c['id'],
-              c['h'],
-              bottom=c['body_top'],
-              color=color,
+              c["id"],
+              abs(c["close"] - c["open"])
+              if abs(c["close"] - c["open"]) > 0
+              else 0.001,
+              bottom=min(c["open"], c["close"]),
+              color=col,
               width=0.6,
-              edgecolor='black',
           )
-          ax.hlines(
-              c['upper_wick_tip'],
-              c['id'] - 0.3,
-              c['id'] + 0.8,
-              colors='green',
-              linestyles='--',
-              alpha=0.7,
-          )
-          ax.hlines(
-              c['lower_wick_tip'],
-              c['id'] - 0.3,
-              c['id'] + 0.8,
-              colors='blue',
-              linestyles=':',
-              alpha=0.7,
-          )
-          ax.text(
-              c['id'],
-              c['body_top'] - 12,
-              str(c['id']),
-              ha='center',
-              color='white',
-              fontsize=9,
-              weight='bold',
-          )
-        ax.set_title(
-            'CANDLESENSE Visual Chart Analysis (Green: Upper Wicks, Blue: Lower'
-            ' Wicks)'
-        )
+          ax.vlines(c["id"], c["low"], c["high"], color="black", alpha=0.6)
+        ax.set_title(f"Live Market Chart for {asset_choice}")
         st.pyplot(fig)
 
-        st.markdown('---')
-        st.subheader('🔮 Hypothetical Future Candle Projection')
-        fig_fut, ax_fut = plt.subplots(figsize=(10, 4))
-        max_id = max([c['id'] for c in analyzer.candles])
-        for c in analyzer.candles:
-          color = 'green' if c['color'] == 'Green' else 'red'
-          ax_fut.bar(
-              c['id'],
-              c['h'],
-              bottom=c['body_top'],
-              color=color,
-              width=0.6,
-              alpha=0.8,
-          )
-          ax_fut.text(
-              c['id'],
-              c['body_top'] - 12,
-              str(c['id']),
-              ha='center',
-              color='white',
-              fontsize=8,
-          )
-
-        proj_trend = 1 if analyzer.buyer_score >= analyzer.seller_score else -1
-        last_y = analyzer.candles[-1]['body_top']
-        for f_idx in range(1, 6):
-          fut_id = max_id + f_idx
-          is_green = proj_trend == 1 if f_idx % 2 != 0 else True
-          f_color = 'green' if is_green else 'red'
-          last_y -= proj_trend * 10
-          ax_fut.bar(
-              fut_id,
-              35,
-              bottom=last_y,
-              color=f_color,
-              width=0.6,
-              alpha=0.5,
-              hatch='//',
-          )
-          ax_fut.text(
-              fut_id, last_y + 15, f'F{f_idx}', ha='center', fontsize=8
-          )
-
-        ax_fut.axvline(
-            x=max_id + 0.5, color='orange', linestyle='--', linewidth=2
+      else:
+        st.error(
+            "Could not fetch live market data right now. Please check your"
+            " internet connection or try again."
         )
-        ax_fut.set_title(
-            'Hypothetical Future Projection (Based on Point Balance)'
-        )
-        st.pyplot(fig_fut)
-        st.success('✅ CANDLESENSE application running successfully!')
+
+else:
+  # Fallback to Screenshot Upload Mode if preferred
+  uploaded_file = st.file_uploader(
+      "Upload Chart Screenshot", type=["png", "jpg", "jpeg"]
+  )
+  if uploaded_file is not None:
+    st.image(
+        uploaded_file,
+        caption="Uploaded Screenshot Analysis Ready",
+        use_container_width=True,
+    )
+    st.info(
+        "Switch to 'Live Market Feed' mode above for automated real-time Gold &"
+        " Forex analysis!"
+    )
