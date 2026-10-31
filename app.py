@@ -65,7 +65,9 @@ def fetch_live_candles(ticker, interval, asset_name):
     pass
 
   np.random.seed(int(pd.Timestamp.now().timestamp() // 60))
-  if "XAUT" in asset_name or "Gold" in asset_name:
+  if "Bitcoin" in asset_name or "BTC" in asset_name:
+    base_price = 77200.0
+  elif "XAUT" in asset_name or "Gold" in asset_name:
     base_price = 4000.0
   elif "EUR" in asset_name:
     base_price = 1.0850
@@ -74,7 +76,7 @@ def fetch_live_candles(ticker, interval, asset_name):
   elif "JPY" in asset_name:
     base_price = 152.50
   else:
-    base_price = 68000.0
+    base_price = 1.00
 
   dates = pd.date_range(end=pd.Timestamp.now(), periods=35, freq="5min")
   close_prices = base_price + np.cumsum(
@@ -282,16 +284,17 @@ if mode_choice == "Live Market Feed":
 
         last_c = analyzer.candles[-1]
         is_bullish = analyzer.buyer_score >= analyzer.seller_score
+        curr_p = last_c["close"]
 
-        # Asset specific appropriate spacing
-        if "XAUT" in asset_choice or "Gold" in asset_choice:
+        # Asset specific dynamic offsets for proper distinct Entry, SL, TP
+        if "Bitcoin" in asset_choice or "BTC" in asset_choice:
+          p1, p2, p3 = 50.0, 120.0, 250.0
+        elif "XAUT" in asset_choice or "Gold" in asset_choice:
           p1, p2, p3 = 2.0, 4.0, 7.0
         elif "JPY" in asset_choice:
           p1, p2, p3 = 0.15, 0.30, 0.55
         else:
-          p1, p2, p3 = 0.0010, 0.0025, 0.0050
-
-        curr_p = last_c["close"]
+          p1, p2, p3 = 0.0015, 0.0035, 0.0070
 
         st.markdown("---")
         st.subheader(
@@ -315,13 +318,13 @@ if mode_choice == "Live Market Feed":
             "### 2️⃣ Standard Pullback Entry 🔥 *(⭐ BEST & RECOMMENDED)"
             " Setup)*"
         )
-        e2 = curr_p - (p1 * 0.5) if is_bullish else curr_p + (p1 * 0.5)
+        e2 = curr_p - (p1 * 0.4) if is_bullish else curr_p + (p1 * 0.4)
         sl2 = e2 - p2 if is_bullish else e2 + p2
         tp2 = e2 + (p2 * 2.0) if is_bullish else e2 - (p2 * 2.0)
         st.success(
             f"**Entry:** `{e2:.2f}` | **SL:** `{sl2:.2f}` | **TP:** `{tp2:.2f}`\n\n"
             "*Why Best:* Ye CANDLESENSE ke +1 aur +½ point system ke sath ekdum"
-            " perfect baithta hai. Iska Risk-to-Reward ratio 1:2 hai jo Gold/Forex"
+            " perfect baithta hai. Iska Risk-to-Reward ratio 1:2 hai jo trading"
             " ke liye sabse safe aur profitable hai."
         )
 
@@ -333,8 +336,8 @@ if mode_choice == "Live Market Feed":
         st.warning(
             f"**Entry:** `{e3:.2f}` | **SL:** `{sl3:.2f}` | **TP:** `{tp3:.2f}`\n\n"
             "*Why Strong:* Isme proper level break hone ka wait kiya jata hai."
-            " Bade players (Smart Money) ki direction confirm hoti hai, lekin"
-            " kabhi-kabhi entry thodi late milti hai."
+            " Bade players ki direction confirm hoti hai, isliye ye sabse strong"
+            " setup hai."
         )
 
         st.markdown("---")
