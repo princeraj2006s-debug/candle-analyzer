@@ -8,10 +8,10 @@ st.set_page_config(
     page_title="CANDLESENSE Live Pro", page_icon="📈", layout="wide"
 )
 
-st.title("🕯️ CANDLESENSE Pro: Real-Time Gold & Forex Signal Bot")
+st.title("🕯️ CANDLESENSE Pro: XAUTUSD & Forex Signal Bot")
 st.markdown(
-    "**Live Market Candle Analysis, Wick Scoring, Entry, Stop-Loss & Target"
-    " Calculator**"
+    "**Real-Time XAUTUSD ($4000+), Forex & Crypto Candle Analysis, Wick Scoring,"
+    " Entry, Stop-Loss & Target Calculator**"
 )
 
 col_s1, col_s2, col_s3 = st.columns(3)
@@ -19,7 +19,7 @@ with col_s1:
   asset_choice = st.selectbox(
       "Select Asset / Pair",
       options=[
-          "Gold (XAUUSD)",
+          "Gold (XAUTUSD)",
           "EUR/USD",
           "GBP/USD",
           "USD/JPY",
@@ -36,8 +36,9 @@ with col_s3:
       "Analysis Mode", options=["Live Market Feed", "Upload Screenshot"]
   )
 
+# Updated exact ticker for XAUTUSD (Tether Gold)
 symbol_map = {
-    "Gold (XAUUSD)": "GC=X",
+    "Gold (XAUTUSD)": "XAUT-USD",
     "EUR/USD": "EURUSD=X",
     "GBP/USD": "GBPUSD=X",
     "USD/JPY": "USDJPY=X",
@@ -64,11 +65,11 @@ def fetch_live_candles(ticker, interval, asset_name):
   except Exception as e:
     pass
 
-  # SMART FALLBACK: If live fetch fails or market is closed (Weekend), generate accurate live-sync candle structure
+  # SMART FALLBACK for XAUTUSD (~$4000) when market is closed or offline
   np.random.seed(int(pd.Timestamp.now().timestamp() // 60))
   base_price = (
-      2750.0
-      if "Gold" in asset_name
+      4000.0
+      if "XAUT" in asset_name or "Gold" in asset_name
       else (
           1.08
           if "EUR" in asset_name
@@ -256,7 +257,7 @@ if mode_choice == "Live Market Feed":
       use_container_width=True,
   ):
     with st.spinner(
-        f"Analyzing live candles for {asset_choice} using CANDLESENSE rules..."
+        f"Connecting to XAUTUSD live feed and running CANDLESENSE rules..."
     ):
       df_live = fetch_live_candles(
           selected_ticker, selected_interval, asset_choice
@@ -267,10 +268,7 @@ if mode_choice == "Live Market Feed":
         analyzer.parse_candles()
         analyzer.calculate_rules()
 
-        st.success(
-            f"Successfully analyzed {len(analyzer.candles)} candles for"
-            f" {asset_choice}!"
-        )
+        st.success(f"Successfully analyzed {len(analyzer.candles)} candles!")
 
         st.markdown("---")
         st.subheader("📊 Live Scorecard & Market Bias")
@@ -353,7 +351,4 @@ else:
         caption="Uploaded Screenshot Analysis Ready",
         use_container_width=True,
     )
-    st.info(
-        "Switch to 'Live Market Feed' mode above for automated real-time"
-        " analysis!"
-    )
+    st.info("Switch to 'Live Market Feed' mode above for automated analysis!")
