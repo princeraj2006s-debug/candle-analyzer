@@ -36,7 +36,6 @@ with col_s3:
       "Analysis Mode", options=["Live Market Feed", "Upload Screenshot"]
   )
 
-# Updated exact ticker for XAUTUSD (Tether Gold)
 symbol_map = {
     "Gold (XAUTUSD)": "XAUT-USD",
     "EUR/USD": "EURUSD=X",
@@ -65,10 +64,9 @@ def fetch_live_candles(ticker, interval, asset_name):
   except Exception as e:
     pass
 
-  # SMART FALLBACK for XAUTUSD (~$4000) when market is closed or offline
   np.random.seed(int(pd.Timestamp.now().timestamp() // 60))
   base_price = (
-      4000.0
+      3870.0
       if "XAUT" in asset_name or "Gold" in asset_name
       else (
           1.08
@@ -83,16 +81,16 @@ def fetch_live_candles(ticker, interval, asset_name):
 
   dates = pd.date_range(end=pd.Timestamp.now(), periods=35, freq="5min")
   close_prices = base_price + np.cumsum(
-      np.random.randn(35) * (base_price * 0.0008)
+      np.random.randn(35) * (base_price * 0.001)
   )
-  open_prices = close_prices + np.random.randn(35) * (base_price * 0.0004)
+  open_prices = close_prices + np.random.randn(35) * (base_price * 0.0005)
   high_prices = (
       np.maximum(open_prices, close_prices)
-      + abs(np.random.randn(35)) * (base_price * 0.0005)
+      + abs(np.random.randn(35)) * (base_price * 0.0008)
   )
   low_prices = (
       np.minimum(open_prices, close_prices)
-      - abs(np.random.randn(35)) * (base_price * 0.0005)
+      - abs(np.random.randn(35)) * (base_price * 0.0008)
   )
 
   fallback_df = pd.DataFrame(
@@ -290,21 +288,20 @@ if mode_choice == "Live Market Feed":
         last_c = analyzer.candles[-1]
         is_bullish = analyzer.buyer_score >= analyzer.seller_score
 
+        # Realistic Gold Buffer ($3.50 SL and $7.00 TP for safe trading)
+        is_gold = "XAUT" in asset_choice or "Gold" in asset_choice
+        sl_buffer = 3.50 if is_gold else 0.0020
+        tp_buffer = 7.00 if is_gold else 0.0040
+
         if is_bullish:
           entry_price = last_c["close"]
-          stop_loss = last_c["low"] - (
-              (last_c["high"] - last_c["low"]) * 0.2
-          )
-          risk = entry_price - stop_loss
-          target_tp = entry_price + (risk * 2.0)
+          stop_loss = entry_price - sl_buffer
+          target_tp = entry_price + tp_buffer
           signal_type = "BUY / LONG"
         else:
           entry_price = last_c["close"]
-          stop_loss = last_c["high"] + (
-              (last_c["high"] - last_c["low"]) * 0.2
-          )
-          risk = stop_loss - entry_price
-          target_tp = entry_price - (risk * 2.0)
+          stop_loss = entry_price + sl_buffer
+          target_tp = entry_price - tp_buffer
           signal_type = "SELL / SHORT"
 
         st.markdown("---")
