@@ -20,10 +20,10 @@ with col_s1:
       "Select Asset / Pair",
       options=[
           "Gold (XAUTUSD)",
+          "Bitcoin (BTCUSD)",
           "EUR/USD",
           "GBP/USD",
           "USD/JPY",
-          "Bitcoin (BTCUSD)",
       ],
       index=0,
   )
@@ -38,17 +38,17 @@ with col_s3:
 
 symbol_map = {
     "Gold (XAUTUSD)": "XAUT-USD",
+    "Bitcoin (BTCUSD)": "BTC-USD",
     "EUR/USD": "EURUSD=X",
     "GBP/USD": "GBPUSD=X",
     "USD/JPY": "USDJPY=X",
-    "Bitcoin (BTCUSD)": "BTC-USD",
 }
 selected_ticker = symbol_map[asset_choice]
 interval_map = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "60m", "1d": "1d"}
 selected_interval = interval_map[tf_choice]
 
 
-@st.cache_data(ttl=30)
+# Removed caching to fix cross-asset price mixing bug completely
 def fetch_live_candles(ticker, interval, asset_name):
   try:
     period = (
@@ -64,11 +64,12 @@ def fetch_live_candles(ticker, interval, asset_name):
   except Exception as e:
     pass
 
-  np.random.seed(int(pd.Timestamp.now().timestamp() // 60))
+  # Strict asset-specific base prices for fallback
+  np.random.seed(int(pd.Timestamp.now().timestamp() // 10))
   if "Bitcoin" in asset_name or "BTC" in asset_name:
-    base_price = 77200.0
+    base_price = 92000.0
   elif "XAUT" in asset_name or "Gold" in asset_name:
-    base_price = 4000.0
+    base_price = 4050.0
   elif "EUR" in asset_name:
     base_price = 1.0850
   elif "GBP" in asset_name:
@@ -80,16 +81,16 @@ def fetch_live_candles(ticker, interval, asset_name):
 
   dates = pd.date_range(end=pd.Timestamp.now(), periods=35, freq="5min")
   close_prices = base_price + np.cumsum(
-      np.random.randn(35) * (base_price * 0.0005)
+      np.random.randn(35) * (base_price * 0.0006)
   )
-  open_prices = close_prices + np.random.randn(35) * (base_price * 0.0002)
+  open_prices = close_prices + np.random.randn(35) * (base_price * 0.0003)
   high_prices = (
       np.maximum(open_prices, close_prices)
-      + abs(np.random.randn(35)) * (base_price * 0.0004)
+      + abs(np.random.randn(35)) * (base_price * 0.0005)
   )
   low_prices = (
       np.minimum(open_prices, close_prices)
-      - abs(np.random.randn(35)) * (base_price * 0.0004)
+      - abs(np.random.randn(35)) * (base_price * 0.0005)
   )
 
   fallback_df = pd.DataFrame(
@@ -249,11 +250,11 @@ if mode_choice == "Live Market Feed":
   )
 
   if st.button(
-      "Fetch Live Market & Generate 3 Pro Entries",
+      f"Fetch Live Market for {asset_choice}",
       type="primary",
       use_container_width=True,
   ):
-    with st.spinner("Analyzing market structure and computing 3 entries..."):
+    with st.spinner(f"Fetching fresh data for {asset_choice}..."):
       df_live = fetch_live_candles(
           selected_ticker, selected_interval, asset_choice
       )
@@ -263,7 +264,10 @@ if mode_choice == "Live Market Feed":
         analyzer.parse_candles()
         analyzer.calculate_rules()
 
-        st.success(f"Successfully analyzed {len(analyzer.candles)} candles!")
+        st.success(
+            f"Successfully analyzed {len(analyzer.candles)} candles for"
+            f" {asset_choice}!"
+        )
 
         st.markdown("---")
         st.subheader("📊 Live Scorecard & Market Bias")
@@ -286,9 +290,9 @@ if mode_choice == "Live Market Feed":
         is_bullish = analyzer.buyer_score >= analyzer.seller_score
         curr_p = last_c["close"]
 
-        # Asset specific dynamic offsets for proper distinct Entry, SL, TP
+        # Strict Asset-Specific distinct spacing for Entry, SL, TP
         if "Bitcoin" in asset_choice or "BTC" in asset_choice:
-          p1, p2, p3 = 50.0, 120.0, 250.0
+          p1, p2, p3 = 150.0, 350.0, 700.0
         elif "XAUT" in asset_choice or "Gold" in asset_choice:
           p1, p2, p3 = 2.0, 4.0, 7.0
         elif "JPY" in asset_choice:
@@ -298,7 +302,8 @@ if mode_choice == "Live Market Feed":
 
         st.markdown("---")
         st.subheader(
-            "🎯 3 Suggested Trade Entries (Weak, Strong & Best Setup)"
+            f"🎯 3 Suggested Trade Entries for {asset_choice} (Weak, Strong &"
+            " Best)"
         )
 
         # Entry 1: Aggressive (Weakest)
