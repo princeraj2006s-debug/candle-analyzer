@@ -5,15 +5,15 @@ import streamlit as st
 import yfinance as yf
 
 st.set_page_config(
-    page_title="CANDLESENSE Pro: Strict Wick Strategy",
+    page_title="CANDLESENSE Pro: Recent Wick Strategy",
     page_icon="📈",
     layout="wide",
 )
 
-st.title("🕯️ CANDLESENSE Pro: Single Wick Line & Re-Test Strategy")
+st.title("🕯️ CANDLESENSE Pro: Recent 4th-Candle Wick Strategy")
 st.markdown(
-    "**3 Momentum Candles → Single 4th Candle Wick Line → Re-Test Cross (B/S)"
-    " Validation**"
+    "**Latest 3 Momentum Candles → Recent 4th Candle Wick Line → Accurate"
+    " Cross/Re-Test Validation (B/S)**"
 )
 
 col_s1, col_s2, col_s3 = st.columns(3)
@@ -102,7 +102,7 @@ def fetch_live_candles(ticker, interval, asset_name):
   )
 
 
-class StrictSingleWickAnalyzer:
+class RecentStrictWickAnalyzer:
 
   def __init__(self, df):
     self.df = df
@@ -133,78 +133,68 @@ class StrictSingleWickAnalyzer:
           "body_size": body_size,
       })
 
-  def scan_strict_strategy(self):
+  def scan_recent_strategy(self):
     bodies = [c["body_size"] for c in self.candles]
     avg_body = np.mean(bodies) if bodies else 0.01
 
-    # Scan strictly for 3 consecutive candles followed by the 4th candle setup
-    for i in range(3, len(self.candles) - 2):
+    # Scan from right to left (latest candles first) to find the most recent setup
+    found_recent = False
+    for i in range(len(self.candles) - 3, 3, -1):
       c1, c2, c3 = self.candles[i - 3], self.candles[i - 2], self.candles[i - 1]
 
       is_3_green = (
           c1["color"] == "Green"
           and c2["color"] == "Green"
           and c3["color"] == "Green"
-          and (c1["body_size"] >= avg_body * 0.7)
+          and (c1["body_size"] >= avg_body * 0.6)
       )
       is_3_red = (
           c1["color"] == "Red"
           and c2["color"] == "Red"
           and c3["color"] == "Red"
-          and (c1["body_size"] >= avg_body * 0.7)
+          and (c1["body_size"] >= avg_body * 0.6)
       )
 
       if is_3_green or is_3_red:
-        c4 = self.candles[i]  # 4th candle after 3 momentum candles
+        c4 = self.candles[i]  # 4th candle after the 3 momentum candles
 
         if is_3_green:
-          # After 3 green candles, look at the 4th candle's lower or upper wick to place single line
           line_level = c4["low"] if c4["color"] == "Red" else c4["high"]
-          # Check if subsequent price crosses or rejects
-          next_c = (
-              self.candles[i + 1]
-              if i + 1 < len(self.candles)
-              else self.candles[i]
-          )
-          signal_type = (
-              "BULLISH (B)" if next_c["close"] > line_level else "BEARISH (S)"
-          )
-          if "BULLISH" in signal_type:
-            self.buyer_score += 1.0
-          else:
-            self.seller_score += 1.0
         else:
-          # After 3 red candles, look at the 4th candle's upper wick to place single horizontal line
           line_level = c4["high"]
-          next_c = (
-              self.candles[i + 1]
-              if i + 1 < len(self.candles)
-              else self.candles[i]
-          )
-          signal_type = (
-              "BULLISH (B)" if next_c["close"] > line_level else "BEARISH (S)"
-          )
-          if "BULLISH" in signal_type:
-            self.buyer_score += 1.0
-          else:
-            self.seller_score += 1.0
 
-        # Ensure only one clean line per valid pattern occurrence
+        # Check subsequent candles after 4th candle to see if price crossed or rejected
+        subsequent_candles = self.candles[i + 1 :]
+        signal_type = "BEARISH (S)"
+        buyer_crossed = False
+
+        for sub_c in subsequent_candles:
+          if sub_c["close"] >= line_level:
+            buyer_crossed = True
+            break
+
+        if buyer_crossed:
+          signal_type = "BULLISH (B)"
+          self.buyer_score += 1.5
+        else:
+          self.seller_score += 1.0
+
         self.chart_lines.append({
             "start_id": c4["id"],
-            "end_id": min(c4["id"] + 6, len(self.candles)),
+            "end_id": len(self.candles),
             "level": line_level,
             "type": signal_type,
         })
 
         self.signals_found.append({
-            "Pattern": (
+            "Recent Pattern": (
                 "3 Green + 4th Candle" if is_3_green else "3 Red + 4th Candle"
             ),
-            "Single Horizontal Wick Line": f"{line_level:.2f}",
-            "Signal Action": signal_type,
+            "Horizontal Wick Line": f"{line_level:.2f}",
+            "Action Signal": signal_type,
         })
-        break  # Keep only the most recent prominent setup to avoid cluttering
+        found_recent = True
+        break  # Stop after capturing the most recent valid setup
 
 
 if mode_choice == "Live Market Feed":
@@ -213,21 +203,21 @@ if mode_choice == "Live Market Feed":
   )
 
   if st.button(
-      f"Fetch Market & Run Strict Single-Line Strategy",
+      f"Fetch Market & Run Recent Wick Strategy",
       type="primary",
       use_container_width=True,
   ):
-    with st.spinner(f"Analyzing chart for {asset_choice}..."):
+    with st.spinner(f"Analyzing recent candles for {asset_choice}..."):
       df_live = fetch_live_candles(
           selected_ticker, selected_interval, asset_choice
       )
 
       if df_live is not None and not df_live.empty:
-        analyzer = StrictSingleWickAnalyzer(df_live)
+        analyzer = RecentStrictWickAnalyzer(df_live)
         analyzer.parse_candles()
-        analyzer.scan_strict_strategy()
+        analyzer.scan_recent_strategy()
 
-        st.success(f"Successfully analyzed chart for {asset_choice}!")
+        st.success(f"Successfully analyzed latest chart for {asset_choice}!")
 
         st.markdown("---")
         st.subheader("📊 Strategy Scorecard & Market Bias")
@@ -278,8 +268,8 @@ if mode_choice == "Live Market Feed":
         tp2 = e2 + (p2 * 2.0) if is_bullish else e2 - (p2 * 2.0)
         st.success(
             f"**Entry:** `{e2:.2f}` | **SL:** `{sl2:.2f}` | **TP:** `{tp2:.2f}`\n\n"
-            "*Why Best:* Ye single 4th candle wick line aur re-test rule ke sath"
-            " ekdum perfect baithta hai (Risk-Reward 1:2)."
+            "*Why Best:* Ye recent 4th candle wick line aur re-test cross rule"
+            " ke sath ekdum perfect baithta hai (Risk-Reward 1:2)."
         )
 
         st.markdown("### 3️⃣ Conservative Breakout Entry 💪 *(Strongest Setup)*")
@@ -294,14 +284,14 @@ if mode_choice == "Live Market Feed":
 
         if analyzer.signals_found:
           st.markdown("---")
-          st.subheader("📋 Detected Single Wick Line Signal")
+          st.subheader("📋 Detected Recent Wick Signal")
           st.dataframe(
               pd.DataFrame(analyzer.signals_found), use_container_width=True
           )
 
         # TRADINGVIEW / DELTA EXCHANGE STYLE DARK CHART PLOT
         st.markdown("---")
-        st.subheader("📈 Real Trading Chart (Single Clean Wick Line & B/S Tag)")
+        st.subheader("📈 Real Trading Chart (Recent Wick Line & Accurate B/S Tag)")
         fig, ax = plt.subplots(figsize=(12, 5))
 
         for c in analyzer.candles:
@@ -323,7 +313,7 @@ if mode_choice == "Live Market Feed":
           ax.hlines(
               line["level"],
               xmin=line["start_id"] - 0.5,
-              xmax=line["end_id"] + 3,
+              xmax=line["end_id"] + 2,
               colors="#ffeb3b",
               linestyle="-",
               linewidth=2,
@@ -342,7 +332,7 @@ if mode_choice == "Live Market Feed":
           )
 
         ax.set_title(
-            f"{asset_choice} Chart — Single Wick Line Strategy",
+            f"{asset_choice} Chart — Recent Wick Strategy",
             color="white",
             fontsize=14,
         )
