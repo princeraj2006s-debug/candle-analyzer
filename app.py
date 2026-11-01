@@ -2,18 +2,24 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 import yfinance as yf
 
 st.set_page_config(
     page_title="CANDLESENSE Pro by TUCKYAA", page_icon="📈", layout="wide"
 )
 
+# Real-time auto-refresh every 10 seconds (TradingView Live Feed Style)
+count = st_autorefresh(interval=10000, key="tuckyaa_realtime_counter")
+
 st.title(
-    "🕯️ CANDLESENSE Pro by TUCKYAA: Flexible Dual-Line Wick Strategy Bot"
+    "🕯️ CANDLESENSE Pro by TUCKYAA: Real-Time Live Trading Bot & Dual-Line"
+    " Strategy"
 )
 st.markdown(
-    "**Flexible 3 Momentum Candles → 4th Candle Wick Line → Strictly 2 Recent"
-    " Lines → Accurate Cross Validation (B/S)**"
+    f"**Live Feed Auto-Updating (Refresh Count: {count}) → Automatic"
+    " Medium-to-Large 3-Candle & 4th-Candle Wick Detection → Strictly 2 Recent"
+    " Lines & B/S Signals**"
 )
 
 col_s1, col_s2, col_s3 = st.columns(3)
@@ -34,9 +40,7 @@ with col_s2:
       "Select Timeframe", options=["1m", "5m", "15m", "1h", "1d"], index=1
   )
 with col_s3:
-  mode_choice = st.selectbox(
-      "Analysis Mode", options=["Live Market Feed", "Upload Screenshot"]
-  )
+  st.success("🟢 Live Real-Time Market Mode Active (Auto-Syncing)")
 
 symbol_map = {
     "Bitcoin (BTCUSD)": "BTC-USD",
@@ -102,7 +106,7 @@ def fetch_live_candles(ticker, interval, asset_name):
   )
 
 
-class TuckyasFlexibleAnalyzer:
+class TuckyasRealtimeBotAnalyzer:
 
   def __init__(self, df):
     self.df = df
@@ -133,41 +137,46 @@ class TuckyasFlexibleAnalyzer:
           "body_size": body_size,
       })
 
-  def scan_flexible_strategy(self):
+  def scan_live_strategy(self):
     bodies = [c["body_size"] for c in self.candles]
     avg_body = np.mean(bodies) if bodies else 0.01
 
     setup_count = 0
-    # Scan from right to left to get strictly the 2 most recent valid setups
+    # Scan from right to left to automatically capture strictly the 2 most recent valid setups
     for i in range(len(self.candles) - 3, 3, -1):
       if setup_count >= 2:
         break
 
       c1, c2, c3 = self.candles[i - 3], self.candles[i - 2], self.candles[i - 1]
 
-      # Flexible size condition (allows medium and slightly smaller candles too)
+      # Flexible 3 medium-to-large candles condition
       is_3_green = (
           c1["color"] == "Green"
           and c2["color"] == "Green"
           and c3["color"] == "Green"
-          and c1["body_size"] >= avg_body * 0.5
-          and c2["body_size"] >= avg_body * 0.5
-          and c3["body_size"] >= avg_body * 0.5
+          and c1["body_size'] >= avg_body * 0.4
+          and c2["body_size"] >= avg_body * 0.4
+          and c3["body_size"] >= avg_body * 0.4
       )
       is_3_red = (
           c1["color"] == "Red"
           and c2["color"] == "Red"
           and c3["color"] == "Red"
-          and c1["body_size"] >= avg_body * 0.5
-          and c2["body_size"] >= avg_body * 0.5
-          and c3["body_size"] >= avg_body * 0.5
+          and c1["body_size"] >= avg_body * 0.4
+          and c2["body_size"] >= avg_body * 0.4
+          and c3["body_size"] >= avg_body * 0.4
       )
 
       if is_3_green or is_3_red:
-        c4 = self.candles[i]  # 4th candle after the 3 candles
+        c4 = self.candles[i]  # 4th candle following the 3 candles
 
         if is_3_green:
-          line_level = c4["low"] if c4["color"] == "Red" else c4["high"]
+          line_level = (
+              c4["high"]
+              if (c4["high"] - max(c4["open"], c4["close"]))
+              >= (min(c4["open"], c4["close"]) - c4["low"])
+              else c4["low"]
+          )
         else:
           line_level = c4["high"]
 
@@ -213,175 +222,146 @@ class TuckyasFlexibleAnalyzer:
         setup_count += 1
 
 
-if mode_choice == "Live Market Feed":
-  st.subheader(
-      f"📡 Real-Time Chart Feed for TUCKYAA: {asset_choice} ({tf_choice}"
-      " Timeframe)"
-  )
+# Execute Live Bot Analysis automatically on every refresh cycle
+with st.spinner(
+    f"📡 Fetching real-time candles and auto-scanning for TUCKYAA..."
+):
+  df_live = fetch_live_candles(selected_ticker, selected_interval, asset_choice)
 
-  if st.button(
-      f"Fetch Market & Run Flexible Strategy",
-      type="primary",
-      use_container_width=True,
-  ):
-    with st.spinner(f"Analyzing chart for TUCKYAA..."):
-      df_live = fetch_live_candles(
-          selected_ticker, selected_interval, asset_choice
+  if df_live is not None and not df_live.empty:
+    analyzer = TuckyasRealtimeBotAnalyzer(df_live)
+    analyzer.parse_candles()
+    analyzer.scan_live_strategy()
+
+    # Scorecard
+    st.markdown("---")
+    st.subheader("📊 Strategy Scorecard & Market Bias")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Buyer Score", f"{analyzer.buyer_score:.1f}")
+    c2.metric("Seller Score", f"{analyzer.seller_score:.1f}")
+    diff = analyzer.buyer_score - analyzer.seller_score
+    bias = (
+        "🚀 Bullish Momentum ('B')"
+        if diff > 0
+        else ("🔻 Bearish Momentum ('S')" if diff < 0 else "⚖️ Neutral")
+    )
+    c3.metric("Signal Bias", f"{diff:+.1f}", delta=bias)
+
+    last_c = analyzer.candles[-1] if analyzer.candles else {"close": 78000.0}
+    is_bullish = analyzer.buyer_score >= analyzer.seller_score
+    curr_p = last_c["close"]
+
+    if "Bitcoin" in asset_choice or "BTC" in asset_choice:
+      p1, p2, p3 = 150.0, 350.0, 700.0
+    elif "XAUT" in asset_choice or "Gold" in asset_choice:
+      p1, p2, p3 = 2.0, 4.0, 7.0
+    elif "JPY" in asset_choice:
+      p1, p2, p3 = 0.15, 0.30, 0.55
+    else:
+      p1, p2, p3 = 0.0015, 0.0035, 0.0070
+
+    st.markdown("---")
+    st.subheader(
+        "🎯 3 Suggested Trade Entries for TUCKYAA (Weak, Best, Strong)"
+    )
+
+    st.markdown("### 1️⃣ Aggressive / Scalping Entry ⚠️ *(Weakest Setup)*")
+    e1 = curr_p
+    sl1 = e1 - p1 if is_bullish else e1 + p1
+    tp1 = e1 + (p1 * 1.5) if is_bullish else e1 - (p1 * 1.5)
+    st.info(
+        f"**Entry:** `{e1:.2f}` | **SL:** `{sl1:.2f}` | **TP:** `{tp1:.2f}`\n\n"
+        "*Why Weak:* Taking instant market entries increases false breakout"
+        " risks. Spread can trigger stop-losses immediately."
+    )
+
+    st.markdown(
+        "### 2️⃣ Standard Re-Test Entry 🔥 *(⭐ BEST & RECOMMENDED Setup)*"
+    )
+    e2 = curr_p - (p1 * 0.4) if is_bullish else curr_p + (p1 * 0.4)
+    sl2 = e2 - p2 if is_bullish else e2 + p2
+    tp2 = e2 + (p2 * 2.0) if is_bullish else e2 - (p2 * 2.0)
+    st.success(
+        f"**Entry:** `{e2:.2f}` | **SL:** `{sl2:.2f}` | **TP:** `{tp2:.2f}`\n\n"
+        "*Why Best:* Fits the strict 4th-candle wick line and re-test rule"
+        " perfectly with an optimal 1:2 Risk-to-Reward ratio."
+    )
+
+    st.markdown("### 3️⃣ Conservative Breakout Entry 💪 *(Strongest Setup)*")
+    e3 = curr_p + (p1 * 0.8) if is_bullish else curr_p - (p1 * 0.8)
+    sl3 = e3 - p3 if is_bullish else e3 + p3
+    tp3 = e3 + (p3 * 2.5) if is_bullish else e3 - (p3 * 2.5)
+    st.warning(
+        f"**Entry:** `{e3:.2f}` | **SL:** `{sl3:.2f}` | **TP:** `{tp3:.2f}`\n\n"
+        "*Why Strong:* Waits for complete level crossover confirmation by smart"
+        " money players, though entries may occur slightly later."
+    )
+
+    if analyzer.signals_found:
+      st.markdown("---")
+      st.subheader("📋 Detected Live Auto-Wick Signals")
+      st.dataframe(
+          pd.DataFrame(analyzer.signals_found), use_container_width=True
       )
 
-      if df_live is not None and not df_live.empty:
-        analyzer = TuckyasFlexibleAnalyzer(df_live)
-        analyzer.parse_candles()
-        analyzer.scan_flexible_strategy()
-
-        st.success(
-            f"Successfully analyzed chart for TUCKYAA on {asset_choice}!"
-        )
-
-        st.markdown("---")
-        st.subheader("📊 Strategy Scorecard & Market Bias")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Buyer Score", f"{analyzer.buyer_score:.1f}")
-        c2.metric("Seller Score", f"{analyzer.seller_score:.1f}")
-        diff = analyzer.buyer_score - analyzer.seller_score
-        bias = (
-            "🚀 Bullish Momentum ('B')"
-            if diff > 0
-            else ("🔻 Bearish Momentum ('S')" if diff < 0 else "⚖️ Neutral")
-        )
-        c3.metric("Signal Bias", f"{diff:+.1f}", delta=bias)
-
-        last_c = (
-            analyzer.candles[-1] if analyzer.candles else {"close": 78000.0}
-        )
-        is_bullish = analyzer.buyer_score >= analyzer.seller_score
-        curr_p = last_c["close"]
-
-        if "Bitcoin" in asset_choice or "BTC" in asset_choice:
-          p1, p2, p3 = 150.0, 350.0, 700.0
-        elif "XAUT" in asset_choice or "Gold" in asset_choice:
-          p1, p2, p3 = 2.0, 4.0, 7.0
-        elif "JPY" in asset_choice:
-          p1, p2, p3 = 0.15, 0.30, 0.55
-        else:
-          p1, p2, p3 = 0.0015, 0.0035, 0.0070
-
-        st.markdown("---")
-        st.subheader(
-            "🎯 3 Suggested Trade Entries for TUCKYAA (Weak, Best, Strong)"
-        )
-
-        st.markdown("### 1️⃣ Aggressive / Scalping Entry ⚠️ *(Weakest Setup)*")
-        e1 = curr_p
-        sl1 = e1 - p1 if is_bullish else e1 + p1
-        tp1 = e1 + (p1 * 1.5) if is_bullish else e1 - (p1 * 1.5)
-        st.info(
-            f"**Entry:** `{e1:.2f}` | **SL:** `{sl1:.2f}` | **TP:** `{tp1:.2f}`\n\n"
-            "*Why Weak:* Taking instant market entries increases false"
-            " breakout risks. Spread can trigger stop-losses immediately."
-        )
-
-        st.markdown(
-            "### 2️⃣ Standard Re-Test Entry 🔥 *(⭐ BEST & RECOMMENDED Setup)*"
-        )
-        e2 = curr_p - (p1 * 0.4) if is_bullish else curr_p + (p1 * 0.4)
-        sl2 = e2 - p2 if is_bullish else e2 + p2
-        tp2 = e2 + (p2 * 2.0) if is_bullish else e2 - (p2 * 2.0)
-        st.success(
-            f"**Entry:** `{e2:.2f}` | **SL:** `{sl2:.2f}` | **TP:** `{tp2:.2f}`\n\n"
-            "*Why Best:* Fits the strict 4th-candle wick line and re-test rule"
-            " perfectly with an optimal 1:2 Risk-to-Reward ratio."
-        )
-
-        st.markdown("### 3️⃣ Conservative Breakout Entry 💪 *(Strongest Setup)*")
-        e3 = curr_p + (p1 * 0.8) if is_bullish else curr_p - (p1 * 0.8)
-        sl3 = e3 - p3 if is_bullish else e3 + p3
-        tp3 = e3 + (p3 * 2.5) if is_bullish else e3 - (p3 * 2.5)
-        st.warning(
-            f"**Entry:** `{e3:.2f}` | **SL:** `{sl3:.2f}` | **TP:** `{tp3:.2f}`\n\n"
-            "*Why Strong:* Waits for complete level crossover confirmation by"
-            " smart money players, though entries may occur slightly later."
-        )
-
-        if analyzer.signals_found:
-          st.markdown("---")
-          st.subheader("📋 Detected Flexible Dual-Wick Signals")
-          st.dataframe(
-              pd.DataFrame(analyzer.signals_found), use_container_width=True
-          )
-
-        # TRADINGVIEW / DELTA EXCHANGE STYLE DARK CHART PLOT (Strictly 2 lines)
-        st.markdown("---")
-        st.subheader(
-            "📈 Real Trading Chart for TUCKYAA (Strictly 2 Recent Wick Lines)"
-        )
-        fig, ax = plt.subplots(figsize=(12, 5))
-
-        for c in analyzer.candles:
-          col = "#26a69a" if c["color"] == "Green" else "#ef5350"
-          ax.bar(
-              c["id"],
-              abs(c["close"] - c["open"])
-              if abs(c["close"] - c["open"]) > 0
-              else 1.0,
-              bottom=min(c["open"], c["close"]),
-              color=col,
-              width=0.6,
-          )
-          ax.vlines(
-              c["id"], c["low"], c["high"], color="#b2b5be", linewidth=1.2
-          )
-
-        for line in analyzer.chart_lines:
-          ax.hlines(
-              line["level"],
-              xmin=line["start_id"] - 0.5,
-              xmax=line["end_id"] + 2,
-              colors="#ffeb3b",
-              linestyle="-",
-              linewidth=2,
-          )
-          tag = "B" if "BULLISH" in line["type"] else "S"
-          tag_color = "#00e676" if "BULLISH" in line["type"] else "#ff1744"
-          ax.text(
-              line["start_id"] + 0.5,
-              line["level"],
-              f"  {tag} ",
-              color="white",
-              weight="bold",
-              fontsize=11,
-              bbox=dict(boxstyle="round,pad=0.2", facecolor=tag_color, alpha=0.8),
-              va="center",
-          )
-
-        ax.set_title(
-            f"{asset_choice} Chart — TUCKYAA Flexible Strategy",
-            color="white",
-            fontsize=14,
-        )
-        ax.set_facecolor("#131722")
-        fig.patch.set_facecolor("#1e222d")
-        ax.tick_params(colors="white")
-        ax.xaxis.label.set_color("white")
-        ax.yaxis.label.set_color("white")
-        ax.spines["bottom"].set_color("#363a45")
-        ax.spines["top"].set_color("#363a45")
-        ax.spines["left"].set_color("#363a45")
-        ax.spines["right"].set_color("#363a45")
-        ax.grid(color="#2a2e39", linestyle="--", linewidth=0.5)
-
-        st.pyplot(fig)
-      else:
-        st.error("Chart data could not be loaded. Please try again.")
-
-else:
-  uploaded_file = st.file_uploader(
-      "Upload Chart Screenshot", type=["png", "jpg", "jpeg"]
-  )
-  if uploaded_file is not None:
-    st.image(
-        uploaded_file,
-        caption="Uploaded Screenshot Analysis Ready",
-        use_container_width=True,
+    # TRADINGVIEW / DELTA EXCHANGE STYLE REAL-TIME DARK CHART PLOT (Strictly 2 lines)
+    st.markdown("---")
+    st.subheader(
+        "📈 Real-Time Trading Chart for TUCKYAA (Live Auto-Updating Feed)"
     )
-    st.info("Switch to 'Live Market Feed' mode above for automated analysis!")
+    fig, ax = plt.subplots(figsize=(12, 5))
+
+    for c in analyzer.candles:
+      col = "#26a69a" if c["color"] == "Green" else "#ef5350"
+      ax.bar(
+          c["id"],
+          abs(c["close"] - c["open"])
+          if abs(c["close"] - c["open"]) > 0
+          else 1.0,
+          bottom=min(c["open"], c["close"]),
+          color=col,
+          width=0.6,
+      )
+      ax.vlines(c["id"], c["low"], c["high"], color="#b2b5be", linewidth=1.2)
+
+    for line in analyzer.chart_lines:
+      ax.hlines(
+          line["level"],
+          xmin=line["start_id"] - 0.5,
+          xmax=line["end_id"] + 2,
+          colors="#ffeb3b",
+          linestyle="-",
+          linewidth=2,
+      )
+      tag = "B" if "BULLISH" in line["type"] else "S"
+      tag_color = "#00e676" if "BULLISH" in line["type"] else "#ff1744"
+      ax.text(
+          line["start_id"] + 0.5,
+          line["level"],
+          f"  {tag} ",
+          color="white",
+          weight="bold",
+          fontsize=11,
+          bbox=dict(boxstyle="round,pad=0.2", facecolor=tag_color, alpha=0.8),
+          va="center",
+      )
+
+    ax.set_title(
+        f"{asset_choice} Chart — TUCKYAA Live Real-Time Bot",
+        color="white",
+        fontsize=14,
+    )
+    ax.set_facecolor("#131722")
+    fig.patch.set_facecolor("#1e222d")
+    ax.tick_params(colors="white")
+    ax.xaxis.label.set_color("white")
+    ax.yaxis.label.set_color("white")
+    ax.spines["bottom"].set_color("#363a45")
+    ax.spines["top"].set_color("#363a45")
+    ax.spines["left"].set_color("#363a45")
+    ax.spines["right"].set_color("#363a45")
+    ax.grid(color="#2a2e39", linestyle="--", linewidth=0.5)
+
+    st.pyplot(fig)
+  else:
+    st.error("Live chart data could not be loaded. Please check your connection.")
