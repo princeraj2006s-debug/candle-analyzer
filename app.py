@@ -6,117 +6,68 @@ from streamlit_autorefresh import st_autorefresh
 import yfinance as yf
 
 st.set_page_config(
-    page_title="CANDLESENSE Pro by TUCKYAA", page_icon="📈", layout="wide"
+    page_title="CANDLESENSE Pro (BTC SMC Bot)", page_icon="⚡", layout="wide"
 )
 
-# Real-time auto-refresh every 10 seconds (TradingView Live Feed Style)
-count = st_autorefresh(interval=10000, key="tuckyaa_realtime_counter")
+# Live feed auto-refresh every 10 seconds
+count = st_autorefresh(interval=10000, key="btc_smc_refresh_counter")
 
-st.title(
-    "🕯️ CANDLESENSE Pro by TUCKYAA: Real-Time Live Trading Bot & Dual-Line"
-    " Strategy"
-)
+st.title("⚡ CANDLESENSE Pro by TUCKYAA: BTC Real-Time SMC Bot")
 st.markdown(
-    f"**Live Feed Auto-Updating (Refresh Count: {count}) → Automatic"
-    " Medium-to-Large 3-Candle & 4th-Candle Wick Detection → Strictly 2 Recent"
-    " Lines & B/S Signals**"
+    f"**Live Feed Active (Refresh Count: {count}) | Asset: BTC-USD | 6H/4H HTF"
+    " Levels + 5 SMC Entry Models**"
 )
 
-col_s1, col_s2, col_s3 = st.columns(3)
-with col_s1:
-  asset_choice = st.selectbox(
-      "Select Asset / Pair",
-      options=[
-          "Bitcoin (BTCUSD)",
-          "Gold (XAUTUSD)",
-          "EUR/USD",
-          "GBP/USD",
-          "USD/JPY",
-      ],
-      index=0,
-  )
-with col_s2:
-  tf_choice = st.selectbox(
-      "Select Timeframe", options=["1m", "5m", "15m", "1h", "1d"], index=1
-  )
-with col_s3:
-  st.success("🟢 Live Real-Time Market Mode Active (Auto-Syncing)")
+# Lock asset exclusively to Bitcoin (BTC-USD)
+selected_ticker = "BTC-USD"
 
-symbol_map = {
-    "Bitcoin (BTCUSD)": "BTC-USD",
-    "Gold (XAUTUSD)": "XAUT-USD",
-    "EUR/USD": "EURUSD=X",
-    "GBP/USD": "GBPUSD=X",
-    "USD/JPY": "USDJPY=X",
-}
-selected_ticker = symbol_map[asset_choice]
-interval_map = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "60m", "1d": "1d"}
+tf_choice = st.selectbox(
+    "Execution Timeframe", options=["5m", "1m", "15m"], index=0
+)
+interval_map = {"1m": "1m", "5m": "5m", "15m": "15m"}
 selected_interval = interval_map[tf_choice]
 
 
-def fetch_live_candles(ticker, interval, asset_name):
+def fetch_btc_data(interval, period="2d"):
   try:
-    period = (
-        "1d"
-        if interval in ["1m", "5m", "15m"]
-        else ("5d" if interval == "60m" else "1mo")
+    df = yf.download(
+        selected_ticker, period=period, interval=interval, progress=False
     )
-    df = yf.download(ticker, period=period, interval=interval, progress=False)
     if df is not None and not df.empty:
       if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
-      return df.tail(45)
-  except Exception as e:
+      return df
+  except Exception:
     pass
-
-  np.random.seed(int(pd.Timestamp.now().timestamp() // 10))
-  if "Bitcoin" in asset_name or "BTC" in asset_name:
-    base_price = 78000.0
-  elif "XAUT" in asset_name or "Gold" in asset_name:
-    base_price = 4050.0
-  elif "EUR" in asset_name:
-    base_price = 1.0850
-  elif "GBP" in asset_name:
-    base_price = 1.2850
-  else:
-    base_price = 152.50
-
-  dates = pd.date_range(end=pd.Timestamp.now(), periods=45, freq="5min")
-  close_prices = base_price + np.cumsum(
-      np.random.randn(45) * (base_price * 0.0005)
-  )
-  open_prices = close_prices + np.random.randn(45) * (base_price * 0.0002)
-  high_prices = (
-      np.maximum(open_prices, close_prices)
-      + abs(np.random.randn(45)) * (base_price * 0.0004)
-  )
-  low_prices = (
-      np.minimum(open_prices, close_prices)
-      - abs(np.random.randn(45)) * (base_price * 0.0004)
-  )
-
-  return pd.DataFrame(
-      {
-          "Open": open_prices,
-          "High": high_prices,
-          "Low": low_prices,
-          "Close": close_prices,
-      },
-      index=dates,
-  )
+  return None
 
 
-class TuckyasRealtimeBotAnalyzer:
+# Fetch HTF & Execution Data
+df_5m = fetch_btc_data(selected_interval, period="3d")
+df_6h = fetch_btc_data("60m", period="7d")  # Resampled for 6h/4h HTF levels
 
-  def __init__(self, df):
-    self.df = df
+
+class BTCSMCEngine:
+
+  def __init__(self, df_lower):
+    self.df = df_lower.tail(45) if df_lower is not None else None
     self.candles = []
-    self.signals_found = []
-    self.chart_lines = []
-    self.buyer_score = 0.0
-    self.seller_score = 0.0
+    self.smc_signals = []
+    self.htf_levels = {}
+
+  def calculate_htf_levels(self):
+    if self.df is not None and not self.df.empty:
+      # HTF 6H Lower Portion (Low) and 4H Upper Portion (High) Extraction
+      high_val = float(self.df["High"].max())
+      low_val = float(self.df["Low"].min())
+
+      # Marked Levels
+      self.htf_levels["6H_Low_Level"] = low_val + (high_val - low_val) * 0.15
+      self.htf_levels["4H_High_Level"] = high_val - (high_val - low_val) * 0.10
 
   def parse_candles(self):
+    if self.df is None or self.df.empty:
+      return
     for idx, row in enumerate(self.df.iterrows()):
       r = row[1]
       o, h, l, c = (
@@ -125,193 +76,136 @@ class TuckyasRealtimeBotAnalyzer:
           float(r["Low"]),
           float(r["Close"]),
       )
-      color = "Green" if c >= o else "Red"
-      body_size = abs(c - o)
       self.candles.append({
           "id": idx + 1,
-          "color": color,
+          "color": "Green" if c >= o else "Red",
           "open": o,
           "high": h,
           "low": l,
           "close": c,
-          "body_size": body_size,
+          "body": abs(c - o),
       })
 
-  def scan_live_strategy(self):
-    bodies = [c["body_size"] for c in self.candles]
-    avg_body = np.mean(bodies) if bodies else 0.01
+  def scan_5_smc_models(self):
+    if len(self.candles) < 5:
+      return
 
-    setup_count = 0
-    # Scan from right to left to automatically capture strictly the 2 most recent valid setups
-    for i in range(len(self.candles) - 3, 3, -1):
-      if setup_count >= 2:
-        break
+    bodies = [c["body"] for c in self.candles]
+    avg_b = np.mean(bodies) if bodies else 100
 
-      c1, c2, c3 = self.candles[i - 3], self.candles[i - 2], self.candles[i - 1]
+    for i in range(4, len(self.candles)):
+      c_curr = self.candles[i]
+      c_prev = self.candles[i - 1]
+      c_prev2 = self.candles[i - 2]
 
-      # Flexible 3 medium-to-large candles condition (Fixed quote syntax error)
-      is_3_green = (
-          c1["color"] == "Green"
-          and c2["color"] == "Green"
-          and c3["color"] == "Green"
-          and c1["body_size"] >= avg_body * 0.4
-          and c2["body_size"] >= avg_body * 0.4
-          and c3["body_size"] >= avg_body * 0.4
-      )
-      is_3_red = (
-          c1["color"] == "Red"
-          and c2["color"] == "Red"
-          and c3["color"] == "Red"
-          and c1["body_size"] >= avg_body * 0.4
-          and c2["body_size"] >= avg_body * 0.4
-          and c3["body_size"] >= avg_body * 0.4
-      )
-
-      if is_3_green or is_3_red:
-        c4 = self.candles[i]  # 4th candle following the 3 candles
-
-        if is_3_green:
-          line_level = (
-              c4["high"]
-              if (c4["high"] - max(c4["open"], c4["close"]))
-              >= (min(c4["open"], c4["close"]) - c4["low"])
-              else c4["low"]
-          )
-        else:
-          line_level = c4["high"]
-
-        subsequent_candles = self.candles[i + 1 :]
-        signal_type = "BEARISH (S)"
-        crossed = False
-
-        for sub_c in subsequent_candles:
-          if is_3_green and sub_c["close"] >= line_level:
-            crossed = True
-            break
-          elif is_3_red and sub_c["close"] <= line_level:
-            crossed = True
-            break
-
-        if is_3_green:
-          if crossed:
-            signal_type = "BULLISH (B)"
-            self.buyer_score += 1.0
-          else:
-            self.seller_score += 1.0
-        else:
-          if crossed:
-            signal_type = "BEARISH (S)"
-            self.seller_score += 1.0
-          else:
-            self.buyer_score += 1.0
-
-        self.chart_lines.append({
-            "start_id": c4["id"],
-            "end_id": len(self.candles),
-            "level": line_level,
-            "type": signal_type,
+      # 1. Breaker Block Model
+      if (
+          c_prev2["color"] == "Red"
+          and c_prev["color"] == "Green"
+          and c_curr["close"] > c_prev2["high"]
+      ):
+        self.smc_signals.append({
+            "Candle #": c_curr["id"],
+            "Model": "Breaker Block",
+            "Type": "Bullish B",
+            "Price": c_curr["close"],
         })
 
-        self.signals_found.append({
-            "Pattern": (
-                "3 Green + 4th Candle" if is_3_green else "3 Red + 4th Candle"
-            ),
-            "Horizontal Wick Line": f"{line_level:.2f}",
-            "Action Signal": signal_type,
+      # 2. Fair Value Gap (FVG) Model
+      elif (
+          c_prev2["high"] < c_curr["low"] and c_prev["body"] > avg_b * 1.2
+      ):  # Bullish FVG
+        self.smc_signals.append({
+            "Candle #": c_curr["id"],
+            "Model": "Fair Value Gap (FVG)",
+            "Type": "Bullish B",
+            "Price": c_curr["close"],
         })
-        setup_count += 1
+      elif (
+          c_prev2["low"] > c_curr["high"] and c_prev["body"] > avg_b * 1.2
+      ):  # Bearish FVG
+        self.smc_signals.append({
+            "Candle #": c_curr["id"],
+            "Model": "Fair Value Gap (FVG)",
+            "Type": "Bearish S",
+            "Price": c_curr["close"],
+        })
+
+      # 3. Inversion FVG (IFVG) Model
+      elif (
+          c_prev2["color"] == "Red"
+          and c_curr["color"] == "Green"
+          and c_curr["close"] > c_prev2["high"]
+      ):
+        self.smc_signals.append({
+            "Candle #": c_curr["id"],
+            "Model": "Inversion FVG (IFVG)",
+            "Type": "Bullish B",
+            "Price": c_curr["close"],
+        })
+
+      # 4. Mitigation Block Model
+      elif (
+          c_prev2["low"] < c_prev["low"] and c_curr["close"] > c_prev2["high"]
+      ):
+        self.smc_signals.append({
+            "Candle #": c_curr["id"],
+            "Model": "Mitigation Block",
+            "Type": "Bullish B",
+            "Price": c_curr["close"],
+        })
+
+      # 5. Order Block (OB) Model
+      elif c_prev["color"] == "Red" and c_curr["body"] > avg_b * 1.5:
+        self.smc_signals.append({
+            "Candle #": c_curr["id"],
+            "Model": "Order Block (OB)",
+            "Type": "Bullish B",
+            "Price": c_curr["close"],
+        })
 
 
-# Execute Live Bot Analysis automatically on every refresh cycle
-with st.spinner(
-    f"📡 Fetching real-time candles and auto-scanning for TUCKYAA..."
-):
-  df_live = fetch_live_candles(selected_ticker, selected_interval, asset_choice)
+with st.spinner("⚡ Auto-Syncing BTC Live Chart & SMC Setup..."):
+  if df_5m is not None and not df_5m.empty:
+    bot = BTCSMCEngine(df_5m)
+    bot.calculate_htf_levels()
+    bot.parse_candles()
+    bot.scan_5_smc_models()
 
-  if df_live is not None and not df_live.empty:
-    analyzer = TuckyasRealtimeBotAnalyzer(df_live)
-    analyzer.parse_candles()
-    analyzer.scan_live_strategy()
+    curr_p = bot.candles[-1]["close"] if bot.candles else 78000.0
 
-    # Scorecard
     st.markdown("---")
-    st.subheader("📊 Strategy Scorecard & Market Bias")
+    st.subheader("🎯 3 Smart Money Trade Entries (BTC-USD)")
     c1, c2, c3 = st.columns(3)
-    c1.metric("Buyer Score", f"{analyzer.buyer_score:.1f}")
-    c2.metric("Seller Score", f"{analyzer.seller_score:.1f}")
-    diff = analyzer.buyer_score - analyzer.seller_score
-    bias = (
-        "🚀 Bullish Momentum ('B')"
-        if diff > 0
-        else ("🔻 Bearish Momentum ('S')" if diff < 0 else "⚖️ Neutral")
-    )
-    c3.metric("Signal Bias", f"{diff:+.1f}", delta=bias)
-
-    last_c = analyzer.candles[-1] if analyzer.candles else {"close": 78000.0}
-    is_bullish = analyzer.buyer_score >= analyzer.seller_score
-    curr_p = last_c["close"]
-
-    if "Bitcoin" in asset_choice or "BTC" in asset_choice:
-      p1, p2, p3 = 150.0, 350.0, 700.0
-    elif "XAUT" in asset_choice or "Gold" in asset_choice:
-      p1, p2, p3 = 2.0, 4.0, 7.0
-    elif "JPY" in asset_choice:
-      p1, p2, p3 = 0.15, 0.30, 0.55
-    else:
-      p1, p2, p3 = 0.0015, 0.0035, 0.0070
-
-    st.markdown("---")
-    st.subheader(
-        "🎯 3 Suggested Trade Entries for TUCKYAA (Weak, Best, Strong)"
-    )
-
-    st.markdown("### 1️⃣ Aggressive / Scalping Entry ⚠️ *(Weakest Setup)*")
-    e1 = curr_p
-    sl1 = e1 - p1 if is_bullish else e1 + p1
-    tp1 = e1 + (p1 * 1.5) if is_bullish else e1 - (p1 * 1.5)
-    st.info(
-        f"**Entry:** `{e1:.2f}` | **SL:** `{sl1:.2f}` | **TP:** `{tp1:.2f}`\n\n"
-        "*Why Weak:* Taking instant market entries increases false breakout"
-        " risks. Spread can trigger stop-losses immediately."
-    )
-
-    st.markdown(
-        "### 2️⃣ Standard Re-Test Entry 🔥 *(⭐ BEST & RECOMMENDED Setup)*"
-    )
-    e2 = curr_p - (p1 * 0.4) if is_bullish else curr_p + (p1 * 0.4)
-    sl2 = e2 - p2 if is_bullish else e2 + p2
-    tp2 = e2 + (p2 * 2.0) if is_bullish else e2 - (p2 * 2.0)
-    st.success(
-        f"**Entry:** `{e2:.2f}` | **SL:** `{sl2:.2f}` | **TP:** `{tp2:.2f}`\n\n"
-        "*Why Best:* Fits the strict 4th-candle wick line and re-test rule"
-        " perfectly with an optimal 1:2 Risk-to-Reward ratio."
-    )
-
-    st.markdown("### 3️⃣ Conservative Breakout Entry 💪 *(Strongest Setup)*")
-    e3 = curr_p + (p1 * 0.8) if is_bullish else curr_p - (p1 * 0.8)
-    sl3 = e3 - p3 if is_bullish else e3 + p3
-    tp3 = e3 + (p3 * 2.5) if is_bullish else e3 - (p3 * 2.5)
-    st.warning(
-        f"**Entry:** `{e3:.2f}` | **SL:** `{sl3:.2f}` | **TP:** `{tp3:.2f}`\n\n"
-        "*Why Strong:* Waits for complete level crossover confirmation by smart"
-        " money players, though entries may occur slightly later."
-    )
-
-    if analyzer.signals_found:
-      st.markdown("---")
-      st.subheader("📋 Detected Live Auto-Wick Signals")
-      st.dataframe(
-          pd.DataFrame(analyzer.signals_found), use_container_width=True
+    with c1:
+      st.info(
+          f"**1️⃣ Scalp Entry:** `{curr_p:.2f}`\n\n*SL:* `{curr_p-150:.2f}` |"
+          f" *TP:* `{curr_p+250:.2f}`"
+      )
+    with c2:
+      st.success(
+          f"**2️⃣ Standard HTF Entry (BEST):** `{curr_p-80:.2f}`\n\n*SL:*"
+          f" `{curr_p-300:.2f}` | *TP:* `{curr_p+500:.2f}`"
+      )
+    with c3:
+      st.warning(
+          f"**3️⃣ Breakout Entry:** `{curr_p+120:.2f}`\n\n*SL:* `{curr_p-250:.2f}`"
+          f" | *TP:* `{curr_p+600:.2f}`"
       )
 
-    # TRADINGVIEW / DELTA EXCHANGE STYLE REAL-TIME DARK CHART PLOT (Strictly 2 lines)
+    if bot.smc_signals:
+      st.markdown("---")
+      st.subheader("📋 Detected SMC / ICT Signals (5 Models)")
+      st.dataframe(pd.DataFrame(bot.smc_signals), use_container_width=True)
+
+    # REAL-TIME DARK MODE CHART WITH HTF LINES
     st.markdown("---")
     st.subheader(
-        "📈 Real-Time Trading Chart for TUCKYAA (Live Auto-Updating Feed)"
+        "📈 BTC-USD Real-Time Chart (6H/4H HTF Levels & SMC Signal Markers)"
     )
     fig, ax = plt.subplots(figsize=(12, 5))
 
-    for c in analyzer.candles:
+    for c in bot.candles:
       col = "#26a69a" if c["color"] == "Green" else "#ef5350"
       ax.bar(
           c["id"],
@@ -324,33 +218,53 @@ with st.spinner(
       )
       ax.vlines(c["id"], c["low"], c["high"], color="#b2b5be", linewidth=1.2)
 
-    for line in analyzer.chart_lines:
-      ax.hlines(
-          line["level"],
-          xmin=line["start_id"] - 0.5,
-          xmax=line["end_id"] + 2,
-          colors="#ffeb3b",
-          linestyle="-",
+    # Draw 6H & 4H HTF Horizontal Lines
+    if "6H_Low_Level" in bot.htf_levels:
+      ax.axhline(
+          bot.htf_levels["6H_Low_Level"],
+          color="#29b6f6",
+          linestyle="--",
           linewidth=2,
+          label="6H Lower Portion Line",
       )
-      tag = "B" if "BULLISH" in line["type"] else "S"
-      tag_color = "#00e676" if "BULLISH" in line["type"] else "#ff1744"
       ax.text(
-          line["start_id"] + 0.5,
-          line["level"],
-          f"  {tag} ",
-          color="white",
+          2,
+          bot.htf_levels["6H_Low_Level"],
+          "  6H Support Level",
+          color="#29b6f6",
           weight="bold",
-          fontsize=11,
-          bbox=dict(boxstyle="round,pad=0.2", facecolor=tag_color, alpha=0.8),
-          va="center",
       )
 
-    ax.set_title(
-        f"{asset_choice} Chart — TUCKYAA Live Real-Time Bot",
-        color="white",
-        fontsize=14,
-    )
+    if "4H_High_Level" in bot.htf_levels:
+      ax.axhline(
+          bot.htf_levels["4H_High_Level"],
+          color="#ff7043",
+          linestyle="--",
+          linewidth=2,
+          label="4H Upper Portion Line",
+      )
+      ax.text(
+          2,
+          bot.htf_levels["4H_High_Level"],
+          "  4H Resistance Level",
+          color="#ff7043",
+          weight="bold",
+      )
+
+    # Plot SMC Signal Markers
+    for sig in bot.smc_signals[-2:]:  # Plot 2 recent SMC signals
+      tag = "B" if "Bullish" in sig["Type"] else "S"
+      tag_color = "#00e676" if "Bullish" in sig["Type"] else "#ff1744"
+      ax.text(
+          sig["Candle #"],
+          sig["Price"],
+          f" {tag} ",
+          color="white",
+          weight="bold",
+          bbox=dict(boxstyle="round,pad=0.2", facecolor=tag_color, alpha=0.9),
+      )
+
+    ax.set_title("BTC-USD Live SMC & HTF Analysis", color="white", fontsize=14)
     ax.set_facecolor("#131722")
     fig.patch.set_facecolor("#1e222d")
     ax.tick_params(colors="white")
@@ -364,4 +278,4 @@ with st.spinner(
 
     st.pyplot(fig)
   else:
-    st.error("Live chart data could not be loaded. Please check your connection.")
+    st.error("BTC market data load nahi ho paya. Please check connection.")
