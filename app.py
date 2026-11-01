@@ -9,11 +9,12 @@ st.set_page_config(
 )
 
 st.title(
-    "🕯️ CANDLESENSE Pro by TUCKYAA: Multi-Recent Wick Strategy & Signal Bot"
+    "🕯️ CANDLESENSE Pro by TUCKYAA: Dual-Line Recent Wick Strategy & Signal"
+    " Bot"
 )
 st.markdown(
-    "**Recent & Previous 3-Candle Momentum Setups → Wick Horizontal Lines →"
-    " Accurate Cross Validation (B/S)**"
+    "**Strictly 2 Lines: Most Recent & Previous Setup → Wick Horizontal Lines"
+    " → Accurate Cross Validation (B/S)**"
 )
 
 col_s1, col_s2, col_s3 = st.columns(3)
@@ -102,7 +103,7 @@ def fetch_live_candles(ticker, interval, asset_name):
   )
 
 
-class TuckyasMultiWickAnalyzer:
+class TuckyasDualLineAnalyzer:
 
   def __init__(self, df):
     self.df = df
@@ -133,12 +134,16 @@ class TuckyasMultiWickAnalyzer:
           "body_size": body_size,
       })
 
-  def scan_multi_recent_strategy(self):
+  def scan_dual_line_strategy(self):
     bodies = [c["body_size"] for c in self.candles]
     avg_body = np.mean(bodies) if bodies else 0.01
 
-    # Scan from right to left to detect multiple recent setups without breaking early
+    setup_count = 0
+    # Scan from right to left to grab exactly the most recent and the one before it (Total 2)
     for i in range(len(self.candles) - 3, 3, -1):
+      if setup_count >= 2:
+        break
+
       c1, c2, c3 = self.candles[i - 3], self.candles[i - 2], self.candles[i - 1]
 
       is_3_green = (
@@ -191,6 +196,7 @@ class TuckyasMultiWickAnalyzer:
             "Horizontal Wick Line": f"{line_level:.2f}",
             "Action Signal": signal_type,
         })
+        setup_count += 1
 
 
 if mode_choice == "Live Market Feed":
@@ -200,7 +206,7 @@ if mode_choice == "Live Market Feed":
   )
 
   if st.button(
-      f"Fetch Market & Run Multi-Wick Strategy",
+      f"Fetch Market & Run Dual-Line Strategy",
       type="primary",
       use_container_width=True,
   ):
@@ -210,9 +216,9 @@ if mode_choice == "Live Market Feed":
       )
 
       if df_live is not None and not df_live.empty:
-        analyzer = TuckyasMultiWickAnalyzer(df_live)
+        analyzer = TuckyasDualLineAnalyzer(df_live)
         analyzer.parse_candles()
-        analyzer.scan_multi_recent_strategy()
+        analyzer.scan_dual_line_strategy()
 
         st.success(
             f"Successfully analyzed chart for TUCKYAA on {asset_choice}!"
@@ -269,7 +275,7 @@ if mode_choice == "Live Market Feed":
         tp2 = e2 + (p2 * 2.0) if is_bullish else e2 - (p2 * 2.0)
         st.success(
             f"**Entry:** `{e2:.2f}` | **SL:** `{sl2:.2f}` | **TP:** `{tp2:.2f}`\n\n"
-            "*Why Best:* Ye multiple wick lines aur re-test cross rule ke sath"
+            "*Why Best:* Ye exactly 2 wick lines aur re-test cross rule ke sath"
             " ekdum perfect baithta hai (Risk-Reward 1:2)."
         )
 
@@ -285,14 +291,16 @@ if mode_choice == "Live Market Feed":
 
         if analyzer.signals_found:
           st.markdown("---")
-          st.subheader("📋 Detected Multi-Wick Signals")
+          st.subheader("📋 Detected Dual-Wick Signals")
           st.dataframe(
               pd.DataFrame(analyzer.signals_found), use_container_width=True
           )
 
-        # TRADINGVIEW / DELTA EXCHANGE STYLE DARK CHART PLOT
+        # TRADINGVIEW / DELTA EXCHANGE STYLE DARK CHART PLOT (Strictly 2 lines)
         st.markdown("---")
-        st.subheader("📈 Real Trading Chart for TUCKYAA (Multiple Wick Lines)")
+        st.subheader(
+            "📈 Real Trading Chart for TUCKYAA (Strictly 2 Recent Wick Lines)"
+        )
         fig, ax = plt.subplots(figsize=(12, 5))
 
         for c in analyzer.candles:
@@ -333,7 +341,7 @@ if mode_choice == "Live Market Feed":
           )
 
         ax.set_title(
-            f"{asset_choice} Chart — TUCKYAA Multi-Wick Strategy",
+            f"{asset_choice} Chart — TUCKYAA Dual-Line Strategy",
             color="white",
             fontsize=14,
         )
