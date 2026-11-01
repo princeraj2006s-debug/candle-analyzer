@@ -9,12 +9,12 @@ st.set_page_config(
 )
 
 st.title(
-    "🕯️ CANDLESENSE Pro by TUCKYAA: Dual-Line Recent Wick Strategy & Signal"
+    "🕯️ CANDLESENSE Pro by TUCKYAA: Strict Dual-Line Wick Strategy & Signal"
     " Bot"
 )
 st.markdown(
-    "**Strictly 2 Lines: Most Recent & Previous Setup → Wick Horizontal Lines"
-    " → Accurate Cross Validation (B/S)**"
+    "**Strict Medium-to-Large 3 Candles → 4th Candle Wick Line → Dual Recent"
+    " Lines → Accurate Cross Validation (B/S)**"
 )
 
 col_s1, col_s2, col_s3 = st.columns(3)
@@ -103,7 +103,7 @@ def fetch_live_candles(ticker, interval, asset_name):
   )
 
 
-class TuckyasDualLineAnalyzer:
+class TuckyasStrictAnalyzer:
 
   def __init__(self, df):
     self.df = df
@@ -134,29 +134,34 @@ class TuckyasDualLineAnalyzer:
           "body_size": body_size,
       })
 
-  def scan_dual_line_strategy(self):
+  def scan_strict_strategy(self):
     bodies = [c["body_size"] for c in self.candles]
     avg_body = np.mean(bodies) if bodies else 0.01
 
     setup_count = 0
-    # Scan from right to left to grab exactly the most recent and the one before it (Total 2)
+    # Scan from right to left to get strictly the 2 most recent valid setups
     for i in range(len(self.candles) - 3, 3, -1):
       if setup_count >= 2:
         break
 
       c1, c2, c3 = self.candles[i - 3], self.candles[i - 2], self.candles[i - 1]
 
+      # Strict medium-to-large candle size condition (must be >= 1.3x average body size)
       is_3_green = (
           c1["color"] == "Green"
           and c2["color"] == "Green"
           and c3["color"] == "Green"
-          and (c1["body_size"] >= avg_body * 0.6)
+          and c1["body_size"] >= avg_body * 1.3
+          and c2["body_size"] >= avg_body * 1.3
+          and c3["body_size"] >= avg_body * 1.3
       )
       is_3_red = (
           c1["color"] == "Red"
           and c2["color"] == "Red"
           and c3["color"] == "Red"
-          and (c1["body_size"] >= avg_body * 0.6)
+          and c1["body_size"] >= avg_body * 1.3
+          and c2["body_size"] >= avg_body * 1.3
+          and c3["body_size"] >= avg_body * 1.3
       )
 
       if is_3_green or is_3_red:
@@ -206,22 +211,24 @@ if mode_choice == "Live Market Feed":
   )
 
   if st.button(
-      f"Fetch Market & Run Dual-Line Strategy",
+      f"Fetch Market & Run Strict Dual-Line Strategy",
       type="primary",
       use_container_width=True,
   ):
-    with st.spinner(f"Analyzing recent candles for TUCKYAA..."):
+    with st.spinner(
+        f"Scanning strict medium-to-large candles for TUCKYAA..."
+    ):
       df_live = fetch_live_candles(
           selected_ticker, selected_interval, asset_choice
       )
 
       if df_live is not None and not df_live.empty:
-        analyzer = TuckyasDualLineAnalyzer(df_live)
+        analyzer = TuckyasStrictAnalyzer(df_live)
         analyzer.parse_candles()
-        analyzer.scan_dual_line_strategy()
+        analyzer.scan_strict_strategy()
 
         st.success(
-            f"Successfully analyzed chart for TUCKYAA on {asset_choice}!"
+            f"Successfully analyzed strict chart for TUCKYAA on {asset_choice}!"
         )
 
         st.markdown("---")
@@ -263,8 +270,8 @@ if mode_choice == "Live Market Feed":
         tp1 = e1 + (p1 * 1.5) if is_bullish else e1 - (p1 * 1.5)
         st.info(
             f"**Entry:** `{e1:.2f}` | **SL:** `{sl1:.2f}` | **TP:** `{tp1:.2f}`\n\n"
-            "*Why Weak:* Instant entry me false breakout ka khatra zyada hota"
-            " hai."
+            "*Why Weak:* Taking instant market entries increases false"
+            " breakout risks. Spread can trigger stop-losses immediately."
         )
 
         st.markdown(
@@ -275,8 +282,8 @@ if mode_choice == "Live Market Feed":
         tp2 = e2 + (p2 * 2.0) if is_bullish else e2 - (p2 * 2.0)
         st.success(
             f"**Entry:** `{e2:.2f}` | **SL:** `{sl2:.2f}` | **TP:** `{tp2:.2f}`\n\n"
-            "*Why Best:* Ye exactly 2 wick lines aur re-test cross rule ke sath"
-            " ekdum perfect baithta hai (Risk-Reward 1:2)."
+            "*Why Best:* Fits the strict 4th-candle wick line and re-test rule"
+            " perfectly with an optimal 1:2 Risk-to-Reward ratio."
         )
 
         st.markdown("### 3️⃣ Conservative Breakout Entry 💪 *(Strongest Setup)*")
@@ -285,13 +292,13 @@ if mode_choice == "Live Market Feed":
         tp3 = e3 + (p3 * 2.5) if is_bullish else e3 - (p3 * 2.5)
         st.warning(
             f"**Entry:** `{e3:.2f}` | **SL:** `{sl3:.2f}` | **TP:** `{tp3:.2f}`\n\n"
-            "*Why Strong:* Isme proper level cross hone ka confirmation wait"
-            " kiya jata hai."
+            "*Why Strong:* Waits for complete level crossover confirmation by"
+            " smart money players, though entries may occur slightly later."
         )
 
         if analyzer.signals_found:
           st.markdown("---")
-          st.subheader("📋 Detected Dual-Wick Signals")
+          st.subheader("📋 Detected Strict Dual-Wick Signals")
           st.dataframe(
               pd.DataFrame(analyzer.signals_found), use_container_width=True
           )
@@ -299,7 +306,8 @@ if mode_choice == "Live Market Feed":
         # TRADINGVIEW / DELTA EXCHANGE STYLE DARK CHART PLOT (Strictly 2 lines)
         st.markdown("---")
         st.subheader(
-            "📈 Real Trading Chart for TUCKYAA (Strictly 2 Recent Wick Lines)"
+            "📈 Real Trading Chart for TUCKYAA (Strictly 2 Recent Strict Wick"
+            " Lines)"
         )
         fig, ax = plt.subplots(figsize=(12, 5))
 
@@ -341,7 +349,7 @@ if mode_choice == "Live Market Feed":
           )
 
         ax.set_title(
-            f"{asset_choice} Chart — TUCKYAA Dual-Line Strategy",
+            f"{asset_choice} Chart — TUCKYAA Strict Dual-Line Strategy",
             color="white",
             fontsize=14,
         )
