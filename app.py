@@ -5,15 +5,13 @@ import streamlit as st
 import yfinance as yf
 
 st.set_page_config(
-    page_title="CANDLESENSE Pro: Wick & Re-Test Bot",
-    page_icon="📈",
-    layout="wide",
+    page_title="CANDLESENSE Pro: Real Chart Bot", page_icon="📈", layout="wide"
 )
 
-st.title("🕯️ CANDLESENSE Pro: 3-Candle Wick Strategy & Signal Bot")
+st.title("🕯️ CANDLESENSE Pro: Real-Time Chart & Wick Strategy Bot")
 st.markdown(
-    "**Real-Time Chart Analysis: 3-Candle Pattern, Horizontal Wick Levels,"
-    " Re-Test Confirmation (B/S) & 3 Pro Entries**"
+    "**Live Chart Analysis, 3-Candle Wick Levels, Horizontal Lines & Buy/Sell"
+    " Signals**"
 )
 
 col_s1, col_s2, col_s3 = st.columns(3)
@@ -102,13 +100,13 @@ def fetch_live_candles(ticker, interval, asset_name):
   )
 
 
-class WickStrategyAnalyzer:
+class RealChartWickAnalyzer:
 
   def __init__(self, df):
     self.df = df
     self.candles = []
-    self.analysis_report = []
     self.signals_found = []
+    self.chart_lines = []
     self.buyer_score = 0.0
     self.seller_score = 0.0
 
@@ -131,19 +129,15 @@ class WickStrategyAnalyzer:
           "low": l,
           "close": c,
           "body_size": body_size,
-          "upper_wick": h - max(o, c),
-          "lower_wick": min(o, c) - l,
       })
 
-  def scan_strategy_rules(self):
-    # Calculate average body size to filter "medium-to-large" candles
+  def scan_strategy(self):
     bodies = [c["body_size"] for c in self.candles]
     avg_body = np.mean(bodies) if bodies else 0.01
 
     for i in range(3, len(self.candles) - 2):
       c1, c2, c3 = self.candles[i - 3], self.candles[i - 2], self.candles[i - 1]
 
-      # Check for 3 consecutive Green or 3 consecutive Red of medium-to-large size
       is_3_green = (
           c1["color"] == "Green"
           and c2["color"] == "Green"
@@ -158,78 +152,67 @@ class WickStrategyAnalyzer:
       )
 
       if is_3_green or is_3_red:
-        # Mark horizontal line on the significant wick of the 3rd candle or subsequent re-test
         ref_candle = c3
-        line_level = (
-            ref_candle["high"]
-            if is_3_green
-            else ref_candle["low"]
-            # upper wick if green, lower wick if red
-        )
+        # Upper wick line for 3 green, lower wick line for 3 red
+        line_level = ref_candle["high"] if is_3_green else ref_candle["low"]
 
-        # Check subsequent candles for re-test, touch, or cross (Bullish 'B' or Bearish 'S')
         subsequent_candle = self.candles[i]
-        next_to_sub = (
-            self.candles[i + 1] if i + 1 < len(self.candles) else subsequent_candle
-        )
-
         signal_type = "NEUTRAL"
+
         if is_3_green:
-          if next_to_sub["close"] > line_level:
-            signal_type = "BULLISH (B)"
+          if subsequent_candle["close"] > line_level:
+            signal_type = "BULLISH (BUY)"
             self.buyer_score += 1.5
           else:
-            signal_type = "BEARISH (S)"
+            signal_type = "BEARISH (SELL)"
             self.seller_score += 1.0
         else:
-          if next_to_sub["close"] < line_level:
-            signal_type = "BEARISH (S)"
+          if subsequent_candle["close"] < line_level:
+            signal_type = "BEARISH (SELL)"
             self.seller_score += 1.5
           else:
-            signal_type = "BULLISH (B)"
+            signal_type = "BULLISH (BUY)"
             self.buyer_score += 1.0
 
-        self.signals_found.append({
-            "Pattern Start": f"Candle #{c1['id']}",
-            "Trigger 3-Candle": (
-                "3 Green Candles" if is_3_green else "3 Red Candles"
-            ),
-            "Horizontal Wick Line": f"{line_level:.2f}",
-            "Reaction Signal": signal_type,
+        # Save line coordinates for plotting on the chart
+        self.chart_lines.append({
+            "start_id": ref_candle["id"],
+            "end_id": len(self.candles),
+            "level": line_level,
+            "type": signal_type,
         })
-        self.analysis_report.append({
-            "Candle #": ref_candle["id"],
-            "Pattern": "3-Candle Momentum Setup",
-            "Level Set": f"{line_level:.2f}",
-            "Result": signal_type,
+
+        self.signals_found.append({
+            "Trigger": "3 Green Candles" if is_3_green else "3 Red Candles",
+            "Wick Horizontal Level": f"{line_level:.2f}",
+            "Action Signal": signal_type,
         })
 
 
 if mode_choice == "Live Market Feed":
   st.subheader(
-      f"📡 Real-Time Data Feed: {asset_choice} ({tf_choice} Timeframe)"
+      f"📡 Real-Time Chart Feed: {asset_choice} ({tf_choice} Timeframe)"
   )
 
   if st.button(
-      f"Fetch Live Market & Run 3-Candle Wick Strategy",
+      f"Fetch Chart & Draw Wick Lines & Signals",
       type="primary",
       use_container_width=True,
   ):
     with st.spinner(
-        f"Scanning 3-candle patterns and wick levels for {asset_choice}..."
+        f"Analyzing chart candles and plotting levels for {asset_choice}..."
     ):
       df_live = fetch_live_candles(
           selected_ticker, selected_interval, asset_choice
       )
 
       if df_live is not None and not df_live.empty:
-        analyzer = WickStrategyAnalyzer(df_live)
+        analyzer = RealChartWickAnalyzer(df_live)
         analyzer.parse_candles()
-        analyzer.scan_strategy_rules()
+        analyzer.scan_strategy()
 
         st.success(
-            f"Successfully scanned market data for {asset_choice} with wick"
-            " rules!"
+            f"Successfully loaded real chart view for {asset_choice}!"
         )
 
         # Scorecard
@@ -240,11 +223,15 @@ if mode_choice == "Live Market Feed":
         c2.metric("Seller Score", f"{analyzer.seller_score:.1f}")
         diff = analyzer.buyer_score - analyzer.seller_score
         bias = (
-            "🚀 Bullish Bias ('B')"
+            "🚀 Bullish Momentum (BUY)"
             if diff > 0
-            else ("🔻 Bearish Bias ('S')" if diff < 0 else "⚖️ Neutral / Mixed")
+            else (
+                "🔻 Bearish Momentum (SELL)"
+                if diff < 0
+                else "⚖️ Neutral / Mixed"
+            )
         )
-        c3.metric("Market Bias", f"{diff:+.1f}", delta=bias)
+        c3.metric("Signal Bias", f"{diff:+.1f}", delta=bias)
 
         last_c = (
             analyzer.candles[-1] if analyzer.candles else {"close": 81000.0}
@@ -252,7 +239,7 @@ if mode_choice == "Live Market Feed":
         is_bullish = analyzer.buyer_score >= analyzer.seller_score
         curr_p = last_c["close"]
 
-        # Proper Asset-Specific Offsets for 3 Pro Entries
+        # Asset specific offsets for 3 entries
         if "Bitcoin" in asset_choice or "BTC" in asset_choice:
           p1, p2, p3 = 150.0, 350.0, 700.0
         elif "XAUT" in asset_choice or "Gold" in asset_choice:
@@ -287,8 +274,8 @@ if mode_choice == "Live Market Feed":
         tp2 = e2 + (p2 * 2.0) if is_bullish else e2 - (p2 * 2.0)
         st.success(
             f"**Entry:** `{e2:.2f}` | **SL:** `{sl2:.2f}` | **TP:** `{tp2:.2f}`\n\n"
-            "*Why Best:* Ye 3-candle wick rejection aur horizontal line re-test"
-            " rule ke sath ekdum perfect baithta hai (Risk-Reward 1:2)."
+            "*Why Best:* Ye wick horizontal line re-test rule ke sath ekdum"
+            " perfect baithta hai (Risk-Reward 1:2)."
         )
 
         # Entry 3: Conservative Breakout (Strongest 💪)
@@ -298,33 +285,79 @@ if mode_choice == "Live Market Feed":
         tp3 = e3 + (p3 * 2.5) if is_bullish else e3 - (p3 * 2.5)
         st.warning(
             f"**Entry:** `{e3:.2f}` | **SL:** `{sl3:.2f}` | **TP:** `{tp3:.2f}`\n\n"
-            "*Why Strong:* Isme proper level cross hone aur candle close hone ka"
-            " wait hota hai."
+            "*Why Strong:* Isme proper level cross hone aur re-test ka wait kiya"
+            " jata hai."
         )
 
         if analyzer.signals_found:
           st.markdown("---")
-          st.subheader("📋 Detected 3-Candle Wick Signals (B/S)")
+          st.subheader("📋 Detected Wick Levels & Action Signals")
           st.dataframe(
               pd.DataFrame(analyzer.signals_found), use_container_width=True
           )
 
+        # PROFESSIONAL TRADING CHART PLOT (Delta / TradingView Style Dark Mode)
         st.markdown("---")
-        st.subheader("📈 Live Chart Structure")
-        fig, ax = plt.subplots(figsize=(10, 4))
+        st.subheader("📈 Real Trading Chart (Wick Lines & B/S Signals)")
+        fig, ax = plt.subplots(figsize=(12, 5))
+
         for c in analyzer.candles:
-          col = "green" if c["color"] == "Green" else "red"
+          col = "#26a69a" if c["color"] == "Green" else "#ef5350"
+          # Draw candle body
           ax.bar(
               c["id"],
               abs(c["close"] - c["open"])
               if abs(c["close"] - c["open"]) > 0
-              else 0.001,
+              else 1.0,
               bottom=min(c["open"], c["close"]),
               color=col,
               width=0.6,
           )
-          ax.vlines(c["id"], c["low"], c["high"], color="black", alpha=0.6)
-        ax.set_title(f"Live Chart with Wick Levels for {asset_choice}")
+          # Draw wicks
+          ax.vlines(
+              c["id"], c["low"], c["high"], color="#b2b5be", linewidth=1.2
+          )
+
+        # Draw Yellow Horizontal Lines on Wicks & Mark B/S Signals like Delta Exchange
+        for line in analyzer.chart_lines:
+          ax.hlines(
+              line["level"],
+              xmin=line["start_id"] - 0.5,
+              xmax=line["end_id"] + 1,
+              colors="#ffeb3b",
+              linestyle="-",
+              linewidth=2,
+              label="Wick Line",
+          )
+          tag = "B" if "BUY" in line["type"] else "S"
+          tag_color = "#00e676" if "BUY" in line["type"] else "#ff1744"
+          ax.text(
+              line["end_id"] - 0.5,
+              line["level"],
+              f"  {tag} ",
+              color="white",
+              weight="bold",
+              fontsize=11,
+              bbox=dict(boxstyle="round,pad=0.2", facecolor=tag_color, alpha=0.8),
+              va="center",
+          )
+
+        ax.set_title(
+            f"{asset_choice} Chart — Wick Strategy & Signals",
+            color="white",
+            fontsize=14,
+        )
+        ax.set_facecolor("#131722")  # TradingView / Delta Exchange dark background
+        fig.patch.set_facecolor("#1e222d")
+        ax.tick_params(colors="white")
+        ax.xaxis.label.set_color("white")
+        ax.yaxis.label.set_color("white")
+        ax.spines["bottom"].set_color("#363a45")
+        ax.spines["top"].set_color("#363a45")
+        ax.spines["left"].set_color("#363a45")
+        ax.spines["right"].set_color("#363a45")
+        ax.grid(color="#2a2e39", linestyle="--", linewidth=0.5)
+
         st.pyplot(fig)
       else:
         st.error("Unable to load chart feed.")
@@ -338,7 +371,4 @@ else:
         caption="Uploaded Screenshot Analysis Ready",
         use_container_width=True,
     )
-    st.info(
-        "Switch to 'Live Market Feed' mode above for automated strategy"
-        " scanning!"
-    )
+    st.info("Switch to 'Live Market Feed' mode above for live chart analysis!")
