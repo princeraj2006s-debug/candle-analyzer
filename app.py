@@ -5,15 +5,15 @@ import streamlit as st
 import yfinance as yf
 
 st.set_page_config(
-    page_title="CANDLESENSE Pro: Recent Wick Strategy",
-    page_icon="📈",
-    layout="wide",
+    page_title="CANDLESENSE Pro by TUCKYAA", page_icon="📈", layout="wide"
 )
 
-st.title("🕯️ CANDLESENSE Pro: Recent 4th-Candle Wick Strategy")
+st.title(
+    "🕯️ CANDLESENSE Pro by TUCKYAA: Multi-Recent Wick Strategy & Signal Bot"
+)
 st.markdown(
-    "**Latest 3 Momentum Candles → Recent 4th Candle Wick Line → Accurate"
-    " Cross/Re-Test Validation (B/S)**"
+    "**Recent & Previous 3-Candle Momentum Setups → Wick Horizontal Lines →"
+    " Accurate Cross Validation (B/S)**"
 )
 
 col_s1, col_s2, col_s3 = st.columns(3)
@@ -102,7 +102,7 @@ def fetch_live_candles(ticker, interval, asset_name):
   )
 
 
-class RecentStrictWickAnalyzer:
+class TuckyasMultiWickAnalyzer:
 
   def __init__(self, df):
     self.df = df
@@ -133,12 +133,11 @@ class RecentStrictWickAnalyzer:
           "body_size": body_size,
       })
 
-  def scan_recent_strategy(self):
+  def scan_multi_recent_strategy(self):
     bodies = [c["body_size"] for c in self.candles]
     avg_body = np.mean(bodies) if bodies else 0.01
 
-    # Scan from right to left (latest candles first) to find the most recent setup
-    found_recent = False
+    # Scan from right to left to detect multiple recent setups without breaking early
     for i in range(len(self.candles) - 3, 3, -1):
       c1, c2, c3 = self.candles[i - 3], self.candles[i - 2], self.candles[i - 1]
 
@@ -156,14 +155,13 @@ class RecentStrictWickAnalyzer:
       )
 
       if is_3_green or is_3_red:
-        c4 = self.candles[i]  # 4th candle after the 3 momentum candles
+        c4 = self.candles[i]
 
         if is_3_green:
           line_level = c4["low"] if c4["color"] == "Red" else c4["high"]
         else:
           line_level = c4["high"]
 
-        # Check subsequent candles after 4th candle to see if price crossed or rejected
         subsequent_candles = self.candles[i + 1 :]
         signal_type = "BEARISH (S)"
         buyer_crossed = False
@@ -175,7 +173,7 @@ class RecentStrictWickAnalyzer:
 
         if buyer_crossed:
           signal_type = "BULLISH (B)"
-          self.buyer_score += 1.5
+          self.buyer_score += 1.0
         else:
           self.seller_score += 1.0
 
@@ -187,37 +185,38 @@ class RecentStrictWickAnalyzer:
         })
 
         self.signals_found.append({
-            "Recent Pattern": (
+            "Pattern": (
                 "3 Green + 4th Candle" if is_3_green else "3 Red + 4th Candle"
             ),
             "Horizontal Wick Line": f"{line_level:.2f}",
             "Action Signal": signal_type,
         })
-        found_recent = True
-        break  # Stop after capturing the most recent valid setup
 
 
 if mode_choice == "Live Market Feed":
   st.subheader(
-      f"📡 Real-Time Chart Feed: {asset_choice} ({tf_choice} Timeframe)"
+      f"📡 Real-Time Chart Feed for TUCKYAA: {asset_choice} ({tf_choice}"
+      " Timeframe)"
   )
 
   if st.button(
-      f"Fetch Market & Run Recent Wick Strategy",
+      f"Fetch Market & Run Multi-Wick Strategy",
       type="primary",
       use_container_width=True,
   ):
-    with st.spinner(f"Analyzing recent candles for {asset_choice}..."):
+    with st.spinner(f"Analyzing recent candles for TUCKYAA..."):
       df_live = fetch_live_candles(
           selected_ticker, selected_interval, asset_choice
       )
 
       if df_live is not None and not df_live.empty:
-        analyzer = RecentStrictWickAnalyzer(df_live)
+        analyzer = TuckyasMultiWickAnalyzer(df_live)
         analyzer.parse_candles()
-        analyzer.scan_recent_strategy()
+        analyzer.scan_multi_recent_strategy()
 
-        st.success(f"Successfully analyzed latest chart for {asset_choice}!")
+        st.success(
+            f"Successfully analyzed chart for TUCKYAA on {asset_choice}!"
+        )
 
         st.markdown("---")
         st.subheader("📊 Strategy Scorecard & Market Bias")
@@ -248,7 +247,9 @@ if mode_choice == "Live Market Feed":
           p1, p2, p3 = 0.0015, 0.0035, 0.0070
 
         st.markdown("---")
-        st.subheader("🎯 3 Suggested Trade Entries (Weak, Best, Strong)")
+        st.subheader(
+            "🎯 3 Suggested Trade Entries for TUCKYAA (Weak, Best, Strong)"
+        )
 
         st.markdown("### 1️⃣ Aggressive / Scalping Entry ⚠️ *(Weakest Setup)*")
         e1 = curr_p
@@ -268,8 +269,8 @@ if mode_choice == "Live Market Feed":
         tp2 = e2 + (p2 * 2.0) if is_bullish else e2 - (p2 * 2.0)
         st.success(
             f"**Entry:** `{e2:.2f}` | **SL:** `{sl2:.2f}` | **TP:** `{tp2:.2f}`\n\n"
-            "*Why Best:* Ye recent 4th candle wick line aur re-test cross rule"
-            " ke sath ekdum perfect baithta hai (Risk-Reward 1:2)."
+            "*Why Best:* Ye multiple wick lines aur re-test cross rule ke sath"
+            " ekdum perfect baithta hai (Risk-Reward 1:2)."
         )
 
         st.markdown("### 3️⃣ Conservative Breakout Entry 💪 *(Strongest Setup)*")
@@ -284,14 +285,14 @@ if mode_choice == "Live Market Feed":
 
         if analyzer.signals_found:
           st.markdown("---")
-          st.subheader("📋 Detected Recent Wick Signal")
+          st.subheader("📋 Detected Multi-Wick Signals")
           st.dataframe(
               pd.DataFrame(analyzer.signals_found), use_container_width=True
           )
 
         # TRADINGVIEW / DELTA EXCHANGE STYLE DARK CHART PLOT
         st.markdown("---")
-        st.subheader("📈 Real Trading Chart (Recent Wick Line & Accurate B/S Tag)")
+        st.subheader("📈 Real Trading Chart for TUCKYAA (Multiple Wick Lines)")
         fig, ax = plt.subplots(figsize=(12, 5))
 
         for c in analyzer.candles:
@@ -332,7 +333,7 @@ if mode_choice == "Live Market Feed":
           )
 
         ax.set_title(
-            f"{asset_choice} Chart — Recent Wick Strategy",
+            f"{asset_choice} Chart — TUCKYAA Multi-Wick Strategy",
             color="white",
             fontsize=14,
         )
@@ -349,7 +350,7 @@ if mode_choice == "Live Market Feed":
 
         st.pyplot(fig)
       else:
-        st.error("Chart data load nahi ho paya. Dobara try karein.")
+        st.error("Chart data could not be loaded. Please try again.")
 
 else:
   uploaded_file = st.file_uploader(
@@ -361,4 +362,4 @@ else:
         caption="Uploaded Screenshot Analysis Ready",
         use_container_width=True,
     )
-    st.info("Live market feed mode par switch karein automated analysis ke liye!")
+    st.info("Switch to 'Live Market Feed' mode above for automated analysis!")
