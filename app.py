@@ -149,12 +149,12 @@ class TuckyasRealtimeBotAnalyzer:
 
       c1, c2, c3 = self.candles[i - 3], self.candles[i - 2], self.candles[i - 1]
 
-      # Flexible 3 medium-to-large candles condition
+      # Flexible 3 medium-to-large candles condition (Fixed quote syntax error)
       is_3_green = (
           c1["color"] == "Green"
           and c2["color"] == "Green"
           and c3["color"] == "Green"
-          and c1["body_size'] >= avg_body * 0.4
+          and c1["body_size"] >= avg_body * 0.4
           and c2["body_size"] >= avg_body * 0.4
           and c3["body_size"] >= avg_body * 0.4
       )
