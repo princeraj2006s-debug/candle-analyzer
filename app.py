@@ -9,12 +9,11 @@ st.set_page_config(
 )
 
 st.title(
-    "🕯️ CANDLESENSE Pro by TUCKYAA: Perfect Dual-Line Wick Strategy & Signal"
-    " Bot"
+    "🕯️ CANDLESENSE Pro by TUCKYAA: Flexible Dual-Line Wick Strategy Bot"
 )
 st.markdown(
-    "**Strict 3 Momentum Candles → 4th Candle Upper/Lower Wick Line → Dual"
-    " Recent Lines → Accurate Cross Validation (B/S)**"
+    "**Flexible 3 Momentum Candles → 4th Candle Wick Line → Strictly 2 Recent"
+    " Lines → Accurate Cross Validation (B/S)**"
 )
 
 col_s1, col_s2, col_s3 = st.columns(3)
@@ -103,7 +102,7 @@ def fetch_live_candles(ticker, interval, asset_name):
   )
 
 
-class TuckyasUltimateAnalyzer:
+class TuckyasFlexibleAnalyzer:
 
   def __init__(self, df):
     self.df = df
@@ -134,48 +133,42 @@ class TuckyasUltimateAnalyzer:
           "body_size": body_size,
       })
 
-  def scan_ultimate_strategy(self):
+  def scan_flexible_strategy(self):
     bodies = [c["body_size"] for c in self.candles]
     avg_body = np.mean(bodies) if bodies else 0.01
 
     setup_count = 0
-    # Scan from right to left to get strictly the 2 most recent valid setups (Upper & Lower wicks)
+    # Scan from right to left to get strictly the 2 most recent valid setups
     for i in range(len(self.candles) - 3, 3, -1):
       if setup_count >= 2:
         break
 
       c1, c2, c3 = self.candles[i - 3], self.candles[i - 2], self.candles[i - 1]
 
+      # Flexible size condition (allows medium and slightly smaller candles too)
       is_3_green = (
           c1["color"] == "Green"
           and c2["color"] == "Green"
           and c3["color"] == "Green"
-          and c1["body_size"] >= avg_body * 1.0
-          and c2["body_size"] >= avg_body * 1.0
-          and c3["body_size"] >= avg_body * 1.0
+          and c1["body_size"] >= avg_body * 0.5
+          and c2["body_size"] >= avg_body * 0.5
+          and c3["body_size"] >= avg_body * 0.5
       )
       is_3_red = (
           c1["color"] == "Red"
           and c2["color"] == "Red"
           and c3["color"] == "Red"
-          and c1["body_size"] >= avg_body * 1.0
-          and c2["body_size"] >= avg_body * 1.0
-          and c3["body_size"] >= avg_body * 1.0
+          and c1["body_size"] >= avg_body * 0.5
+          and c2["body_size"] >= avg_body * 0.5
+          and c3["body_size"] >= avg_body * 0.5
       )
 
       if is_3_green or is_3_red:
-        c4 = self.candles[i]  # 4th candle after 3 momentum candles
+        c4 = self.candles[i]  # 4th candle after the 3 candles
 
         if is_3_green:
-          # After 3 green candles, check 4th candle wick (can be upper or lower based on structure)
-          line_level = (
-              c4["high"]
-              if (c4["high"] - max(c4["open"], c4["close"]))
-              >= (min(c4["open"], c4["close"]) - c4["low"])
-              else c4["low"]
-          )
+          line_level = c4["low"] if c4["color"] == "Red" else c4["high"]
         else:
-          # After 3 red candles, check 4th candle upper wick or high level
           line_level = c4["high"]
 
         subsequent_candles = self.candles[i + 1 :]
@@ -227,19 +220,19 @@ if mode_choice == "Live Market Feed":
   )
 
   if st.button(
-      f"Fetch Market & Run Ultimate Strategy",
+      f"Fetch Market & Run Flexible Strategy",
       type="primary",
       use_container_width=True,
   ):
-    with st.spinner(f"Analyzing ultimate chart for TUCKYAA..."):
+    with st.spinner(f"Analyzing chart for TUCKYAA..."):
       df_live = fetch_live_candles(
           selected_ticker, selected_interval, asset_choice
       )
 
       if df_live is not None and not df_live.empty:
-        analyzer = TuckyasUltimateAnalyzer(df_live)
+        analyzer = TuckyasFlexibleAnalyzer(df_live)
         analyzer.parse_candles()
-        analyzer.scan_ultimate_strategy()
+        analyzer.scan_flexible_strategy()
 
         st.success(
             f"Successfully analyzed chart for TUCKYAA on {asset_choice}!"
@@ -312,7 +305,7 @@ if mode_choice == "Live Market Feed":
 
         if analyzer.signals_found:
           st.markdown("---")
-          st.subheader("📋 Detected Ultimate Wick Signals")
+          st.subheader("📋 Detected Flexible Dual-Wick Signals")
           st.dataframe(
               pd.DataFrame(analyzer.signals_found), use_container_width=True
           )
@@ -362,7 +355,7 @@ if mode_choice == "Live Market Feed":
           )
 
         ax.set_title(
-            f"{asset_choice} Chart — TUCKYAA Ultimate Strategy",
+            f"{asset_choice} Chart — TUCKYAA Flexible Strategy",
             color="white",
             fontsize=14,
         )
