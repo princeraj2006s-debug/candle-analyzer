@@ -6,21 +6,21 @@ from streamlit_autorefresh import st_autorefresh
 import yfinance as yf
 
 st.set_page_config(
-    page_title="CANDLESENSE Pro (BTC SMC Bot)", page_icon="⚡", layout="wide"
+    page_title="CANDLESENSE Pro by TUCKYAA", page_icon="⚡", layout="wide"
 )
 
-# Live feed auto-refresh every 10 seconds
-count = st_autorefresh(interval=10000, key="btc_smc_refresh_counter")
+# Live auto-refresh every 10 seconds
+count = st_autorefresh(interval=10000, key="tuckyaa_btc_refresh")
 
-st.title("⚡ CANDLESENSE Pro by TUCKYAA: BTC Real-Time SMC Bot")
+st.title(
+    "⚡ CANDLESENSE Pro by TUCKYAA: BTC Real-Time HTF 6H/4H & SMC Bot"
+)
 st.markdown(
-    f"**Live Feed Active (Refresh Count: {count}) | Asset: BTC-USD | 6H/4H HTF"
-    " Levels + 5 SMC Entry Models**"
+    f"**Live Feed Active (Refresh Count: {count}) | Asset: BTC-USD | Exact 6H"
+    " (2:00 AM Low) & 4H (00:00 AM High) Levels**"
 )
 
-# Lock asset exclusively to Bitcoin (BTC-USD)
 selected_ticker = "BTC-USD"
-
 tf_choice = st.selectbox(
     "Execution Timeframe", options=["5m", "1m", "15m"], index=0
 )
@@ -28,7 +28,7 @@ interval_map = {"1m": "1m", "5m": "5m", "15m": "15m"}
 selected_interval = interval_map[tf_choice]
 
 
-def fetch_btc_data(interval, period="2d"):
+def fetch_btc_data(interval, period="3d"):
   try:
     df = yf.download(
         selected_ticker, period=period, interval=interval, progress=False
@@ -42,28 +42,38 @@ def fetch_btc_data(interval, period="2d"):
   return None
 
 
-# Fetch HTF & Execution Data
 df_5m = fetch_btc_data(selected_interval, period="3d")
-df_6h = fetch_btc_data("60m", period="7d")  # Resampled for 6h/4h HTF levels
+df_6h = fetch_btc_data("1h", period="5d")  # Used for precise 6h/4h time matching
 
 
-class BTCSMCEngine:
+class TuckyasExactHTFEngine:
 
-  def __init__(self, df_lower):
+  def __init__(self, df_lower, df_higher):
     self.df = df_lower.tail(45) if df_lower is not None else None
+    self.df_htf = df_higher if df_higher is not None else None
     self.candles = []
     self.smc_signals = []
     self.htf_levels = {}
 
-  def calculate_htf_levels(self):
-    if self.df is not None and not self.df.empty:
-      # HTF 6H Lower Portion (Low) and 4H Upper Portion (High) Extraction
-      high_val = float(self.df["High"].max())
-      low_val = float(self.df["Low"].min())
+  def calculate_exact_htf_levels(self):
+    if self.df_htf is not None and not self.df_htf.empty:
+      # Filter for 2:00 AM candle for 6H support level (lower portion/low)
+      df_2am = self.df_htf[self.df_htf.index.hour == 2]
+      if not df_2am.empty:
+        self.htf_levels["6H_Support"] = float(df_2am["Low"].iloc[-1])
+      else:
+        self.htf_levels["6H_Support"] = float(self.df_htf["Low"].min())
 
-      # Marked Levels
-      self.htf_levels["6H_Low_Level"] = low_val + (high_val - low_val) * 0.15
-      self.htf_levels["4H_High_Level"] = high_val - (high_val - low_val) * 0.10
+      # Filter for 00:00 AM (midnight) candle for 4H resistance level (upper portion/high)
+      df_00am = self.df_htf[self.df_htf.index.hour == 0]
+      if not df_00am.empty:
+        self.htf_levels["4H_Resistance"] = float(df_00am["High"].iloc[-1])
+      else:
+        self.htf_levels["4H_Resistance"] = float(self.df_htf["High"].max())
+    else:
+      # Fallback if htf data is missing
+      self.htf_levels["6H_Support"] = 77764.5
+      self.htf_levels["4H_Resistance"] = 78009.5
 
   def parse_candles(self):
     if self.df is None or self.df.empty:
@@ -86,122 +96,76 @@ class BTCSMCEngine:
           "body": abs(c - o),
       })
 
-  def scan_5_smc_models(self):
+  def scan_smc_entries(self):
     if len(self.candles) < 5:
       return
-
     bodies = [c["body"] for c in self.candles]
     avg_b = np.mean(bodies) if bodies else 100
 
     for i in range(4, len(self.candles)):
       c_curr = self.candles[i]
       c_prev = self.candles[i - 1]
-      c_prev2 = self.candles[i - 2]
 
-      # 1. Breaker Block Model
+      # Simple SMC Bearish/Bullish Rejection based on HTF levels
       if (
-          c_prev2["color"] == "Red"
-          and c_prev["color"] == "Green"
-          and c_curr["close"] > c_prev2["high"]
+          c_curr["high"] >= self.htf_levels.get("4H_Resistance", 78009.5)
+          and c_curr["color"] == "Red"
       ):
         self.smc_signals.append({
             "Candle #": c_curr["id"],
-            "Model": "Breaker Block",
-            "Type": "Bullish B",
-            "Price": c_curr["close"],
-        })
-
-      # 2. Fair Value Gap (FVG) Model
-      elif (
-          c_prev2["high"] < c_curr["low"] and c_prev["body"] > avg_b * 1.2
-      ):  # Bullish FVG
-        self.smc_signals.append({
-            "Candle #": c_curr["id"],
-            "Model": "Fair Value Gap (FVG)",
-            "Type": "Bullish B",
-            "Price": c_curr["close"],
-        })
-      elif (
-          c_prev2["low"] > c_curr["high"] and c_prev["body"] > avg_b * 1.2
-      ):  # Bearish FVG
-        self.smc_signals.append({
-            "Candle #": c_curr["id"],
-            "Model": "Fair Value Gap (FVG)",
+            "Model": "4H Resistance Rejection",
             "Type": "Bearish S",
             "Price": c_curr["close"],
         })
-
-      # 3. Inversion FVG (IFVG) Model
       elif (
-          c_prev2["color"] == "Red"
+          c_curr["low"] <= self.htf_levels.get("6H_Support", 77764.5)
           and c_curr["color"] == "Green"
-          and c_curr["close"] > c_prev2["high"]
       ):
         self.smc_signals.append({
             "Candle #": c_curr["id"],
-            "Model": "Inversion FVG (IFVG)",
-            "Type": "Bullish B",
-            "Price": c_curr["close"],
-        })
-
-      # 4. Mitigation Block Model
-      elif (
-          c_prev2["low"] < c_prev["low"] and c_curr["close"] > c_prev2["high"]
-      ):
-        self.smc_signals.append({
-            "Candle #": c_curr["id"],
-            "Model": "Mitigation Block",
-            "Type": "Bullish B",
-            "Price": c_curr["close"],
-        })
-
-      # 5. Order Block (OB) Model
-      elif c_prev["color"] == "Red" and c_curr["body"] > avg_b * 1.5:
-        self.smc_signals.append({
-            "Candle #": c_curr["id"],
-            "Model": "Order Block (OB)",
+            "Model": "6H Support Rebound",
             "Type": "Bullish B",
             "Price": c_curr["close"],
         })
 
 
-with st.spinner("⚡ Auto-Syncing BTC Live Chart & SMC Setup..."):
+with st.spinner("⚡ Syncing exact 6H & 4H HTF levels for TUCKYAA..."):
   if df_5m is not None and not df_5m.empty:
-    bot = BTCSMCEngine(df_5m)
-    bot.calculate_htf_levels()
+    bot = TuckyasExactHTFEngine(df_5m, df_6h)
+    bot.calculate_exact_htf_levels()
     bot.parse_candles()
-    bot.scan_5_smc_models()
+    bot.scan_smc_entries()
 
-    curr_p = bot.candles[-1]["close"] if bot.candles else 78000.0
+    curr_p = bot.candles[-1]["close"] if bot.candles else 77912.0
 
     st.markdown("---")
-    st.subheader("🎯 3 Smart Money Trade Entries (BTC-USD)")
+    st.subheader("🎯 TUCKYAA Smart Money Trade Entries (BTC-USD)")
     c1, c2, c3 = st.columns(3)
     with c1:
       st.info(
-          f"**1️⃣ Scalp Entry:** `{curr_p:.2f}`\n\n*SL:* `{curr_p-150:.2f}` |"
-          f" *TP:* `{curr_p+250:.2f}`"
+          f"**1️⃣ Scalp Entry:** `{curr_p:.2f}`\n\n*SL:* `{curr_p-120:.2f}` |"
+          f" *TP:* `{curr_p+200:.2f}`"
       )
     with c2:
       st.success(
-          f"**2️⃣ Standard HTF Entry (BEST):** `{curr_p-80:.2f}`\n\n*SL:*"
-          f" `{curr_p-300:.2f}` | *TP:* `{curr_p+500:.2f}`"
+          f"**2️⃣ Standard HTF Entry (BEST):** `{curr_p-60:.2f}`\n\n*SL:*"
+          f" `{curr_p-250:.2f}` | *TP:* `{curr_p+400:.2f}`"
       )
     with c3:
       st.warning(
-          f"**3️⃣ Breakout Entry:** `{curr_p+120:.2f}`\n\n*SL:* `{curr_p-250:.2f}`"
-          f" | *TP:* `{curr_p+600:.2f}`"
+          f"**3️⃣ Breakout Entry:** `{curr_p+100:.2f}`\n\n*SL:* `{curr_p-200:.2f}`"
+          f" | *TP:* `{curr_p+500:.2f}`"
       )
 
     if bot.smc_signals:
       st.markdown("---")
-      st.subheader("📋 Detected SMC / ICT Signals (5 Models)")
+      st.subheader("📋 Detected HTF Rejection Signals")
       st.dataframe(pd.DataFrame(bot.smc_signals), use_container_width=True)
 
-    # REAL-TIME DARK MODE CHART WITH HTF LINES
+    # TRADINGVIEW / DELTA EXCHANGE STYLE DARK CHART PLOT
     st.markdown("---")
     st.subheader(
-        "📈 BTC-USD Real-Time Chart (6H/4H HTF Levels & SMC Signal Markers)"
+        "📈 Real-Time Chart for TUCKYAA (Exact 6H & 4H HTF Level Lines)"
     )
     fig, ax = plt.subplots(figsize=(12, 5))
 
@@ -218,41 +182,44 @@ with st.spinner("⚡ Auto-Syncing BTC Live Chart & SMC Setup..."):
       )
       ax.vlines(c["id"], c["low"], c["high"], color="#b2b5be", linewidth=1.2)
 
-    # Draw 6H & 4H HTF Horizontal Lines
-    if "6H_Low_Level" in bot.htf_levels:
-      ax.axhline(
-          bot.htf_levels["6H_Low_Level"],
-          color="#29b6f6",
-          linestyle="--",
-          linewidth=2,
-          label="6H Lower Portion Line",
-      )
-      ax.text(
-          2,
-          bot.htf_levels["6H_Low_Level"],
-          "  6H Support Level",
-          color="#29b6f6",
-          weight="bold",
-      )
+    # Plot Exact 6H Support Line (2:00 AM Candle Low)
+    s_lvl = bot.htf_levels["6H_Support"]
+    ax.axhline(
+        s_lvl,
+        color="#26a69a",
+        linestyle="-",
+        linewidth=2,
+        label="6h Support Line",
+    )
+    ax.text(
+        2,
+        s_lvl,
+        f"  6h Support ({s_lvl:.1f})",
+        color="#26a69a",
+        weight="bold",
+        fontsize=10,
+    )
 
-    if "4H_High_Level" in bot.htf_levels:
-      ax.axhline(
-          bot.htf_levels["4H_High_Level"],
-          color="#ff7043",
-          linestyle="--",
-          linewidth=2,
-          label="4H Upper Portion Line",
-      )
-      ax.text(
-          2,
-          bot.htf_levels["4H_High_Level"],
-          "  4H Resistance Level",
-          color="#ff7043",
-          weight="bold",
-      )
+    # Plot Exact 4H Resistance Line (00:00 AM Candle High)
+    r_lvl = bot.htf_levels["4H_Resistance"]
+    ax.axhline(
+        r_lvl,
+        color="#ff7043",
+        linestyle="-",
+        linewidth=2,
+        label="4h Resistance Line",
+    )
+    ax.text(
+        2,
+        r_lvl,
+        f"  4h Resistance ({r_lvl:.1f})",
+        color="#ff7043",
+        weight="bold",
+        fontsize=10,
+    )
 
-    # Plot SMC Signal Markers
-    for sig in bot.smc_signals[-2:]:  # Plot 2 recent SMC signals
+    # Plot SMC Signal Tags
+    for sig in bot.smc_signals[-2:]:
       tag = "B" if "Bullish" in sig["Type"] else "S"
       tag_color = "#00e676" if "Bullish" in sig["Type"] else "#ff1744"
       ax.text(
@@ -264,7 +231,9 @@ with st.spinner("⚡ Auto-Syncing BTC Live Chart & SMC Setup..."):
           bbox=dict(boxstyle="round,pad=0.2", facecolor=tag_color, alpha=0.9),
       )
 
-    ax.set_title("BTC-USD Live SMC & HTF Analysis", color="white", fontsize=14)
+    ax.set_title(
+        f"BTC-USD Live Chart — TUCKYAA HTF Strategy", color="white", fontsize=14
+    )
     ax.set_facecolor("#131722")
     fig.patch.set_facecolor("#1e222d")
     ax.tick_params(colors="white")
