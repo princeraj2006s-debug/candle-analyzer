@@ -1,9 +1,7 @@
-ccxt
 streamlit
-opencv-python-headless
+streamlit-autorefresh
+ccxt
+pandas
 numpy
 matplotlib
-pandas
 yfinance
-streamlit-autorefresh
-
