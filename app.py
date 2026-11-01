@@ -119,7 +119,7 @@ class ExactWickAnalyzer:
           float(r["Open"]),
           float(r["High"]),
           float(r["Low"]),
-          float(r["Close"],
+          float(r["Close"]),
       )
       color = "Green" if c >= o else "Red"
       body_size = abs(c - o)
@@ -145,7 +145,7 @@ class ExactWickAnalyzer:
           c1["color"] == "Green"
           and c2["color"] == "Green"
           and c3["color"] == "Green"
-          and (c1["body_size'] >= avg_body * 0.7)
+          and (c1["body_size"] >= avg_body * 0.7)
       )
       is_3_red = (
           c1["color"] == "Red"
@@ -155,11 +155,9 @@ class ExactWickAnalyzer:
       )
 
       if is_3_green or is_3_red:
-        # The 4th candle appearing right after the 3 candles
         c4 = self.candles[i]
 
         if is_3_green:
-          # After 3 green candles, check the 4th candle (red or subsequent) wick
           line_level = c4["low"] if c4["low"] < c4["close"] else c4["high"]
           signal_type = (
               "BULLISH (B)"
@@ -171,7 +169,6 @@ class ExactWickAnalyzer:
           else:
             self.seller_score += 1.0
         else:
-          # After 3 red candles, put horizontal line on the 4th candle's upper wick
           line_level = c4["high"]
           signal_type = (
               "BULLISH (B)"
@@ -291,7 +288,6 @@ if mode_choice == "Live Market Feed":
               pd.DataFrame(analyzer.signals_found), use_container_width=True
           )
 
-        # TRADINGVIEW / DELTA EXCHANGE STYLE DARK CHART PLOT
         st.markdown("---")
         st.subheader(
             "📈 Real Trading Chart (4th Candle Wick Lines & B/S Tags)"
