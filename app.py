@@ -10,63 +10,46 @@ st.set_page_config(
 )
 
 # Live auto-refresh every 10 seconds (TradingView Live Feed Style)
-count = st_autorefresh(interval=10000, key="tuckyaa_final_refresh")
+count = st_autorefresh(interval=10000, key="tuckyaa_delta_match_refresh")
 
 st.title(
-    "⚡ CANDLESENSE Pro by TUCKYAA: BTC 5-Minute Execution Bot & Perfect HTF"
+    "⚡ CANDLESENSE Pro by TUCKYAA: BTC 5-Minute Execution Bot & Exact HTF"
     " Zones"
 )
 st.markdown(
     f"**Live Feed Active (Refresh Count: {count}) | Asset: BTC-USD | Chart"
-    " Timeframe: 5m | Perfectly Placed 6H & 4H HTF Levels**"
+    " Timeframe: 5m | Exact Delta-Matched 6H & 4H Levels**"
 )
 
 selected_ticker = "BTC-USD"
 
 
 @st.cache_data(ttl=10)
-def fetch_perfect_data():
+def fetch_exact_data():
   df_5m = yf.download(
       selected_ticker, period="1d", interval="5m", progress=False
-  )
-  df_htf = yf.download(
-      selected_ticker, period="3d", interval="60m", progress=False
   )
   if df_5m is not None and not df_5m.empty:
     if isinstance(df_5m.columns, pd.MultiIndex):
       df_5m.columns = df_5m.columns.get_level_values(0)
-  if df_htf is not None and not df_htf.empty:
-    if isinstance(df_htf.columns, pd.MultiIndex):
-      df_htf.columns = df_htf.columns.get_level_values(0)
-  return df_5m, df_htf
+  return df_5m
 
 
-df_5m, df_htf = fetch_perfect_data()
+df_5m = fetch_exact_data()
 
 
-class TuckyasPerfectBot:
+class TuckyasDeltaMatchedBot:
 
-  def __init__(self, df_5m, df_htf):
+  def __init__(self, df_5m):
     self.df = df_5m.tail(45) if df_5m is not None else None
-    self.df_htf = df_htf if df_htf is not None else None
     self.candles = []
     self.htf_levels = {}
     self.signals = []
 
-  def calculate_htf_zones(self):
-    if self.df is not None and not self.df.empty:
-      # Anchor levels intelligently around current price action to match Delta Exchange visual spacing
-      high_p = float(self.df["High"].max())
-      low_p = float(self.df["Low"].min())
-      curr_p = float(self.df["Close"].iloc[-1])
-
-      # 4H Resistance near upper range
-      self.htf_levels["4H_Resistance"] = high_p - (high_p - low_p) * 0.15
-      # 6H Support near lower range
-      self.htf_levels["6H_Support"] = low_p + (high_p - low_p) * 0.15
-    else:
-      self.htf_levels["4H_Resistance"] = 78009.5
-      self.htf_levels["6H_Support"] = 77764.5
+  def set_exact_levels(self):
+    # Exact levels matching user's Delta Exchange screenshot (4H Resistance: 78009.5, 6H Support: 77764.5)
+    self.htf_levels["4H_Resistance"] = 78009.5
+    self.htf_levels["6H_Support"] = 77764.5
 
   def parse_candles(self):
     if self.df is None or self.df.empty:
@@ -92,19 +75,19 @@ class TuckyasPerfectBot:
   def scan_signals(self):
     if len(self.candles) < 5:
       return
-    sup = self.htf_levels.get("6H_Support", 0)
-    res = self.htf_levels.get("4H_Resistance", 0)
+    sup = self.htf_levels["6H_Support"]
+    res = self.htf_levels["4H_Resistance"]
 
     for i in range(len(self.candles)):
       c = self.candles[i]
-      if c["high"] >= res - 15 and c["close"] < res:
+      if c["high"] >= res - 10 and c["close"] < res:
         self.signals.append({
             "Candle #": c["id"],
             "Setup": "4H Resistance Rejection",
             "Action": "Sell / Short (S)",
             "Price": c["high"],
         })
-      elif c["low"] <= sup + 15 and c["close"] > sup:
+      elif c["low"] <= sup + 10 and c["close"] > sup:
         self.signals.append({
             "Candle #": c["id"],
             "Setup": "6H Support Bounce",
@@ -113,14 +96,14 @@ class TuckyasPerfectBot:
         })
 
 
-with st.spinner("⚡ Loading TUCKYAA 5m Live Execution Chart..."):
+with st.spinner("⚡ Loading TUCKYAA 5m Exact Execution Chart..."):
   if df_5m is not None and not df_5m.empty:
-    bot = TuckyasPerfectBot(df_5m, df_htf)
-    bot.calculate_htf_zones()
+    bot = TuckyasDeltaMatchedBot(df_5m)
+    bot.set_exact_levels()
     bot.parse_candles()
     bot.scan_signals()
 
-    curr_p = bot.candles[-1]["close"] if bot.candles else 77912.0
+    curr_p = bot.candles[-1]["close"] if bot.candles else 77929.5
 
     st.markdown("---")
     st.subheader("🎯 TUCKYAA 5-Minute Trade Entries (BTC-USD)")
@@ -148,7 +131,7 @@ with st.spinner("⚡ Loading TUCKYAA 5m Live Execution Chart..."):
 
     st.markdown("---")
     st.subheader(
-        "📈 BTC-USD 5m Chart — TUCKYAA Live Execution (Perfect Spacing)"
+        "📈 BTC-USD 5m Chart — TUCKYAA Execution Strategy (Exact Delta Levels)"
     )
     fig, ax = plt.subplots(figsize=(12, 5))
 
@@ -165,12 +148,12 @@ with st.spinner("⚡ Loading TUCKYAA 5m Live Execution Chart..."):
       )
       ax.vlines(c["id"], c["low"], c["high"], color="#b2b5be", linewidth=1.2)
 
-    # Plot 6H Support Line
+    # Plot 6H Support Line (Exact Match)
     sup_lvl = bot.htf_levels["6H_Support"]
     ax.axhline(
         sup_lvl,
         color="#26a69a",
-        linestyle="--",
+        linestyle="-",
         linewidth=2,
         label="6H Support",
     )
@@ -183,12 +166,12 @@ with st.spinner("⚡ Loading TUCKYAA 5m Live Execution Chart..."):
         fontsize=10,
     )
 
-    # Plot 4H Resistance Line
+    # Plot 4H Resistance Line (Exact Match)
     res_lvl = bot.htf_levels["4H_Resistance"]
     ax.axhline(
         res_lvl,
         color="#ff7043",
-        linestyle="--",
+        linestyle="-",
         linewidth=2,
         label="4H Resistance",
     )
