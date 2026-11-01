@@ -10,9 +10,9 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("🕯️ CANDLESENSE Pro: 3-Candle Wick & Re-Test Strategy Bot")
+st.title("🕯️ CANDLESENSE Pro: 3-Candle + 4th Candle Wick Strategy")
 st.markdown(
-    "**3-Candle Momentum Setup → Horizontal Wick Line → Re-Test & Cross (B/S)"
+    "**3 Momentum Candles → 4th Candle Wick Line → Re-Test & Cross (B/S)"
     " Validation**"
 )
 
@@ -119,7 +119,7 @@ class ExactWickAnalyzer:
           float(r["Open"]),
           float(r["High"]),
           float(r["Low"]),
-          float(r["Close"]),
+          float(r["Close"],
       )
       color = "Green" if c >= o else "Red"
       body_size = abs(c - o)
@@ -137,73 +137,65 @@ class ExactWickAnalyzer:
     bodies = [c["body_size"] for c in self.candles]
     avg_body = np.mean(bodies) if bodies else 0.01
 
-    # Scan for 3 consecutive candles of medium-to-large size
-    for i in range(3, len(self.candles) - 3):
+    # Scan for 3 consecutive candles, then check the 4th candle for line placement
+    for i in range(3, len(self.candles) - 2):
       c1, c2, c3 = self.candles[i - 3], self.candles[i - 2], self.candles[i - 1]
 
       is_3_green = (
           c1["color"] == "Green"
           and c2["color"] == "Green"
           and c3["color"] == "Green"
-          and (c1["body_size"] >= avg_body * 0.8)
+          and (c1["body_size'] >= avg_body * 0.7)
       )
       is_3_red = (
           c1["color"] == "Red"
           and c2["color"] == "Red"
           and c3["color"] == "Red"
-          and (c1["body_size"] >= avg_body * 0.8)
+          and (c1["body_size"] >= avg_body * 0.7)
       )
 
       if is_3_green or is_3_red:
-        ref_candle = c3
-        # Draw line from the key wick level of the 3rd candle in the setup
-        line_level = ref_candle["high"] if is_3_green else ref_candle["low"]
+        # The 4th candle appearing right after the 3 candles
+        c4 = self.candles[i]
 
-        # Check subsequent candles for re-test and reaction (Cross vs Reject)
-        subsequent_candles = self.candles[i : i + 3]
-        reaction = "PENDING"
-        signal_type = "NEUTRAL"
-
-        for sub_c in subsequent_candles:
-          if is_3_green:
-            # For green setup, check if price crosses above or gets rejected below line
-            if sub_c["high"] >= line_level and sub_c["close"] > line_level:
-              reaction = "Crossed & Broken"
-              signal_type = "BULLISH (B)"
-              self.buyer_score += 1.0
-              break
-            elif sub_c["low"] <= line_level and sub_c["close"] <= line_level:
-              reaction = "Rejected / No Cross"
-              signal_type = "BEARISH (S)"
-              self.seller_score += 1.0
-              break
+        if is_3_green:
+          # After 3 green candles, check the 4th candle (red or subsequent) wick
+          line_level = c4["low"] if c4["low"] < c4["close"] else c4["high"]
+          signal_type = (
+              "BULLISH (B)"
+              if self.candles[i + 1]["close"] > line_level
+              else "BEARISH (S)"
+          )
+          if "BULLISH" in signal_type:
+            self.buyer_score += 1.0
           else:
-            # For red setup, check if price crosses below or gets rejected above line
-            if sub_c["low"] <= line_level and sub_c["close"] < line_level:
-              reaction = "Crossed & Broken"
-              signal_type = "BEARISH (S)"
-              self.seller_score += 1.0
-              break
-            elif sub_c["high"] >= line_level and sub_c["close"] >= line_level:
-              reaction = "Rejected / No Cross"
-              signal_type = "BULLISH (B)"
-              self.buyer_score += 1.0
-              break
+            self.seller_score += 1.0
+        else:
+          # After 3 red candles, put horizontal line on the 4th candle's upper wick
+          line_level = c4["high"]
+          signal_type = (
+              "BULLISH (B)"
+              if self.candles[i + 1]["close"] > line_level
+              else "BEARISH (S)"
+          )
+          if "BULLISH" in signal_type:
+            self.buyer_score += 1.0
+          else:
+            self.seller_score += 1.0
 
         self.chart_lines.append({
-            "start_id": ref_candle["id"],
-            "end_id": min(ref_candle["id"] + 10, len(self.candles)),
+            "start_id": c4["id"],
+            "end_id": min(c4["id"] + 8, len(self.candles)),
             "level": line_level,
             "type": signal_type,
         })
 
         self.signals_found.append({
-            "Setup Pattern": (
-                "3 Green Candles" if is_3_green else "3 Red Candles"
+            "Pattern": (
+                "3 Green + 4th Candle" if is_3_green else "3 Red + 4th Candle"
             ),
-            "Horizontal Wick Line": f"{line_level:.2f}",
-            "Re-Test Action": reaction,
-            "Signal Result": signal_type,
+            "Horizontal Line on 4th Wick": f"{line_level:.2f}",
+            "Signal": signal_type,
         })
 
 
@@ -213,13 +205,11 @@ if mode_choice == "Live Market Feed":
   )
 
   if st.button(
-      f"Fetch Market & Run Exact Wick Strategy",
+      f"Fetch Market & Run 4th-Candle Wick Strategy",
       type="primary",
       use_container_width=True,
   ):
-    with st.spinner(
-        f"Scanning 3-candle patterns and correct wick levels for {asset_choice}..."
-    ):
+    with st.spinner(f"Analyzing chart for {asset_choice}..."):
       df_live = fetch_live_candles(
           selected_ticker, selected_interval, asset_choice
       )
@@ -231,7 +221,6 @@ if mode_choice == "Live Market Feed":
 
         st.success(f"Successfully analyzed chart for {asset_choice}!")
 
-        # Scorecard
         st.markdown("---")
         st.subheader("📊 Strategy Scorecard & Market Bias")
         c1, c2, c3 = st.columns(3)
@@ -251,7 +240,6 @@ if mode_choice == "Live Market Feed":
         is_bullish = analyzer.buyer_score >= analyzer.seller_score
         curr_p = last_c["close"]
 
-        # Asset specific offsets for entries
         if "Bitcoin" in asset_choice or "BTC" in asset_choice:
           p1, p2, p3 = 150.0, 350.0, 700.0
         elif "XAUT" in asset_choice or "Gold" in asset_choice:
@@ -282,8 +270,8 @@ if mode_choice == "Live Market Feed":
         tp2 = e2 + (p2 * 2.0) if is_bullish else e2 - (p2 * 2.0)
         st.success(
             f"**Entry:** `{e2:.2f}` | **SL:** `{sl2:.2f}` | **TP:** `{tp2:.2f}`\n\n"
-            "*Why Best:* Ye horizontal wick line re-test aur rejection rule ke"
-            " sath ekdum perfect baithta hai (Risk-Reward 1:2)."
+            "*Why Best:* Ye 4th candle ke wick par horizontal line aur re-test"
+            " rule ke sath ekdum perfect baithta hai (Risk-Reward 1:2)."
         )
 
         st.markdown("### 3️⃣ Conservative Breakout Entry 💪 *(Strongest Setup)*")
@@ -298,14 +286,16 @@ if mode_choice == "Live Market Feed":
 
         if analyzer.signals_found:
           st.markdown("---")
-          st.subheader("📋 Detected 3-Candle Wick Re-Test Signals")
+          st.subheader("📋 Detected 4th-Candle Wick Signals")
           st.dataframe(
               pd.DataFrame(analyzer.signals_found), use_container_width=True
           )
 
         # TRADINGVIEW / DELTA EXCHANGE STYLE DARK CHART PLOT
         st.markdown("---")
-        st.subheader("📈 Real Trading Chart (Correct Wick Lines & B/S Tags)")
+        st.subheader(
+            "📈 Real Trading Chart (4th Candle Wick Lines & B/S Tags)"
+        )
         fig, ax = plt.subplots(figsize=(12, 5))
 
         for c in analyzer.candles:
@@ -335,7 +325,7 @@ if mode_choice == "Live Market Feed":
           tag = "B" if "BULLISH" in line["type"] else "S"
           tag_color = "#00e676" if "BULLISH" in line["type"] else "#ff1744"
           ax.text(
-              line["start_id"] + 1.5,
+              line["start_id"] + 0.5,
               line["level"],
               f"  {tag} ",
               color="white",
@@ -346,7 +336,7 @@ if mode_choice == "Live Market Feed":
           )
 
         ax.set_title(
-            f"{asset_choice} Chart — Exact Wick Re-Test Strategy",
+            f"{asset_choice} Chart — 4th Candle Wick Strategy",
             color="white",
             fontsize=14,
         )
