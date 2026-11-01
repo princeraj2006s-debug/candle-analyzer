@@ -13,8 +13,8 @@ st.title(
     " Bot"
 )
 st.markdown(
-    "**Strict Medium-to-Large 3 Candles → 4th Candle Wick Line → Dual Recent"
-    " Lines → Accurate Cross Validation (B/S)**"
+    "**Strict 3 Momentum Candles → 4th Candle Wick Line → Dual Recent Lines →"
+    " Accurate Cross Validation (B/S)**"
 )
 
 col_s1, col_s2, col_s3 = st.columns(3)
@@ -103,7 +103,7 @@ def fetch_live_candles(ticker, interval, asset_name):
   )
 
 
-class TuckyasStrictAnalyzer:
+class TuckyasPerfectAnalyzer:
 
   def __init__(self, df):
     self.df = df
@@ -134,7 +134,7 @@ class TuckyasStrictAnalyzer:
           "body_size": body_size,
       })
 
-  def scan_strict_strategy(self):
+  def scan_perfect_strategy(self):
     bodies = [c["body_size"] for c in self.candles]
     avg_body = np.mean(bodies) if bodies else 0.01
 
@@ -146,46 +146,59 @@ class TuckyasStrictAnalyzer:
 
       c1, c2, c3 = self.candles[i - 3], self.candles[i - 2], self.candles[i - 1]
 
-      # Strict medium-to-large candle size condition (must be >= 1.3x average body size)
+      # Medium-to-large momentum candles check
       is_3_green = (
           c1["color"] == "Green"
           and c2["color"] == "Green"
           and c3["color"] == "Green"
-          and c1["body_size"] >= avg_body * 1.3
-          and c2["body_size"] >= avg_body * 1.3
-          and c3["body_size"] >= avg_body * 1.3
+          and c1["body_size"] >= avg_body * 1.1
+          and c2["body_size"] >= avg_body * 1.1
+          and c3["body_size"] >= avg_body * 1.1
       )
       is_3_red = (
           c1["color"] == "Red"
           and c2["color"] == "Red"
           and c3["color"] == "Red"
-          and c1["body_size"] >= avg_body * 1.3
-          and c2["body_size"] >= avg_body * 1.3
-          and c3["body_size"] >= avg_body * 1.3
+          and c1["body_size"] >= avg_body * 1.1
+          and c2["body_size"] >= avg_body * 1.1
+          and c3["body_size"] >= avg_body * 1.1
       )
 
       if is_3_green or is_3_red:
-        c4 = self.candles[i]
+        c4 = self.candles[i]  # 4th candle after 3 momentum candles
 
         if is_3_green:
-          line_level = c4["low"] if c4["color"] == "Red" else c4["high"]
+          # After 3 green candles, place line on 4th candle's lower wick or key level
+          line_level = c4["low"] if c4["color"] == "Red" else c4["open"]
         else:
+          # After 3 red candles, place line on 4th candle's upper wick
           line_level = c4["high"]
 
+        # Check subsequent candles for re-test and cross validation
         subsequent_candles = self.candles[i + 1 :]
         signal_type = "BEARISH (S)"
-        buyer_crossed = False
+        crossed = False
 
         for sub_c in subsequent_candles:
-          if sub_c["close"] >= line_level:
-            buyer_crossed = True
+          if is_3_green and sub_c["close"] >= line_level:
+            crossed = True
+            break
+          elif is_3_red and sub_c["close"] <= line_level:
+            crossed = True
             break
 
-        if buyer_crossed:
-          signal_type = "BULLISH (B)"
-          self.buyer_score += 1.0
+        if is_3_green:
+          if crossed:
+            signal_type = "BULLISH (B)"
+            self.buyer_score += 1.0
+          else:
+            self.seller_score += 1.0
         else:
-          self.seller_score += 1.0
+          if crossed:
+            signal_type = "BEARISH (S)"
+            self.seller_score += 1.0
+          else:
+            self.buyer_score += 1.0
 
         self.chart_lines.append({
             "start_id": c4["id"],
@@ -211,24 +224,22 @@ if mode_choice == "Live Market Feed":
   )
 
   if st.button(
-      f"Fetch Market & Run Strict Dual-Line Strategy",
+      f"Fetch Market & Run Perfect Dual-Line Strategy",
       type="primary",
       use_container_width=True,
   ):
-    with st.spinner(
-        f"Scanning strict medium-to-large candles for TUCKYAA..."
-    ):
+    with st.spinner(fancis := f"Analyzing perfect chart for TUCKYAA..."):
       df_live = fetch_live_candles(
           selected_ticker, selected_interval, asset_choice
       )
 
       if df_live is not None and not df_live.empty:
-        analyzer = TuckyasStrictAnalyzer(df_live)
+        analyzer = TuckyasPerfectAnalyzer(df_live)
         analyzer.parse_candles()
-        analyzer.scan_strict_strategy()
+        analyzer.scan_perfect_strategy()
 
         st.success(
-            f"Successfully analyzed strict chart for TUCKYAA on {asset_choice}!"
+            f"Successfully analyzed chart for TUCKYAA on {asset_choice}!"
         )
 
         st.markdown("---")
@@ -306,8 +317,7 @@ if mode_choice == "Live Market Feed":
         # TRADINGVIEW / DELTA EXCHANGE STYLE DARK CHART PLOT (Strictly 2 lines)
         st.markdown("---")
         st.subheader(
-            "📈 Real Trading Chart for TUCKYAA (Strictly 2 Recent Strict Wick"
-            " Lines)"
+            "📈 Real Trading Chart for TUCKYAA (Strictly 2 Recent Wick Lines)"
         )
         fig, ax = plt.subplots(figsize=(12, 5))
 
@@ -349,7 +359,7 @@ if mode_choice == "Live Market Feed":
           )
 
         ax.set_title(
-            f"{asset_choice} Chart — TUCKYAA Strict Dual-Line Strategy",
+            f"{asset_choice} Chart — TUCKYAA Perfect Strategy",
             color="white",
             fontsize=14,
         )
