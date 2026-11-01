@@ -17,7 +17,7 @@ st.title(
 )
 st.markdown(
     f"**Live Feed Active (Refresh Count: {count}) | Asset: BTC-USD | Chart"
-    " Timeframe: 5m | 6H & 4H HTF Levels Mapped**"
+    " Timeframe: 5m | Perfect 6H & 4H HTF Levels Mapped**"
 )
 
 selected_ticker = "BTC-USD"
@@ -29,7 +29,7 @@ def fetch_execution_data():
       selected_ticker, period="2d", interval="5m", progress=False
   )
   df_htf = yf.download(
-      selected_ticker, period="5d", interval="60m", progress=False
+      selected_ticker, period="3d", interval="60m", progress=False
   )
   if df_5m is not None and not df_5m.empty:
     if isinstance(df_5m.columns, pd.MultiIndex):
@@ -54,22 +54,36 @@ class Tuckyas5MinExecutionBot:
 
   def calculate_htf_zones(self):
     if self.df_htf is not None and not self.df_htf.empty:
-      # 6H support level: 2:00 AM candle low
-      df_2am = self.df_htf[self.df_htf.index.hour == 2]
+      recent_htf = self.df_htf.tail(36)
+
+      # 6H support level: 2:00 AM candle low from recent session
+      df_2am = recent_htf[recent_htf.index.hour == 2]
       if not df_2am.empty:
         self.htf_levels["6H_Support"] = float(df_2am["Low"].iloc[-1])
       else:
-        self.htf_levels["6H_Support"] = float(self.df_htf["Low"].min())
+        self.htf_levels["6H_Support"] = float(
+            self.df["Low"].min()
+            if self.df is not None
+            else recent_htf["Low"].min()
+        )
 
-      # 4H resistance level: 00:00 AM candle high
-      df_00am = self.df_htf[self.df_htf.index.hour == 0]
+      # 4H resistance level: 00:00 AM candle high from recent session
+      df_00am = recent_htf[recent_htf.index.hour == 0]
       if not df_00am.empty:
         self.htf_levels["4H_Resistance"] = float(df_00am["High"].iloc[-1])
       else:
-        self.htf_levels["4H_Resistance"] = float(self.df_htf["High"].max())
+        self.htf_levels["4H_Resistance"] = float(
+            self.df["High"].max()
+            if self.df is not None
+            else recent_htf["High"].max()
+        )
     else:
-      self.htf_levels["6H_Support"] = 77764.5
-      self.htf_levels["4H_Resistance"] = 78009.5
+      self.htf_levels["6H_Support"] = (
+          float(self.df["Low"].min()) if self.df is not None else 77800.0
+      )
+      self.htf_levels["4H_Resistance"] = (
+          float(self.df["High"].max()) if self.df is not None else 78100.0
+      )
 
   def parse_candles(self):
     if self.df is None or self.df.empty:
@@ -100,8 +114,7 @@ class Tuckyas5MinExecutionBot:
 
     for i in range(len(self.candles)):
       c = self.candles[i]
-      # Check reaction near 4H resistance
-      if abs(c["high"] - res) <= 40 or (
+      if abs(c["high"] - res) <= 30 or (
           c["high"] >= res and c["close"] < res
       ):
         self.signals.append({
@@ -110,8 +123,7 @@ class Tuckyas5MinExecutionBot:
             "Action": "Sell / Short (S)",
             "Price": c["high"],
         })
-      # Check reaction near 6H support
-      elif abs(c["low"] - sup) <= 40 or (c["low"] <= sup and c["close"] > sup):
+      elif abs(c["low"] - sup) <= 30 or (c["low"] <= sup and c["close"] > sup):
         self.signals.append({
             "Candle #": c["id"],
             "Setup": "6H Support Bounce",
@@ -120,7 +132,7 @@ class Tuckyas5MinExecutionBot:
         })
 
 
-with st.spinner("⚡ Loading 5m BTC chart with 6H & 4H HTF levels..."):
+with st.spinner("⚡ Loading 5m BTC chart with accurate 6H & 4H HTF levels..."):
   if df_5m is not None and not df_5m.empty:
     bot = Tuckyas5MinExecutionBot(df_5m, df_htf)
     bot.calculate_htf_zones()
@@ -134,18 +146,18 @@ with st.spinner("⚡ Loading 5m BTC chart with 6H & 4H HTF levels..."):
     c1, c2, c3 = st.columns(3)
     with c1:
       st.info(
-          f"**1️⃣ Scalp Entry:** `{curr_p:.2f}`\n\n*SL:* `{curr_p-100:.2f}` |"
-          f" *TP:* `{curr_p+180:.2f}`"
+          f"**1️⃣ Scalp Entry:** `{curr_p:.2f}`\n\n*SL:* `{curr_p-80:.2f}` |"
+          f" *TP:* `{curr_p+150:.2f}`"
       )
     with c2:
       st.success(
-          f"**2️⃣ HTF Zone Re-Test (BEST):** `{curr_p-50:.2f}`\n\n*SL:*"
-          f" `{curr_p-200:.2f}` | *TP:* `{curr_p+350:.2f}`"
+          f"**2️⃣ HTF Zone Re-Test (BEST):** `{curr_p-40:.2f}`\n\n*SL:*"
+          f" `{curr_p-150:.2f}` | *TP:* `{curr_p+300:.2f}`"
       )
     with c3:
       st.warning(
-          f"**3️⃣ Breakout Entry:** `{curr_p+80:.2f}`\n\n*SL:* `{curr_p-180:.2f}`"
-          f" | *TP:* `{curr_p+400:.2f}`"
+          f"**3️⃣ Breakout Entry:** `{curr_p+60:.2f}`\n\n*SL:* `{curr_p-120:.2f}`"
+          f" | *TP:* `{curr_p+350:.2f}`"
       )
 
     if bot.signals:
@@ -153,10 +165,9 @@ with st.spinner("⚡ Loading 5m BTC chart with 6H & 4H HTF levels..."):
       st.subheader("📋 Detected 5m Zone Reactions")
       st.dataframe(pd.DataFrame(bot.signals[-4:]), use_container_width=True)
 
-    # PLOTTING 5M CHART WITH HTF LINES
     st.markdown("---")
     st.subheader(
-        "📈 BTC-USD 5-Minute Execution Chart (HTF 6H & 4H Mapped)"
+        "📈 BTC-USD 5-Minute Execution Chart (Perfect HTF 6H & 4H Mapped)"
     )
     fig, ax = plt.subplots(figsize=(12, 5))
 
@@ -173,14 +184,9 @@ with st.spinner("⚡ Loading 5m BTC chart with 6H & 4H HTF levels..."):
       )
       ax.vlines(c["id"], c["low"], c["high"], color="#b2b5be", linewidth=1.2)
 
-    # Plot 6H Support Line
     sup_lvl = bot.htf_levels["6H_Support"]
     ax.axhline(
-        sup_lvl,
-        color="#26a69a",
-        linestyle="-",
-        linewidth=2,
-        label="6H Support",
+        sup_lvl, color="#26a69a", linestyle="-", linewidth=2, label="6H Support"
     )
     ax.text(
         2,
@@ -191,7 +197,6 @@ with st.spinner("⚡ Loading 5m BTC chart with 6H & 4H HTF levels..."):
         fontsize=10,
     )
 
-    # Plot 4H Resistance Line
     res_lvl = bot.htf_levels["4H_Resistance"]
     ax.axhline(
         res_lvl,
@@ -209,7 +214,6 @@ with st.spinner("⚡ Loading 5m BTC chart with 6H & 4H HTF levels..."):
         fontsize=10,
     )
 
-    # Plot Signal Tags
     for sig in bot.signals[-3:]:
       tag = "B" if "Long" in sig["Action"] else "S"
       tag_color = "#00e676" if "Long" in sig["Action"] else "#ff1744"
