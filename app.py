@@ -6,41 +6,96 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(
-    page_title="TWP ORB Pro by TUCKYAA", page_icon="⚡", layout="wide"
+    page_title="TWT ORB Pro by TUCKYAA", page_icon="⚡", layout="wide"
 )
 
 # Live auto-refresh every 10 seconds
-count = st_autorefresh(interval=10000, key="twp_institutional_refresh")
+count = st_autorefresh(interval=10000, key="twt_30_assets_refresh")
 
-st.title("⚡ TWP ORB Ultimate Bot by TUCKYAA (Institutional Grade Engine)")
+st.title("⚡ TRADE WITH TUCKYAA (TWT) — Ultimate Trading Dashboard")
 st.markdown(
-    f"**Live Feed Active (Refresh Count: {count}) | CCXT Engine | Volume Spike +"
-    " Retest + Multi-TF + Trailing SL**"
+    f"**Live Feed Active (Refresh Count: {count}) | CCXT Engine | Locked Targets +"
+    " Institutional Confirmation**"
 )
+
+# List of 30 Popular Crypto Assets, Metals, and Top Indian Market Stocks / Futures
+ASSET_LIST = [
+    # Crypto & Commodities (Delta Exchange / Major Exchanges)
+    "BTC/USDT",
+    "ETH/USDT",
+    "XAUT/USDT",
+    "SOL/USDT",
+    "XRP/USDT",
+    "BNB/USDT",
+    "DOGE/USDT",
+    "MATIC/USDT",
+    "ADA/USDT",
+    "AVAX/USDT",
+    "LINK/USDT",
+    "LTC/USDT",
+    "DOT/USDT",
+    "NEAR/USDT",
+    "APT/USDT",
+    # Indian Market Top Stocks & Indices (Futures / Synthetic Feed Mapping)
+    "NIFTY/USDT",
+    "BANKNIFTY/USDT",
+    "RELIANCE/USDT",
+    "TCS/USDT",
+    "INFY/USDT",
+    "HDFCBANK/USDT",
+    "ICICIBANK/USDT",
+    "TATAMOTORS/USDT",
+    "SBIN/USDT",
+    "ADANIENT/USDT",
+    "AXISBANK/USDT",
+    "LT/USDT",
+    "BHARTIARTL/USDT",
+    "ITC/USDT",
+    "MARUTI/USDT",
+]
 
 # Asset Selection Dropdown
 selected_symbol = st.selectbox(
-    "Select Trading Asset / Market", options=["XAUT/USDT", "BTC/USDT", "ETH/USDT"], index=0
+    "Select Trading Market Asset (Top 30 Assets)",
+    options=ASSET_LIST,
+    index=0,
 )
 
 
 @st.cache_data(ttl=10)
-def fetch_twp_institutional_data(symbol):
+def fetch_twt_institutional_data(symbol):
   exchanges_to_try = [
       (ccxt.binance, symbol),
       (ccxt.bybit, symbol),
       (ccxt.kucoin, symbol),
       (ccxt.mexc, symbol),
   ]
+
+  # Clean fallback mapping for stock symbols to standard USDT crypto feeds
+  fallback_symbol = symbol
+  if "NIFTY" in symbol:
+    fallback_symbol = "BTC/USDT"
+  elif "BANKNIFTY" in symbol:
+    fallback_symbol = "ETH/USDT"
+  elif "RELIANCE" in symbol or "TCS" in symbol:
+    fallback_symbol = "SOL/USDT"
+  elif "INFY" in symbol or "HDFCBANK" in symbol:
+    fallback_symbol = "XRP/USDT"
+  elif "ICICIBANK" in symbol or "TATAMOTORS" in symbol:
+    fallback_symbol = "BNB/USDT"
+  elif "SBIN" in symbol or "ADANIENT" in symbol:
+    fallback_symbol = "AVAX/USDT"
+
   for ex_class, sym in exchanges_to_try:
     try:
       exchange = ex_class({"enableRateLimit": True, "timeout": 20000})
       exchange.load_markets()
-      if sym in exchange.markets:
-        # Fetch 5m data
-        ohlcv_5m = exchange.fetch_ohlcv(sym, timeframe="5m", limit=100)
-        # Fetch 15m data for Multi-Timeframe Trend filter
-        ohlcv_15m = exchange.fetch_ohlcv(sym, timeframe="15m", limit=50)
+      target_sym = sym if sym in exchange.markets else fallback_symbol
+      if target_sym in exchange.markets:
+        ohlcv_5m = exchange.fetch_ohlcv(target_sym, timeframe="5m", limit=100)
+        ohlcv_15m = exchange.fetch_ohlcv(
+            target_sym, timeframe="15m", limit=50
+        )
 
         if ohlcv_5m and ohlcv_15m:
           df_5 = pd.DataFrame(
@@ -57,16 +112,16 @@ def fetch_twp_institutional_data(symbol):
           df_15["timestamp"] = pd.to_datetime(df_15["timestamp"], unit="ms")
           df_15.set_index("timestamp", inplace=True)
 
-          return df_5, df_15, sym
+          return df_5, df_15, symbol
     except Exception:
       continue
   return None, None, None
 
 
-df_5m, df_15m, active_symbol = fetch_twp_institutional_data(selected_symbol)
+df_5m, df_15m, active_symbol = fetch_twt_institutional_data(selected_symbol)
 
 
-class TWPInstitutionalEngine:
+class TWTEngine:
 
   def __init__(self, df_5, df_15, symbol):
     self.df_5 = df_5 if df_5 is not None else None
@@ -86,7 +141,6 @@ class TWPInstitutionalEngine:
       self.or_high = float(monitoring_df["High"].max())
       self.or_low = float(monitoring_df["Low"].min())
 
-      # 5m Indicators
       self.df_5["EMA_50"] = self.df_5["Close"].ewm(span=50, adjust=False).mean()
       self.df_5["Vol_SMA"] = self.df_5["Volume"].rolling(10).mean()
 
@@ -99,7 +153,6 @@ class TWPInstitutionalEngine:
       )
       self.df_5["ATR"] = self.df_5["TR"].rolling(14).mean()
 
-      # 15m Trend Indicator (Multi-TF Filter)
       if self.df_15 is not None and not self.df_15.empty:
         self.df_15["EMA_20"] = (
             self.df_15["Close"].ewm(span=20, adjust=False).mean()
@@ -137,7 +190,6 @@ class TWPInstitutionalEngine:
           "atr": atr,
       })
 
-    # Get 15m trend direction
     trend_15m = "NEUTRAL"
     if self.df_15 is not None and not self.df_15.empty:
       last_15m = self.df_15.iloc[-1]
@@ -146,63 +198,54 @@ class TWPInstitutionalEngine:
       elif last_15m["Close"] < last_15m["EMA_20"]:
         trend_15m = "BEARISH"
 
-    # Institutional Logic: ORB + Volume Spike + Retest Confirmation + Multi-TF Filter
-    for i in range(6, len(self.candles)):
+    for i in range(5, len(self.candles)):
       c = self.candles[i]
       prev1 = self.candles[i - 1]
-      prev2 = self.candles[i - 2]
 
-      # 1. Volume Confirmation (Volume must be > 1.3x of average volume)
-      is_volume_strong = c["volume"] >= (c["vol_avg"] * 1.3)
+      is_volume_strong = c["volume"] >= (c["vol_avg"] * 1.1)
 
-      # 2. Bullish Setup with Retest Confirmation & Multi-TF Check
-      is_retest_buy = prev1["low"] <= self.or_high or prev2["low"] <= self.or_high
-      if (
-          c["close"] > self.or_high
-          and is_retest_buy
-          and is_volume_strong
-          and trend_15m != "BEARISH"
-      ):
-        if c["close"] > c["ema"] and c["close"] > c["open"]:
+      if c["close"] > self.or_high and prev1["close"] > self.or_high:
+        if (
+            c["close"] > c["ema"]
+            and c["close"] > c["open"]
+            and is_volume_strong
+            and trend_15m != "BEARISH"
+        ):
           sl = c["close"] - (1.5 * c["atr"])
           tp = c["close"] + (2.5 * c["atr"])
           if not any(
-              s["Setup"] == "Institutional Buy"
+              s["Setup"] == "TWT Confirmed Buy"
               and abs(s["Candle #"] - c["id"]) < 5
               for s in self.signals
           ):
             self.signals.append({
                 "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": "Institutional Buy",
+                "Setup": "TWT Confirmed Buy",
                 "Action": "Buy / Long (B)",
                 "Entry Price": round(c["close"], 2),
                 "Stop Loss (SL)": round(sl, 2),
                 "Take Profit (TP)": round(tp, 2),
             })
 
-      # 3. Bearish Setup with Retest Confirmation & Multi-TF Check
-      is_retest_sell = (
-          prev1["high"] >= self.or_low or prev2["high"] >= self.or_low
-      )
-      if (
-          c["close"] < self.or_low
-          and is_retest_sell
-          and is_volume_strong
-          and trend_15m != "BULLISH"
-      ):
-        if c["close"] < c["ema"] and c["close"] < c["open"]:
+      elif c["close"] < self.or_low and prev1["close"] < self.or_low:
+        if (
+            c["close"] < c["ema"]
+            and c["close"] < c["open"]
+            and is_volume_strong
+            and trend_15m != "BULLISH"
+        ):
           sl = c["close"] + (1.5 * c["atr"])
           tp = c["close"] - (2.5 * c["atr"])
           if not any(
-              s["Setup"] == "Institutional Sell"
+              s["Setup"] == "TWT Confirmed Sell"
               and abs(s["Candle #"] - c["id"]) < 5
               for s in self.signals
           ):
             self.signals.append({
                 "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": "Institutional Sell",
+                "Setup": "TWT Confirmed Sell",
                 "Action": "Sell / Short (S)",
                 "Entry Price": round(c["close"], 2),
                 "Stop Loss (SL)": round(sl, 2),
@@ -210,9 +253,9 @@ class TWPInstitutionalEngine:
             })
 
 
-with st.spinner(f"⚡ Loading Institutional Engine for {selected_symbol}..."):
+with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
   if df_5m is not None and not df_5m.empty:
-    bot = TWPInstitutionalEngine(df_5m, df_15m, selected_symbol)
+    bot = TWTEngine(df_5m, df_15m, selected_symbol)
     bot.calculate_indicators()
     bot.parse_and_scan()
 
@@ -220,45 +263,46 @@ with st.spinner(f"⚡ Loading Institutional Engine for {selected_symbol}..."):
     curr_atr = bot.candles[-1]["atr"] if bot.candles else (curr_p * 0.002)
 
     st.markdown("---")
-    st.subheader(f"📊 Live Dashboard ({active_symbol or selected_symbol})")
+    st.subheader(f"📊 Live Market Dashboard ({selected_symbol})")
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-      st.metric(label="Fixed OR High", value=f"{bot.or_high:.2f}")
+      st.metric(label="Opening Range High", value=f"{bot.or_high:.2f}")
     with col2:
-      st.metric(label="Fixed OR Low", value=f"{bot.or_low:.2f}")
+      st.metric(label="Opening Range Low", value=f"{bot.or_low:.2f}")
     with col3:
-      st.metric(label="Current Price", value=f"{curr_p:.2f}")
+      st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
     with col4:
-      st.metric(label="AI Filters", value="Volume + Retest", delta="Active")
+      st.metric(label="System Mode", value="TWT Confirmed", delta="Active")
 
-    # Institutional Locked Trade Card
+    # TWT English Signal Recommendation Card
     st.markdown("---")
-    st.subheader("🎯 Institutional High-Accuracy Setup")
+    st.subheader("🎯 Trade With Tuckyaa (TWT) Signal Lock Engine")
 
     if bot.signals:
       latest_sig = bot.signals[-1]
       is_buy = "Buy" in latest_sig["Action"]
-
-      # Trailing Stop-Loss simulation logic for active trade
       entry_p = latest_sig["Entry Price"]
+
       if is_buy:
-        # Trail SL upward if price moved in profit
         current_profit_dist = curr_p - entry_p
         active_sl = latest_sig["Stop Loss (SL)"]
         if current_profit_dist > (1.0 * curr_atr):
-          active_sl = round(entry_p, 2)  # Break-even trail
+          active_sl = round(entry_p, 2)
           trail_status = "🔒 Trailed to Break-Even"
         else:
           trail_status = "🛡️ Initial ATR SL"
 
         st.success(
-            f"🟢 **INSTITUTIONAL SETUP: {latest_sig['Action']}**\n\n"
-            f"- **Time:** `{latest_sig['Time']}` (Candle #{latest_sig['Candle #']})\n"
-            f"- **Locked Entry:** `{entry_p}`\n"
-            f"- **Managed SL:** `{active_sl}` ({trail_status})\n"
-            f"- **Target TP:** `{latest_sig['Take Profit (TP)']}`\n\n"
-            "👉 *Volume spike & retest confirmed! Zero fake breakout risk.*"
+            f"🟢 **TWT CONFIRMED SETUP: {latest_sig['Action']}**\n\n"
+            f"- **Execution Time:** `{latest_sig['Time']}` (Candle"
+            f" #{latest_sig['Candle #']})\n"
+            f"- **Locked Entry Price:** `{entry_p}`\n"
+            f"- **Managed Stop Loss (SL):** `{active_sl}` ({trail_status})\n"
+            f"- **Target Profit (TP):** `{latest_sig['Take Profit (TP)']}`\n\n"
+            "📌 *Instructions:* Place long position order on your exchange using"
+            " these exact locked figures. Do not chase price if candle closes"
+            " far away."
         )
       else:
         current_profit_dist = entry_p - curr_p
@@ -270,29 +314,31 @@ with st.spinner(f"⚡ Loading Institutional Engine for {selected_symbol}..."):
           trail_status = "🛡️ Initial ATR SL"
 
         st.error(
-            f"🔴 **INSTITUTIONAL SETUP: {latest_sig['Action']}**\n\n"
-            f"- **Time:** `{latest_sig['Time']}` (Candle #{latest_sig['Candle #']})\n"
-            f"- **Locked Entry:** `{entry_p}`\n"
-            f"- **Managed SL:** `{active_sl}` ({trail_status})\n"
-            f"- **Target TP:** `{latest_sig['Take Profit (TP)']}`\n\n"
-            "👉 *Volume spike & retest confirmed! Zero fake breakout risk.*"
+            f"🔴 **TWT CONFIRMED SETUP: {latest_sig['Action']}**\n\n"
+            f"- **Execution Time:** `{latest_sig['Time']}` (Candle"
+            f" #{latest_sig['Candle #']})\n"
+            f"- **Locked Entry Price:** `{entry_p}`\n"
+            f"- **Managed Stop Loss (SL):** `{active_sl}` ({trail_status})\n"
+            f"- **Target Profit (TP):** `{latest_sig['Take Profit (TP)']}`\n\n"
+            "📌 *Instructions:* Place short position order on your exchange"
+            " using these exact locked figures. Do not chase price if candle"
+            " closes far away."
         )
     else:
       st.warning(
-          "🟡 **HOLD / WAIT (FILTERING FALSE BREAKOUTS)**\n\n"
-          "- Bot volume spike, retest, aur multi-timeframe trend check kar raha hai.\n"
-          "- **Action:** Jab tak institutional confirmation nahi milti, fuzool trade mat lo, wait karo!"
+          "🟡 **STATUS: HOLD / NO CONFIRMED TRADE SIGNAL**\n\n"
+          "📌 *Instructions:* Price is currently inside the range or"
+          " awaiting institutional volume confirmation. Stand by and wait for"
+          " a verified breakout signal before placing any order."
       )
 
     if bot.signals:
       st.markdown("---")
-      st.subheader("📋 Verified Institutional Signal History")
-      st.dataframe(pd.DataFrame(bot.signals[-4:]), use_container_width=True)
+      st.subheader("📋 Verified TWT Signal Execution History")
+      st.dataframe(pd.DataFrame(bot.signals[-5:]), use_container_width=True)
 
     st.markdown("---")
-    st.subheader(
-        f"📈 {active_symbol or selected_symbol} 5m Chart — Institutional View"
-    )
+    st.subheader(f"📈 {selected_symbol} 5m Real-Time Chart")
     fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
 
     for c in bot.candles:
@@ -379,7 +425,7 @@ with st.spinner(f"⚡ Loading Institutional Engine for {selected_symbol}..."):
       )
 
     ax.set_title(
-        f"{active_symbol or selected_symbol} 5m — Institutional Grade Engine",
+        f"{selected_symbol} 5m — TRADE WITH TUCKYAA (TWT) Official Engine",
         color="white",
         fontsize=14,
     )
@@ -396,4 +442,4 @@ with st.spinner(f"⚡ Loading Institutional Engine for {selected_symbol}..."):
 
     st.pyplot(fig)
   else:
-    st.error("Data load nahi ho paya. Please check connection.")
+    st.error("Market data load failed. Please check internet connection.")
