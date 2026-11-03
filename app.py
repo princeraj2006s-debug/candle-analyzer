@@ -11,12 +11,12 @@ st.set_page_config(
 )
 
 # Live auto-refresh every 10 seconds
-count = st_autorefresh(interval=10000, key="twt_fixed_candle_ist_refresh")
+count = st_autorefresh(interval=10000, key="twt_price_retracement_refresh")
 
 st.title("⚡ TRADE WITH TUCKYAA (TWT) — Ultimate Trading Dashboard")
 st.markdown(
-    f"**Live Feed Active (Refresh Count: {count}) | CCXT Engine | Fixed Candle"
-    " IST Timestamp**"
+    f"**Live Feed Active (Refresh Count: {count}) | CCXT Engine | Price Retracement"
+    " + Fixed Candle IST**"
 )
 
 # List of 30 Popular Crypto Assets, Metals, and Top Indian Market Stocks / Futures
@@ -203,54 +203,64 @@ class TWTEngine:
       elif last_15m["Close"] < last_15m["EMA_20"]:
         trend_15m = "BEARISH"
 
-    for i in range(5, len(self.candles)):
+    # Scanning with Price Retracement Method
+    for i in range(6, len(self.candles)):
       c = self.candles[i]
       prev1 = self.candles[i - 1]
+      prev2 = self.candles[i - 2]
 
       is_volume_strong = c["volume"] >= (c["vol_avg"] * 1.1)
 
-      if c["close"] > self.or_high and prev1["close"] > self.or_high:
-        if (
-            c["close"] > c["ema"]
-            and c["close"] > c["open"]
-            and is_volume_strong
-            and trend_15m != "BEARISH"
-        ):
+      # Price Retracement Buy: Price broke OR High previously and pulled back to retest OR High
+      is_retracement_buy = (
+          prev1["low"] <= self.or_high or prev2["low"] <= self.or_high
+      )
+      if (
+          c["close"] > self.or_high
+          and is_retracement_buy
+          and is_volume_strong
+          and trend_15m != "BEARISH"
+      ):
+        if c["close"] > c["ema"] and c["close"] > c["open"]:
           sl = c["close"] - (1.5 * c["atr"])
           tp = c["close"] + (2.5 * c["atr"])
           if not any(
-              s["Setup"] == "TWT Confirmed Buy"
+              s["Setup"] == "TWT Retracement Buy"
               and abs(s["Candle #"] - c["id"]) < 5
               for s in self.signals
           ):
             self.signals.append({
-                "Time": c["time"],  # Exact fixed candle IST time
+                "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": "TWT Confirmed Buy",
+                "Setup": "TWT Retracement Buy",
                 "Action": "Buy / Long (B)",
                 "Entry Price": round(c["close"], 2),
                 "Stop Loss (SL)": round(sl, 2),
                 "Take Profit (TP)": round(tp, 2),
             })
 
-      elif c["close"] < self.or_low and prev1["close"] < self.or_low:
-        if (
-            c["close"] < c["ema"]
-            and c["close"] < c["open"]
-            and is_volume_strong
-            and trend_15m != "BULLISH"
-        ):
+      # Price Retracement Sell: Price broke OR Low previously and pulled back to retest OR Low
+      is_retracement_sell = (
+          prev1["high"] >= self.or_low or prev2["high"] >= self.or_low
+      )
+      if (
+          c["close"] < self.or_low
+          and is_retracement_sell
+          and is_volume_strong
+          and trend_15m != "BULLISH"
+      ):
+        if c["close"] < c["ema"] and c["close"] < c["open"]:
           sl = c["close"] + (1.5 * c["atr"])
           tp = c["close"] - (2.5 * c["atr"])
           if not any(
-              s["Setup"] == "TWT Confirmed Sell"
+              s["Setup"] == "TWT Retracement Sell"
               and abs(s["Candle #"] - c["id"]) < 5
               for s in self.signals
           ):
             self.signals.append({
-                "Time": c["time"],  # Exact fixed candle IST time
+                "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": "TWT Confirmed Sell",
+                "Setup": "TWT Retracement Sell",
                 "Action": "Sell / Short (S)",
                 "Entry Price": round(c["close"], 2),
                 "Stop Loss (SL)": round(sl, 2),
@@ -278,11 +288,11 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
     with col3:
       st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
     with col4:
-      st.metric(label="System Mode", value="Fixed Candle IST", delta="Active")
+      st.metric(label="Entry Method", value="Price Retracement", delta="Active")
 
-    # TWT English Signal Card with Fixed Candle IST Time
+    # TWT English Signal Card with Retracement & Fixed Candle Time
     st.markdown("---")
-    st.subheader("🎯 Trade With Tuckyaa (TWT) Signal Lock Engine")
+    st.subheader("🎯 Trade With Tuckyaa (TWT) Retracement Signal Engine")
 
     if bot.signals:
       latest_sig = bot.signals[-1]
@@ -300,15 +310,14 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
           trail_status = "🛡️ Initial ATR SL"
 
         st.success(
-            f"🟢 **TWT CONFIRMED SETUP: {latest_sig['Action']}**\n\n"
+            f"🟢 **TWT RETRACEMENT SETUP: {latest_sig['Action']}**\n\n"
             f"🕒 **Candle Formation Time (IST):** `{signal_time}` (Candle"
             f" #{latest_sig['Candle #']})\n"
             f"- **Locked Entry Price:** `{entry_p}`\n"
             f"- **Managed Stop Loss (SL):** `{active_sl}` ({trail_status})\n"
             f"- **Target Profit (TP):** `{latest_sig['Take Profit (TP)']}`\n\n"
-            "📌 *Instructions:* This is the exact fixed candle time when the"
-            " breakout occurred in IST. If this time is old, wait for a fresh"
-            " candle breakout."
+            "📌 *Instructions:* Price retracement & volume confirmed! Execute"
+            " order near entry using exact figures."
         )
       else:
         current_profit_dist = entry_p - curr_p
@@ -320,21 +329,20 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
           trail_status = "🛡️ Initial ATR SL"
 
         st.error(
-            f"🔴 **TWT CONFIRMED SETUP: {latest_sig['Action']}**\n\n"
+            f"🔴 **TWT RETRACEMENT SETUP: {latest_sig['Action']}**\n\n"
             f"🕒 **Candle Formation Time (IST):** `{signal_time}` (Candle"
             f" #{latest_sig['Candle #']})\n"
             f"- **Locked Entry Price:** `{entry_p}`\n"
             f"- **Managed Stop Loss (SL):** `{active_sl}` ({trail_status})\n"
             f"- **Target Profit (TP):** `{latest_sig['Take Profit (TP)']}`\n\n"
-            "📌 *Instructions:* This is the exact fixed candle time when the"
-            " breakout occurred in IST. If this time is old, wait for a fresh"
-            " candle breakout."
+            "📌 *Instructions:* Price retracement & volume confirmed! Execute"
+            " order near entry using exact figures."
         )
     else:
       st.warning(
-          "🟡 **STATUS: HOLD / NO CONFIRMED TRADE SIGNAL**\n\n"
-          "📌 *Instructions:* Price is currently inside the range. Stand by"
-          " and wait for a verified institutional breakout candle."
+          "🟡 **STATUS: HOLD / WAITING FOR RETRACEMENT**\n\n"
+          "📌 *Instructions:* Price is inside range or awaiting valid"
+          " pullback & retest confirmation. Stand by."
       )
 
     if bot.signals:
