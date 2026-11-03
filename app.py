@@ -10,15 +10,15 @@ st.set_page_config(
 )
 
 # Live auto-refresh every 10 seconds
-count = st_autorefresh(interval=10000, key="twp_fixed_stable_refresh")
+count = st_autorefresh(interval=10000, key="twp_live_calculator_refresh")
 
-st.title("⚡ TWP ORB Ultimate Bot by TUCKYAA (100% Accurate Engine)")
+st.title("⚡ TWP ORB Ultimate Bot by TUCKYAA (Live Calculator)")
 st.markdown(
-    f"**Live Feed Active (Refresh Count: {count}) | CCXT Engine | Fixed Session"
-    " ORB + EMA + ATR**"
+    f"**Live Feed Active (Refresh Count: {count}) | CCXT Engine | Fixed ORB +"
+    " Live Running SL/TP Calculator**"
 )
 
-# Asset Selection Dropdown (Gold XAUT/USDT & BTC/USDT)
+# Asset Selection Dropdown
 selected_symbol = st.selectbox(
     "Select Trading Asset / Market", options=["XAUT/USDT", "BTC/USDT", "ETH/USDT"], index=0
 )
@@ -54,7 +54,7 @@ def fetch_twp_full_data(symbol):
 df_5m, active_symbol = fetch_twp_full_data(selected_symbol)
 
 
-class TWPStableEngine:
+class TWPLiveEngine:
 
   def __init__(self, df, symbol):
     self.df = df if df is not None else None
@@ -66,7 +66,6 @@ class TWPStableEngine:
 
   def calculate_indicators(self):
     if self.df is not None and len(self.df) >= 30:
-      # FIXED SESSION OPENING RANGE: Lock to the first 4 candles of the current day/session
       current_date = self.df.index[-1].date()
       day_df = self.df[self.df.index.date == current_date]
       monitoring_df = day_df.head(4) if len(day_df) >= 4 else self.df.head(4)
@@ -74,10 +73,8 @@ class TWPStableEngine:
       self.or_high = float(monitoring_df["High"].max())
       self.or_low = float(monitoring_df["Low"].min())
 
-      # EMA Trend Filter (50 EMA)
       self.df["EMA"] = self.df["Close"].ewm(span=50, adjust=False).mean()
 
-      # ATR (Average True Range) for dynamic Stop Loss & Take Profit
       self.df["TR"] = np.maximum(
           self.df["High"] - self.df["Low"],
           np.maximum(
@@ -115,14 +112,12 @@ class TWPStableEngine:
           "atr": atr,
       })
 
-    # Breakout Entry Logic with Fixed OR Levels & EMA Trend Filter
     for i in range(4, len(self.candles)):
       c = self.candles[i]
       prev = self.candles[i - 1]
 
-      # Bullish Breakout (Strict Buy Signal)
       if c["close"] > self.or_high and prev["close"] <= self.or_high:
-        if c["close"] > c["ema"]:  # Must be above EMA for Buy
+        if c["close"] > c["ema"]:
           sl = c["close"] - (1.5 * c["atr"])
           tp = c["close"] + (2.5 * c["atr"])
           self.signals.append({
@@ -135,9 +130,8 @@ class TWPStableEngine:
               "Take Profit (TP)": round(tp, 2),
           })
 
-      # Bearish Breakout (Strict Sell Signal)
       elif c["close"] < self.or_low and prev["close"] >= self.or_low:
-        if c["close"] < c["ema"]:  # Must be below EMA for Sell
+        if c["close"] < c["ema"]:
           sl = c["close"] + (1.5 * c["atr"])
           tp = c["close"] - (2.5 * c["atr"])
           self.signals.append({
@@ -151,16 +145,17 @@ class TWPStableEngine:
           })
 
 
-with st.spinner(f"⚡ Loading Accurate TWP Engine for {selected_symbol}..."):
+with st.spinner(f"⚡ Loading Live Engine for {selected_symbol}..."):
   if df_5m is not None and not df_5m.empty:
-    bot = TWPStableEngine(df_5m, selected_symbol)
+    bot = TWPLiveEngine(df_5m, selected_symbol)
     bot.calculate_indicators()
     bot.parse_and_scan()
 
     curr_p = bot.candles[-1]["close"] if bot.candles else 0.0
+    curr_atr = bot.candles[-1]["atr"] if bot.candles else (curr_p * 0.002)
 
     st.markdown("---")
-    st.subheader(f"📊 TWP Bot Dashboard & Settings ({active_symbol or selected_symbol})")
+    st.subheader(f"📊 Live Market Dashboard ({active_symbol or selected_symbol})")
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
@@ -168,47 +163,48 @@ with st.spinner(f"⚡ Loading Accurate TWP Engine for {selected_symbol}..."):
     with col2:
       st.metric(label="Fixed OR Low", value=f"{bot.or_low:.2f}")
     with col3:
-      st.metric(label="Current Price", value=f"{curr_p:.2f}")
+      st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
     with col4:
-      st.metric(
-          label="News Filter Status",
-          value="Safe",
-          delta="Active",
-      )
+      st.metric(label="Current ATR Volatility", value=f"{curr_atr:.2f}")
 
-    # Live Recommendation Box (Abhi kya karna chahiye)
+    # Live Running Price Calculator & Action Recommendation Box
     st.markdown("---")
-    if curr_p > bot.or_high:
+    st.subheader("⚡ Live Running Price Entry & Risk Calculator")
+    
+    live_col1, live_col2, live_col3 = st.columns(3)
+    with live_col1:
+      st.info(
+          f"**Current Price:** `{curr_p:.2f}`\n\n*Status:* Market is live"
+      )
+    with live_col2:
+      live_buy_sl = round(curr_p - (1.5 * curr_atr), 2)
+      live_buy_tp = round(curr_p + (2.5 * curr_atr), 2)
       st.success(
-          "🟢 **LIVE MARKET STATUS: BULLISH BREAKOUT** 👉 Market Opening Range"
-          f" High ({bot.or_high:.2f}) ke upar chal raha hai. **Action: Look for"
-          " BUY / LONG opportunities!**"
+          "🟢 **If taking BUY now:**\n"
+          f"- **Entry:** `{curr_p:.2f}`\n"
+          f"- **SL:** `{live_buy_sl}`\n"
+          f"- **TP:** `{live_buy_tp}`"
       )
-    elif curr_p < bot.or_low:
+    with live_col3:
+      live_sell_sl = round(curr_p + (1.5 * curr_atr), 2)
+      live_sell_tp = round(curr_p - (2.5 * curr_atr), 2)
       st.error(
-          "🔴 **LIVE MARKET STATUS: BEARISH BREAKOUT** 👉 Market Opening Range"
-          f" Low ({bot.or_low:.2f}) ke neeche chal raha hai. **Action: Look for"
-          " SELL / SHORT opportunities!**"
-      )
-    else:
-      st.warning(
-          "🟡 **LIVE MARKET STATUS: RANGE BOUND** 👉 Market apne Opening Range"
-          f" ({bot.or_low:.2f} - {bot.or_high:.2f}) ke andar hai. **Action:"
-          " Wait for clear breakout!**"
+          "🔴 **If taking SELL now:**\n"
+          f"- **Entry:** `{curr_p:.2f}`\n"
+          f"- **SL:** `{live_sell_sl}`\n"
+          f"- **TP:** `{live_sell_tp}`"
       )
 
     if bot.signals:
       st.markdown("---")
-      st.subheader("📋 Verified Breakout Signals with Time & ATR SL/TP")
+      st.subheader("📋 Verified Breakout Signals History")
       st.dataframe(pd.DataFrame(bot.signals[-4:]), use_container_width=True)
     else:
-      st.info(
-          f"💡 Bot is monitoring {selected_symbol} with fixed session levels..."
-      )
+      st.info(f"💡 Monitoring {selected_symbol} for next breakout setup...")
 
     st.markdown("---")
     st.subheader(
-        f"📈 {active_symbol or selected_symbol} 5m Chart — Accurate Breakout View"
+        f"📈 {active_symbol or selected_symbol} 5m Chart — Live Running View"
     )
     fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
 
@@ -232,13 +228,12 @@ with st.spinner(f"⚡ Loading Accurate TWP Engine for {selected_symbol}..."):
       )
       ax.vlines(c["id"], c["low"], c["high"], color="#b2b5be", linewidth=1.3)
 
-    # Plot Fixed OR High & Low Lines
     ax.axhline(
         bot.or_high,
         color="#ff7043",
         linestyle="--",
         linewidth=2,
-        label="OR High (Resistance)",
+        label="OR High",
     )
     ax.text(
         2,
@@ -254,7 +249,7 @@ with st.spinner(f"⚡ Loading Accurate TWP Engine for {selected_symbol}..."):
         color="#26a69a",
         linestyle="--",
         linewidth=2,
-        label="OR Low (Support)",
+        label="OR Low",
     )
     ax.text(
         2,
@@ -265,7 +260,6 @@ with st.spinner(f"⚡ Loading Accurate TWP Engine for {selected_symbol}..."):
         fontsize=10,
     )
 
-    # Auto-adjust Y-axis limits with padding so nothing cuts off
     lows = [c["low"] for c in bot.candles]
     highs = [c["high"] for c in bot.candles]
     if bot.or_high > 0:
@@ -279,7 +273,6 @@ with st.spinner(f"⚡ Loading Accurate TWP Engine for {selected_symbol}..."):
         margin = curr_p * 0.005
       ax.set_ylim(min(lows) - margin, max(highs) + margin)
 
-    # Plot Signals on Chart with exact Time tags
     for sig in bot.signals[-3:]:
       tag = "B" if "Buy" in sig["Action"] else "S"
       tag_color = "#00e676" if tag == "B" else "#ff1744"
@@ -293,7 +286,7 @@ with st.spinner(f"⚡ Loading Accurate TWP Engine for {selected_symbol}..."):
       )
 
     ax.set_title(
-        f"{active_symbol or selected_symbol} 5m — 100% Accurate Breakout Engine",
+        f"{active_symbol or selected_symbol} 5m — Live Calculator Engine",
         color="white",
         fontsize=14,
     )
@@ -310,7 +303,5 @@ with st.spinner(f"⚡ Loading Accurate TWP Engine for {selected_symbol}..."):
 
     st.pyplot(fig)
   else:
-    st.error(
-        f"Selected asset ({selected_symbol}) data load nahi ho paya. Please"
-        " check connection or symbol support."
-    )
+    st.error("Data load nahi ho paya. Please check connection.")
+
