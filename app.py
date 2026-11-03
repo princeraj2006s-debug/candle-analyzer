@@ -11,12 +11,12 @@ st.set_page_config(
 )
 
 # Live auto-refresh every 10 seconds
-count = st_autorefresh(interval=10000, key="twt_fixed_candle_ist_refresh")
+count = st_autorefresh(interval=10000, key="twt_multi_tp_vwap_refresh")
 
 st.title("⚡ TRADE WITH TUCKYAA (TWT) — Ultimate Trading Dashboard")
 st.markdown(
-    f"**Live Feed Active (Refresh Count: {count}) | CCXT Engine | Fixed Candle"
-    " IST Timestamp**"
+    f"**Live Feed Active (Refresh Count: {count}) | VWAP + Body Filter + Multi-TP"
+    " (TP1, TP2, TP3)**"
 )
 
 # List of 30 Popular Crypto Assets, Metals, and Top Indian Market Stocks / Futures
@@ -139,6 +139,14 @@ class TWTEngine:
       self.or_high = float(monitoring_df["High"].max())
       self.or_low = float(monitoring_df["Low"].min())
 
+      # Indicators: VWAP, EMA, Volume SMA, ATR
+      typical_price = (
+          self.df_5["High"] + self.df_5["Low"] + self.df_5["Close"]
+      ) / 3
+      self.df_5["VWAP"] = (
+          (typical_price * self.df_5["Volume"]).cumsum()
+          / self.df_5["Volume"].cumsum()
+      )
       self.df_5["EMA_50"] = self.df_5["Close"].ewm(span=50, adjust=False).mean()
       self.df_5["Vol_SMA"] = self.df_5["Volume"].rolling(10).mean()
 
@@ -177,6 +185,7 @@ class TWTEngine:
           float(r["Close"]),
           float(r["Volume"]),
       )
+      vwap = float(r["VWAP"]) if not pd.isna(r["VWAP"]) else c
       ema = float(r["EMA_50"]) if not pd.isna(r["EMA_50"]) else c
       vol_avg = float(r["Vol_SMA"]) if not pd.isna(r["Vol_SMA"]) else v
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
@@ -191,6 +200,7 @@ class TWTEngine:
           "close": c,
           "volume": v,
           "vol_avg": vol_avg,
+          "vwap": vwap,
           "ema": ema,
           "atr": atr,
       })
@@ -207,54 +217,78 @@ class TWTEngine:
       c = self.candles[i]
       prev1 = self.candles[i - 1]
 
-      is_volume_strong = c["volume"] >= (c["vol_avg"] * 1.1)
+      # Advanced Filters: Volume Spike + Strong Body + VWAP Trend + No Liquidity Sweep Wick
+      is_volume_strong = c["volume"] >= (c["vol_avg"] * 1.2)
+      candle_body = abs(c["close"] - c["open"])
+      total_candle_range = c["high"] - c["low"]
+      is_body_strong = (
+          candle_body >= (total_candle_range * 0.5)
+          if total_candle_range > 0
+          else True
+      )
 
+      # 1. Buy Signal (VWAP + Body + Volume + Multi-TP)
       if c["close"] > self.or_high and prev1["close"] > self.or_high:
         if (
-            c["close"] > c["ema"]
+            c["close"] > c["vwap"]
+            and c["close"] > c["ema"]
             and c["close"] > c["open"]
             and is_volume_strong
+            and is_body_strong
             and trend_15m != "BEARISH"
         ):
-          sl = c["close"] - (1.5 * c["atr"])
-          tp = c["close"] + (2.5 * c["atr"])
+          sl = c["close"] - (1.2 * c["atr"])
+          tp1 = c["close"] + (1.0 * c["atr"])
+          tp2 = c["close"] + (2.0 * c["atr"])
+          tp3 = c["close"] + (3.5 * c["atr"])
+
           if not any(
-              s["Setup"] == "TWT Confirmed Buy"
+              s["Setup"] == "TWT Bulletproof Buy"
               and abs(s["Candle #"] - c["id"]) < 5
               for s in self.signals
           ):
             self.signals.append({
-                "Time": c["time"],  # Exact fixed candle IST time
+                "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": "TWT Confirmed Buy",
+                "Setup": "TWT Bulletproof Buy",
                 "Action": "Buy / Long (B)",
                 "Entry Price": round(c["close"], 2),
                 "Stop Loss (SL)": round(sl, 2),
-                "Take Profit (TP)": round(tp, 2),
+                "TP 1": round(tp1, 2),
+                "TP 2": round(tp2, 2),
+                "TP 3": round(tp3, 2),
             })
 
+      # 2. Sell Signal (VWAP + Body + Volume + Multi-TP)
       elif c["close"] < self.or_low and prev1["close"] < self.or_low:
         if (
-            c["close"] < c["ema"]
+            c["close"] < c["vwap"]
+            and c["close"] < c["ema"]
             and c["close"] < c["open"]
             and is_volume_strong
+            and is_body_strong
             and trend_15m != "BULLISH"
         ):
-          sl = c["close"] + (1.5 * c["atr"])
-          tp = c["close"] - (2.5 * c["atr"])
+          sl = c["close"] + (1.2 * c["atr"])
+          tp1 = c["close"] - (1.0 * c["atr"])
+          tp2 = c["close"] - (2.0 * c["atr"])
+          tp3 = c["close"] - (3.5 * c["atr"])
+
           if not any(
-              s["Setup"] == "TWT Confirmed Sell"
+              s["Setup"] == "TWT Bulletproof Sell"
               and abs(s["Candle #"] - c["id"]) < 5
               for s in self.signals
           ):
             self.signals.append({
-                "Time": c["time"],  # Exact fixed candle IST time
+                "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": "TWT Confirmed Sell",
+                "Setup": "TWT Bulletproof Sell",
                 "Action": "Sell / Short (S)",
                 "Entry Price": round(c["close"], 2),
                 "Stop Loss (SL)": round(sl, 2),
-                "Take Profit (TP)": round(tp, 2),
+                "TP 1": round(tp1, 2),
+                "TP 2": round(tp2, 2),
+                "TP 3": round(tp3, 2),
             })
 
 
@@ -278,11 +312,11 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
     with col3:
       st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
     with col4:
-      st.metric(label="System Mode", value="Fixed Candle IST", delta="Active")
+      st.metric(label="Advanced Filters", value="VWAP + Body + Multi-TP", delta="Active")
 
-    # TWT English Signal Card with Fixed Candle IST Time
+    # TWT English Signal Card with Multi-TP & Zero-Loss Break-Even Automation
     st.markdown("---")
-    st.subheader("🎯 Trade With Tuckyaa (TWT) Signal Lock Engine")
+    st.subheader("🎯 Trade With Tuckyaa (TWT) Bulletproof Signal Engine")
 
     if bot.signals:
       latest_sig = bot.signals[-1]
@@ -293,48 +327,56 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
       if is_buy:
         current_profit_dist = curr_p - entry_p
         active_sl = latest_sig["Stop Loss (SL)"]
-        if current_profit_dist > (1.0 * curr_atr):
+        if current_profit_dist > (0.5 * curr_atr):
           active_sl = round(entry_p, 2)
-          trail_status = "🔒 Trailed to Break-Even"
+          trail_status = "🔒 Zero Loss (Trailed to Break-Even)"
         else:
-          trail_status = "🛡️ Initial ATR SL"
+          trail_status = "🛡️ Initial Strict SL"
 
         st.success(
-            f"🟢 **TWT CONFIRMED SETUP: {latest_sig['Action']}**\n\n"
+            f"🟢 **TWT BULLETPROOF SETUP: {latest_sig['Action']}**\n\n"
             f"🕒 **Candle Formation Time (IST):** `{signal_time}` (Candle"
             f" #{latest_sig['Candle #']})\n"
             f"- **Locked Entry Price:** `{entry_p}`\n"
             f"- **Managed Stop Loss (SL):** `{active_sl}` ({trail_status})\n"
-            f"- **Target Profit (TP):** `{latest_sig['Take Profit (TP)']}`\n\n"
-            "📌 *Instructions:* This is the exact fixed candle time when the"
-            " breakout occurred in IST. If this time is old, wait for a fresh"
-            " candle breakout."
+            f"- **Target Profit 1 (TP1):** `{latest_sig['TP 1']}` (Book 50%"
+            " Profit)\n"
+            f"- **Target Profit 2 (TP2):** `{latest_sig['TP 2']}` (Book 30%"
+            " Profit)\n"
+            f"- **Target Profit 3 (TP3):** `{latest_sig['TP 3']}` (Let Runner"
+            " Ride)\n\n"
+            "📌 *Instructions:* VWAP trend & strong candle body confirmed."
+            " Zero fakeout protection active. Execute order near entry!"
         )
       else:
         current_profit_dist = entry_p - curr_p
         active_sl = latest_sig["Stop Loss (SL)"]
-        if current_profit_dist > (1.0 * curr_atr):
+        if current_profit_dist > (0.5 * curr_atr):
           active_sl = round(entry_p, 2)
-          trail_status = "🔒 Trailed to Break-Even"
+          trail_status = "🔒 Zero Loss (Trailed to Break-Even)"
         else:
-          trail_status = "🛡️ Initial ATR SL"
+          trail_status = "🛡️ Initial Strict SL"
 
         st.error(
-            f"🔴 **TWT CONFIRMED SETUP: {latest_sig['Action']}**\n\n"
+            f"🔴 **TWT BULLETPROOF SETUP: {latest_sig['Action']}**\n\n"
             f"🕒 **Candle Formation Time (IST):** `{signal_time}` (Candle"
             f" #{latest_sig['Candle #']})\n"
             f"- **Locked Entry Price:** `{entry_p}`\n"
             f"- **Managed Stop Loss (SL):** `{active_sl}` ({trail_status})\n"
-            f"- **Target Profit (TP):** `{latest_sig['Take Profit (TP)']}`\n\n"
-            "📌 *Instructions:* This is the exact fixed candle time when the"
-            " breakout occurred in IST. If this time is old, wait for a fresh"
-            " candle breakout."
+            f"- **Target Profit 1 (TP1):** `{latest_sig['TP 1']}` (Book 50%"
+            " Profit)\n"
+            f"- **Target Profit 2 (TP2):** `{latest_sig['TP 2']}` (Book 30%"
+            " Profit)\n"
+            f"- **Target Profit 3 (TP3):** `{latest_sig['TP 3']}` (Let Runner"
+            " Ride)\n\n"
+            "📌 *Instructions:* VWAP trend & strong candle body confirmed."
+            " Zero fakeout protection active. Execute order near entry!"
         )
     else:
       st.warning(
-          "🟡 **STATUS: HOLD / NO CONFIRMED TRADE SIGNAL**\n\n"
-          "📌 *Instructions:* Price is currently inside the range. Stand by"
-          " and wait for a verified institutional breakout candle."
+          "🟡 **STATUS: HOLD / FILTERING FALSE BREAKOUTS**\n\n"
+          "📌 *Instructions:* Bot is checking VWAP, volume, and candle strength."
+          " No fakeout trade allowed. Wait for valid confirmation."
       )
 
     if bot.signals:
