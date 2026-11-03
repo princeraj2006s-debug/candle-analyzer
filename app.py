@@ -11,12 +11,12 @@ st.set_page_config(
 )
 
 # Live auto-refresh every 10 seconds
-count = st_autorefresh(interval=10000, key="twt_ist_time_refresh")
+count = st_autorefresh(interval=10000, key="twt_fixed_candle_ist_refresh")
 
 st.title("⚡ TRADE WITH TUCKYAA (TWT) — Ultimate Trading Dashboard")
 st.markdown(
-    f"**Live Feed Active (Refresh Count: {count}) | CCXT Engine | IST Signal"
-    " Timestamp Engine**"
+    f"**Live Feed Active (Refresh Count: {count}) | CCXT Engine | Fixed Candle"
+    " IST Timestamp**"
 )
 
 # List of 30 Popular Crypto Assets, Metals, and Top Indian Market Stocks / Futures
@@ -160,8 +160,15 @@ class TWTEngine:
     if self.df_5 is None or self.df_5.empty:
       return
 
+    IST = timezone(timedelta(hours=5, minutes=30))
+
     for idx, row in enumerate(self.df_5.iterrows()):
-      timestamp_str = row[0].strftime("%H:%M")
+      dt_utc = row[0]
+      if dt_utc.tzinfo is None:
+        dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+      dt_ist = dt_utc.astimezone(IST)
+      timestamp_str = dt_ist.strftime("%H:%M")
+
       r = row[1]
       o, h, l, c, v = (
           float(r["Open"]),
@@ -202,10 +209,6 @@ class TWTEngine:
 
       is_volume_strong = c["volume"] >= (c["vol_avg"] * 1.1)
 
-      # IST Timezone setup (UTC + 5:30)
-      IST = timezone(timedelta(hours=5, minutes=30))
-      ist_now_str = datetime.now(IST).strftime("%H:%M:%S")
-
       if c["close"] > self.or_high and prev1["close"] > self.or_high:
         if (
             c["close"] > c["ema"]
@@ -221,7 +224,7 @@ class TWTEngine:
               for s in self.signals
           ):
             self.signals.append({
-                "Time": ist_now_str,
+                "Time": c["time"],  # Exact fixed candle IST time
                 "Candle #": c["id"],
                 "Setup": "TWT Confirmed Buy",
                 "Action": "Buy / Long (B)",
@@ -245,7 +248,7 @@ class TWTEngine:
               for s in self.signals
           ):
             self.signals.append({
-                "Time": ist_now_str,
+                "Time": c["time"],  # Exact fixed candle IST time
                 "Candle #": c["id"],
                 "Setup": "TWT Confirmed Sell",
                 "Action": "Sell / Short (S)",
@@ -275,9 +278,9 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
     with col3:
       st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
     with col4:
-      st.metric(label="System Mode", value="TWT IST Clock", delta="Active")
+      st.metric(label="System Mode", value="Fixed Candle IST", delta="Active")
 
-    # TWT English Signal Card with IST Time Display
+    # TWT English Signal Card with Fixed Candle IST Time
     st.markdown("---")
     st.subheader("🎯 Trade With Tuckyaa (TWT) Signal Lock Engine")
 
@@ -298,14 +301,14 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
 
         st.success(
             f"🟢 **TWT CONFIRMED SETUP: {latest_sig['Action']}**\n\n"
-            f"🕒 **Signal Generated Time (IST):** `{signal_time}` (Candle"
+            f"🕒 **Candle Formation Time (IST):** `{signal_time}` (Candle"
             f" #{latest_sig['Candle #']})\n"
             f"- **Locked Entry Price:** `{entry_p}`\n"
             f"- **Managed Stop Loss (SL):** `{active_sl}` ({trail_status})\n"
             f"- **Target Profit (TP):** `{latest_sig['Take Profit (TP)']}`\n\n"
-            "📌 *Instructions:* Check the Indian Standard Time (IST) above. If"
-            " this timestamp is recent, execute the order near entry. If too"
-            " old, wait for a fresh breakout."
+            "📌 *Instructions:* This is the exact fixed candle time when the"
+            " breakout occurred in IST. If this time is old, wait for a fresh"
+            " candle breakout."
         )
       else:
         current_profit_dist = entry_p - curr_p
@@ -318,20 +321,20 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
 
         st.error(
             f"🔴 **TWT CONFIRMED SETUP: {latest_sig['Action']}**\n\n"
-            f"🕒 **Signal Generated Time (IST):** `{signal_time}` (Candle"
+            f"🕒 **Candle Formation Time (IST):** `{signal_time}` (Candle"
             f" #{latest_sig['Candle #']})\n"
             f"- **Locked Entry Price:** `{entry_p}`\n"
             f"- **Managed Stop Loss (SL):** `{active_sl}` ({trail_status})\n"
             f"- **Target Profit (TP):** `{latest_sig['Take Profit (TP)']}`\n\n"
-            "📌 *Instructions:* Check the Indian Standard Time (IST) above. If"
-            " this timestamp is recent, execute the order near entry. If too"
-            " old, wait for a fresh breakout."
+            "📌 *Instructions:* This is the exact fixed candle time when the"
+            " breakout occurred in IST. If this time is old, wait for a fresh"
+            " candle breakout."
         )
     else:
       st.warning(
           "🟡 **STATUS: HOLD / NO CONFIRMED TRADE SIGNAL**\n\n"
           "📌 *Instructions:* Price is currently inside the range. Stand by"
-          " and wait for a verified institutional breakout signal."
+          " and wait for a verified institutional breakout candle."
       )
 
     if bot.signals:
