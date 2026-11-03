@@ -10,12 +10,12 @@ st.set_page_config(
 )
 
 # Live auto-refresh every 10 seconds
-count = st_autorefresh(interval=10000, key="twp_smart_rolling_refresh")
+count = st_autorefresh(interval=10000, key="twp_locked_signal_refresh")
 
-st.title("⚡ TWP ORB Ultimate Bot by TUCKYAA (Smart Rolling Engine)")
+st.title("⚡ TWP ORB Ultimate Bot by TUCKYAA (Locked Entry Engine)")
 st.markdown(
-    f"**Live Feed Active (Refresh Count: {count}) | CCXT Engine | Dynamic Range +"
-    " Zero Confusion**"
+    f"**Live Feed Active (Refresh Count: {count}) | CCXT Engine | Locked Targets +"
+    " No Fluctuation**"
 )
 
 # Asset Selection Dropdown
@@ -54,7 +54,7 @@ def fetch_twp_full_data(symbol):
 df_5m, active_symbol = fetch_twp_full_data(selected_symbol)
 
 
-class TWPSmartRollingEngine:
+class TWPLockedEngine:
 
   def __init__(self, df, symbol):
     self.df = df if df is not None else None
@@ -66,21 +66,14 @@ class TWPSmartRollingEngine:
 
   def calculate_indicators(self):
     if self.df is not None and len(self.df) >= 30:
-      # SMART ROLLING RANGE: Use recent consolidation range (last 12 candles window) for dynamic breakout
-      recent_window = self.df.tail(24)
-      monitoring_df = recent_window.head(6) # Reference session window
+      current_date = self.df.index[-1].date()
+      day_df = self.df[self.df.index.date == current_date]
+      monitoring_df = day_df.head(4) if len(day_df) >= 4 else self.df.head(4)
 
       self.or_high = float(monitoring_df["High"].max())
       self.or_low = float(monitoring_df["Low"].min())
 
-      # Ensure current price has breathing room from levels
-      curr = float(self.df["Close"].iloc[-1])
-      if curr > self.or_high + (curr * 0.005):
-        # If market broke way above, shift reference range up
-        self.or_high = float(recent_window.tail(10)["High"].min())
-        self.or_low = float(recent_window.tail(10)["Low"].max())
-
-      self.df["EMA"] = self.df["Close"].ewm(span=20, adjust=False).mean()
+      self.df["EMA"] = self.df["Close"].ewm(span=50, adjust=False).mean()
 
       self.df["TR"] = np.maximum(
           self.df["High"] - self.df["Low"],
@@ -119,104 +112,103 @@ class TWPSmartRollingEngine:
           "atr": atr,
       })
 
-    # Clean Breakout Logic with EMA momentum confirmation
-    for i in range(4, len(self.candles)):
+    # Strict Confirmed Breakout Logic
+    for i in range(5, len(self.candles)):
       c = self.candles[i]
-      prev = self.candles[i - 1]
+      prev1 = self.candles[i - 1]
 
-      # Bullish Breakout
-      if c["close"] > self.or_high and prev["close"] <= self.or_high:
-        if c["close"] > c["ema"]:
+      if c["close"] > self.or_high and prev1["close"] > self.or_high:
+        if c["close"] > c["ema"] and c["close"] > c["open"]:
           sl = c["close"] - (1.5 * c["atr"])
           tp = c["close"] + (2.5 * c["atr"])
-          self.signals.append({
-              "Time": c["time"],
-              "Candle #": c["id"],
-              "Setup": "Dynamic Bullish Breakout",
-              "Action": "Buy / Long (B)",
-              "Entry Price": round(c["close"], 2),
-              "Stop Loss (SL)": round(sl, 2),
-              "Take Profit (TP)": round(tp, 2),
-          })
+          if not any(s["Setup"] == "Confirmed Buy" and abs(s["Candle #"] - c["id"]) < 5 for s in self.signals):
+            self.signals.append({
+                "Time": c["time"],
+                "Candle #": c["id"],
+                "Setup": "Confirmed Buy",
+                "Action": "Buy / Long (B)",
+                "Entry Price": round(c["close"], 2),
+                "Stop Loss (SL)": round(sl, 2),
+                "Take Profit (TP)": round(tp, 2),
+            })
 
-      # Bearish Breakout
-      elif c["close"] < self.or_low and prev["close"] >= self.or_low:
-        if c["close"] < c["ema"]:
+      elif c["close"] < self.or_low and prev1["close"] < self.or_low:
+        if c["close"] < c["ema"] and c["close"] < c["open"]:
           sl = c["close"] + (1.5 * c["atr"])
           tp = c["close"] - (2.5 * c["atr"])
-          self.signals.append({
-              "Time": c["time"],
-              "Candle #": c["id"],
-              "Setup": "Dynamic Bearish Breakout",
-              "Action": "Sell / Short (S)",
-              "Entry Price": round(c["close"], 2),
-              "Stop Loss (SL)": round(sl, 2),
-              "Take Profit (TP)": round(tp, 2),
-          })
+          if not any(s["Setup"] == "Confirmed Sell" and abs(s["Candle #"] - c["id"]) < 5 for s in self.signals):
+            self.signals.append({
+                "Time": c["time"],
+                "Candle #": c["id"],
+                "Setup": "Confirmed Sell",
+                "Action": "Sell / Short (S)",
+                "Entry Price": round(c["close"], 2),
+                "Stop Loss (SL)": round(sl, 2),
+                "Take Profit (TP)": round(tp, 2),
+            })
 
 
-with st.spinner(f"⚡ Loading Smart Engine for {selected_symbol}..."):
+with st.spinner(f"⚡ Loading Locked Engine for {selected_symbol}..."):
   if df_5m is not None and not df_5m.empty:
-    bot = TWPSmartRollingEngine(df_5m, selected_symbol)
+    bot = TWPLockedEngine(df_5m, selected_symbol)
     bot.calculate_indicators()
     bot.parse_and_scan()
 
     curr_p = bot.candles[-1]["close"] if bot.candles else 0.0
-    curr_atr = bot.candles[-1]["atr"] if bot.candles else (curr_p * 0.002)
 
     st.markdown("---")
     st.subheader(f"📊 Live Dashboard ({active_symbol or selected_symbol})")
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-      st.metric(label="Dynamic Range High", value=f"{bot.or_high:.2f}")
+      st.metric(label="Fixed OR High", value=f"{bot.or_high:.2f}")
     with col2:
-      st.metric(label="Dynamic Range Low", value=f"{bot.or_low:.2f}")
+      st.metric(label="Fixed OR Low", value=f"{bot.or_low:.2f}")
     with col3:
       st.metric(label="Current Price", value=f"{curr_p:.2f}")
     with col4:
-      st.metric(label="Trend Status", value="Active", delta="Live")
+      st.metric(label="Status", value="Locked & Active", delta="Stable")
 
-    # Single Clear Action Card
+    # Locked Single Signal Card
     st.markdown("---")
-    st.subheader("🎯 Live Market Direction & Action")
+    st.subheader("🎯 Locked Active Trade Setup")
 
-    if curr_p > bot.or_high:
-      buy_sl = round(curr_p - (1.5 * curr_atr), 2)
-      buy_tp = round(curr_p + (2.5 * curr_atr), 2)
-      st.success(
-          "🟢 **BULLISH SETUP: BUY / LONG (B)**\n\n"
-          f"- **Reason:** Market Range High ({bot.or_high:.2f}) ke upar nikal chuka hai aur momentum bullish hai!\n"
-          f"- **Entry Price:** `{curr_p:.2f}`\n"
-          f"- **Stop Loss (SL):** `{buy_sl}`\n"
-          f"- **Take Profit (TP):** `{buy_tp}`"
-      )
-    elif curr_p < bot.or_low:
-      sell_sl = round(curr_p + (1.5 * curr_atr), 2)
-      sell_tp = round(curr_p - (2.5 * curr_atr), 2)
-      st.error(
-          "🔴 **BEARISH SETUP: SELL / SHORT (S)**\n\n"
-          f"- **Reason:** Market Range Low ({bot.or_low:.2f}) ke neeche gir chuka hai!\n"
-          f"- **Entry Price:** `{curr_p:.2f}`\n"
-          f"- **Stop Loss (SL):** `{sell_sl}`\n"
-          f"- **Take Profit (TP):** `{sell_tp}`"
-      )
+    if bot.signals:
+      latest_sig = bot.signals[-1]
+      is_buy = "Buy" in latest_sig["Action"]
+      
+      if is_buy:
+        st.success(
+            f"🟢 **LOCKED SETUP: {latest_sig['Action']}**\n\n"
+            f"- **Breakout Time:** `{latest_sig['Time']}` (Candle #{latest_sig['Candle #']})\n"
+            f"- **Locked Entry Price:** `{latest_sig['Entry Price']}`\n"
+            f"- **Locked Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
+            f"- **Locked Take Profit (TP):** `{latest_sig['Take Profit (TP)']}`\n\n"
+            "👉 *Ye entry price tab tak locked rahegi jab tak target ya SL hit nahi hota!*"
+        )
+      else:
+        st.error(
+            f"🔴 **LOCKED SETUP: {latest_sig['Action']}**\n\n"
+            f"- **Breakout Time:** `{latest_sig['Time']}` (Candle #{latest_sig['Candle #']})\n"
+            f"- **Locked Entry Price:** `{latest_sig['Entry Price']}`\n"
+            f"- **Locked Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
+            f"- **Locked Take Profit (TP):** `{latest_sig['Take Profit (TP)']}`\n\n"
+            "👉 *Ye entry price tab tak locked rahegi jab tak target ya SL hit nahi hota!*"
+        )
     else:
       st.warning(
-          "🟡 **HOLD / RANGE BOUND (WAIT)**\n\n"
-          f"- Market abhi range ({bot.or_low:.2f} - {bot.or_high:.2f}) ke beech me hai.\n"
-          "- **Action:** Jab tak proper breakout na ho, tab tak wait karo!"
+          "🟡 **HOLD / WAIT (NO LOCKED SIGNAL YET)**\n\n"
+          "- Abhi koi bhi confirmed breakout nahi hua hai.\n"
+          "- **Action:** Fuzool me entry mat lo, jab tak proper locked signal na aaye, wait karo!"
       )
 
     if bot.signals:
       st.markdown("---")
-      st.subheader("📋 Recent Breakout Signals History")
+      st.subheader("📋 Locked Signal History")
       st.dataframe(pd.DataFrame(bot.signals[-4:]), use_container_width=True)
-    else:
-      st.info(f"💡 Monitoring {selected_symbol} for active breakout...")
 
     st.markdown("---")
-    st.subheader(f"📈 {active_symbol or selected_symbol} 5m Chart — Dynamic View")
+    st.subheader(f"📈 {active_symbol or selected_symbol} 5m Chart — Locked View")
     fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
 
     for c in bot.candles:
@@ -250,12 +242,12 @@ with st.spinner(f"⚡ Loading Smart Engine for {selected_symbol}..."):
         color="#ff7043",
         linestyle="--",
         linewidth=2,
-        label="Range High",
+        label="OR High",
     )
     ax.text(
         2,
         bot.or_high,
-        f"  Range High ({bot.or_high:.1f})",
+        f"  OR High ({bot.or_high:.1f})",
         color="#ff7043",
         weight="bold",
         fontsize=10,
@@ -266,12 +258,12 @@ with st.spinner(f"⚡ Loading Smart Engine for {selected_symbol}..."):
         color="#26a69a",
         linestyle="--",
         linewidth=2,
-        label="Range Low",
+        label="OR Low",
     )
     ax.text(
         2,
         bot.or_low,
-        f"  Range Low ({bot.or_low:.1f})",
+        f"  OR Low ({bot.or_low:.1f})",
         color="#26a69a",
         weight="bold",
         fontsize=10,
@@ -303,7 +295,7 @@ with st.spinner(f"⚡ Loading Smart Engine for {selected_symbol}..."):
       )
 
     ax.set_title(
-        f"{active_symbol or selected_symbol} 5m — Dynamic Smart Engine",
+        f"{active_symbol or selected_symbol} 5m — Locked Signal Engine",
         color="white",
         fontsize=14,
     )
