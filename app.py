@@ -11,12 +11,12 @@ st.set_page_config(
 )
 
 # Live auto-refresh every 10 seconds
-count = st_autorefresh(interval=10000, key="twt_perfect_session_refresh")
+count = st_autorefresh(interval=10000, key="twt_final_session_retrace_refresh")
 
 st.title("⚡ TRADE WITH TUCKYAA (TWT) — Ultimate Trading Dashboard")
 st.markdown(
-    f"**Live Feed Active (Refresh Count: {count}) | CCXT Engine | Exact Price"
-    " Ranges + Session Box**"
+    f"**Live Feed Active (Refresh Count: {count}) | Session Box + Price"
+    " Retracement + Chart Markings**"
 )
 
 # List of 30 Popular Crypto Assets, Metals, and Top Indian Market Stocks / Futures
@@ -91,15 +91,12 @@ def fetch_twt_institutional_data(symbol):
     target_sym = "XRP/USDT"
   elif "BNB" in symbol:
     target_sym = "BNB/USDT"
-  else:
-    target_sym = "BTC/USDT"
 
   try:
     exchange = ccxt.binance({"enableRateLimit": True, "timeout": 5000})
     ohlcv_5m = exchange.fetch_ohlcv(target_sym, timeframe="5m", limit=100)
     ohlcv_15m = exchange.fetch_ohlcv(target_sym, timeframe="15m", limit=50)
 
-    # If it's a crypto feed matching directly, use it
     if ohlcv_5m and ohlcv_15m and "/" in symbol and not any(stk in symbol for stk in ["NIFTY", "BANKNIFTY", "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "TATAMOTORS", "SBIN", "ADANIENT", "AXISBANK", "LT", "BHARTIARTL", "ITC", "MARUTI"]):
       df_5 = pd.DataFrame(ohlcv_5m, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
       df_5["timestamp"] = pd.to_datetime(df_5["timestamp"], unit="ms")
@@ -113,7 +110,6 @@ def fetch_twt_institutional_data(symbol):
   except Exception:
     pass
 
-  # Precise Realistic Base Prices for each of the 30 Assets
   price_map = {
       "BTC/USDT": 92000.0,
       "ETH/USDT": 3400.0,
@@ -289,14 +285,14 @@ class TWTEngine:
           sl = c["close"] - (1.5 * c["atr"])
           tp = c["close"] + (2.5 * c["atr"])
           if not any(
-              s["Setup"] == "TWT Session Retracement Buy"
+              s["Setup"] == "TWT Retracement Buy"
               and abs(s["Candle #"] - c["id"]) < 5
               for s in self.signals
           ):
             self.signals.append({
                 "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": "TWT Session Retracement Buy",
+                "Setup": "TWT Retracement Buy",
                 "Action": "Buy / Long (B)",
                 "Entry Price": round(c["close"], 2),
                 "Stop Loss (SL)": round(sl, 2),
@@ -316,14 +312,14 @@ class TWTEngine:
           sl = c["close"] + (1.5 * c["atr"])
           tp = c["close"] - (2.5 * c["atr"])
           if not any(
-              s["Setup"] == "TWT Session Retracement Sell"
+              s["Setup"] == "TWT Retracement Sell"
               and abs(s["Candle #"] - c["id"]) < 5
               for s in self.signals
           ):
             self.signals.append({
                 "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": "TWT Session Retracement Sell",
+                "Setup": "TWT Retracement Sell",
                 "Action": "Sell / Short (S)",
                 "Entry Price": round(c["close"], 2),
                 "Stop Loss (SL)": round(sl, 2),
@@ -350,12 +346,10 @@ if df_5m is not None and not df_5m.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(
-        label="Methodology", value="Session + Retracement", delta="Active"
-    )
+    st.metric(label="Entry Method", value="Price Retracement", delta="Active")
 
   st.markdown("---")
-  st.subheader("🎯 Trade With Tuckyaa (TWT) Session Box & Retracement Engine")
+  st.subheader("🎯 Trade With Tuckyaa (TWT) Session & Retracement Engine")
 
   if bot.signals:
     latest_sig = bot.signals[-1]
@@ -373,15 +367,14 @@ if df_5m is not None and not df_5m.empty:
         trail_status = "🛡️ Initial ATR SL"
 
       st.success(
-          f"🟢 **TWT SESSION SETUP: {latest_sig['Action']}**\n\n"
+          f"🟢 **TWT RETRACEMENT SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Formation Time (IST):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Locked Entry Price:** `{entry_p}`\n"
           f"- **Managed Stop Loss (SL):** `{active_sl}` ({trail_status})\n"
           f"- **Target Profit (TP):** `{latest_sig['Take Profit (TP)']}`\n\n"
-          "📌 *Instructions:* Session box breakout & price retracement"
-          " confirmed with high volume! Execute order near entry using exact"
-          " figures."
+          "📌 *Instructions:* Session box retest & volume confirmed! Execute"
+          " order near entry using exact figures."
       )
     else:
       current_profit_dist = entry_p - curr_p
@@ -393,22 +386,20 @@ if df_5m is not None and not df_5m.empty:
         trail_status = "🛡️ Initial ATR SL"
 
       st.error(
-          f"🔴 **TWT SESSION SETUP: {latest_sig['Action']}**\n\n"
+          f"🔴 **TWT RETRACEMENT SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Formation Time (IST):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Locked Entry Price:** `{entry_p}`\n"
           f"- **Managed Stop Loss (SL):** `{active_sl}` ({trail_status})\n"
           f"- **Target Profit (TP):** `{latest_sig['Take Profit (TP)']}`\n\n"
-          "📌 *Instructions:* Session box breakout & price retracement"
-          " confirmed with high volume! Execute order near entry using exact"
-          " figures."
+          "📌 *Instructions:* Session box retest & volume confirmed! Execute"
+          " order near entry using exact figures."
       )
   else:
     st.warning(
-        "🟡 **STATUS: HOLD / WAITING FOR SESSION BREAKOUT**\n\n"
-        "📌 *Instructions:* Market is inside the monitoring session box or"
-        " awaiting valid price retracement. Stand by for high accuracy"
-        " signals."
+        "🟡 **STATUS: HOLD / WAITING FOR RETRACEMENT**\n\n"
+        "📌 *Instructions:* Price is inside session box or awaiting valid"
+        " pullback retest. Stand by."
     )
 
   if bot.signals:
@@ -417,7 +408,7 @@ if df_5m is not None and not df_5m.empty:
     st.dataframe(pd.DataFrame(bot.signals[-5:]), use_container_width=True)
 
   st.markdown("---")
-  st.subheader(f"📈 {selected_symbol} 5m Session Chart View")
+  st.subheader(f"📈 {selected_symbol} 5m Real-Time Chart")
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
 
   for c in bot.candles:
@@ -489,16 +480,17 @@ if df_5m is not None and not df_5m.empty:
       margin = curr_p * 0.005
     ax.set_ylim(min(lows) - margin, max(highs) + margin)
 
+  # Mark Entry & Retracement on Chart
   for sig in bot.signals[-3:]:
     tag = "B" if "Buy" in sig["Action"] else "S"
     tag_color = "#00e676" if tag == "B" else "#ff1744"
     ax.text(
         sig["Candle #"],
         sig["Entry Price"],
-        f" {tag} ",
+        f" RETEST {tag} ",
         color="white",
         weight="bold",
-        bbox=dict(boxstyle="round,pad=0.2", facecolor=tag_color, alpha=0.9),
+        bbox=dict(boxstyle="round,pad=0.3", facecolor=tag_color, alpha=0.9),
     )
 
   ax.set_title(
