@@ -10,12 +10,12 @@ st.set_page_config(
 )
 
 # Live auto-refresh every 10 seconds
-count = st_autorefresh(interval=10000, key="twp_gold_btc_refresh")
+count = st_autorefresh(interval=10000, key="twp_gold_btc_refresh_v2")
 
 st.title("⚡ TWP ORB Ultimate Bot by TUCKYAA (Crypto & Gold)")
 st.markdown(
     f"**Live Feed Active (Refresh Count: {count}) | CCXT Multi-Exchange Engine"
-    " | ORB + EMA + ATR SL/TP + News Filter**"
+    " | Enhanced Clear Chart View**"
 )
 
 # Asset Selection Dropdown (Gold XAUT/USDT & BTC/USDT)
@@ -179,9 +179,11 @@ with st.spinner(f"⚡ Loading TWP ORB Engine for {selected_symbol}..."):
 
     st.markdown("---")
     st.subheader(
-        f"📈 {active_symbol or selected_symbol} 5m Chart — TWP Opening Range Breakout"
+        f"📈 {active_symbol or selected_symbol} 5m Chart — Clear View Engine"
     )
-    fig, ax = plt.subplots(figsize=(12, 5))
+    
+    # Improved Figure Size and Resolution for Clarity
+    fig, ax = plt.subplots(figsize=(12, 6.5), dpi=100)
 
     for c in bot.candles:
       col = "#26a69a" if c["color"] == "Green" else "#ef5350"
@@ -189,7 +191,7 @@ with st.spinner(f"⚡ Loading TWP ORB Engine for {selected_symbol}..."):
           c["id"],
           abs(c["close"] - c["open"])
           if abs(c["close"] - c["open"]) > 0
-          else 1.0,
+          else (curr_p * 0.0005),
           bottom=min(c["open"], c["close"]),
           color=col,
           width=0.6,
@@ -229,6 +231,20 @@ with st.spinner(f"⚡ Loading TWP ORB Engine for {selected_symbol}..."):
         fontsize=10,
     )
 
+    # Auto-adjust Y-axis limits with padding so lower/higher candles never get cut off
+    lows = [c["low"] for c in bot.candles]
+    highs = [c["high"] for c in bot.candles]
+    if bot.or_high > 0:
+      highs.append(bot.or_high)
+    if bot.or_low > 0:
+      lows.append(bot.or_low)
+    
+    if lows and highs:
+      margin = (max(highs) - min(lows)) * 0.08
+      if margin == 0:
+        margin = curr_p * 0.005
+      ax.set_ylim(min(lows) - margin, max(highs) + margin)
+
     # Plot Signals on Chart
     for sig in bot.signals[-3:]:
       tag = "B" if "Buy" in sig["Action"] else "S"
@@ -243,7 +259,7 @@ with st.spinner(f"⚡ Loading TWP ORB Engine for {selected_symbol}..."):
       )
 
     ax.set_title(
-        f"{active_symbol or selected_symbol} 5m — TWP Opening Range Breakout Engine",
+        f"{active_symbol or selected_symbol} 5m — Clear Opening Range Breakout",
         color="white",
         fontsize=14,
     )
