@@ -10,17 +10,16 @@ st.set_page_config(
 )
 
 # Live auto-refresh every 10 seconds
-count = st_autorefresh(interval=10000, key="twt_30_assets_refresh")
+count = st_autorefresh(interval=10000, key="twt_exact_time_refresh")
 
 st.title("⚡ TRADE WITH TUCKYAA (TWT) — Ultimate Trading Dashboard")
 st.markdown(
-    f"**Live Feed Active (Refresh Count: {count}) | CCXT Engine | Locked Targets +"
-    " Institutional Confirmation**"
+    f"**Live Feed Active (Refresh Count: {count}) | CCXT Engine | Exact Entry"
+    " Timestamp Display**"
 )
 
 # List of 30 Popular Crypto Assets, Metals, and Top Indian Market Stocks / Futures
 ASSET_LIST = [
-    # Crypto & Commodities (Delta Exchange / Major Exchanges)
     "BTC/USDT",
     "ETH/USDT",
     "XAUT/USDT",
@@ -36,7 +35,6 @@ ASSET_LIST = [
     "DOT/USDT",
     "NEAR/USDT",
     "APT/USDT",
-    # Indian Market Top Stocks & Indices (Futures / Synthetic Feed Mapping)
     "NIFTY/USDT",
     "BANKNIFTY/USDT",
     "RELIANCE/USDT",
@@ -71,7 +69,6 @@ def fetch_twt_institutional_data(symbol):
       (ccxt.mexc, symbol),
   ]
 
-  # Clean fallback mapping for stock symbols to standard USDT crypto feeds
   fallback_symbol = symbol
   if "NIFTY" in symbol:
     fallback_symbol = "BTC/USDT"
@@ -275,7 +272,7 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
     with col4:
       st.metric(label="System Mode", value="TWT Confirmed", delta="Active")
 
-    # TWT English Signal Recommendation Card
+    # TWT English Signal Recommendation Card with Exact Time Display
     st.markdown("---")
     st.subheader("🎯 Trade With Tuckyaa (TWT) Signal Lock Engine")
 
@@ -283,6 +280,7 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
       latest_sig = bot.signals[-1]
       is_buy = "Buy" in latest_sig["Action"]
       entry_p = latest_sig["Entry Price"]
+      signal_time = latest_sig["Time"]
 
       if is_buy:
         current_profit_dist = curr_p - entry_p
@@ -295,14 +293,14 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
 
         st.success(
             f"🟢 **TWT CONFIRMED SETUP: {latest_sig['Action']}**\n\n"
-            f"- **Execution Time:** `{latest_sig['Time']}` (Candle"
+            f"⏰ **Exact Signal Generated Time:** `{signal_time}` (Candle"
             f" #{latest_sig['Candle #']})\n"
             f"- **Locked Entry Price:** `{entry_p}`\n"
             f"- **Managed Stop Loss (SL):** `{active_sl}` ({trail_status})\n"
             f"- **Target Profit (TP):** `{latest_sig['Take Profit (TP)']}`\n\n"
-            "📌 *Instructions:* Place long position order on your exchange using"
-            " these exact locked figures. Do not chase price if candle closes"
-            " far away."
+            "📌 *Instructions:* Check the signal time above. If this time is"
+            " too old compared to current clock, wait for a fresh breakout"
+            " candle."
         )
       else:
         current_profit_dist = entry_p - curr_p
@@ -315,21 +313,20 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
 
         st.error(
             f"🔴 **TWT CONFIRMED SETUP: {latest_sig['Action']}**\n\n"
-            f"- **Execution Time:** `{latest_sig['Time']}` (Candle"
+            f"⏰ **Exact Signal Generated Time:** `{signal_time}` (Candle"
             f" #{latest_sig['Candle #']})\n"
             f"- **Locked Entry Price:** `{entry_p}`\n"
             f"- **Managed Stop Loss (SL):** `{active_sl}` ({trail_status})\n"
             f"- **Target Profit (TP):** `{latest_sig['Take Profit (TP)']}`\n\n"
-            "📌 *Instructions:* Place short position order on your exchange"
-            " using these exact locked figures. Do not chase price if candle"
-            " closes far away."
+            "📌 *Instructions:* Check the signal time above. If this time is"
+            " too old compared to current clock, wait for a fresh breakout"
+            " candle."
         )
     else:
       st.warning(
           "🟡 **STATUS: HOLD / NO CONFIRMED TRADE SIGNAL**\n\n"
-          "📌 *Instructions:* Price is currently inside the range or"
-          " awaiting institutional volume confirmation. Stand by and wait for"
-          " a verified breakout signal before placing any order."
+          "📌 *Instructions:* Price is currently inside the range. Stand by"
+          " and wait for a verified breakout signal with exact timestamp."
       )
 
     if bot.signals:
