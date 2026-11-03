@@ -11,12 +11,12 @@ st.set_page_config(
 )
 
 # Live auto-refresh every 10 seconds
-count = st_autorefresh(interval=10000, key="twt_multi_tp_vwap_refresh")
+count = st_autorefresh(interval=10000, key="twt_dynamic_retrace_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA (TWT) — Ultimate Trading Dashboard")
+st.title("⚡ TRADE WITH TUCKYAA (TUCKYAA) — Ultimate Trading Dashboard")
 st.markdown(
-    f"**Live Feed Active (Refresh Count: {count}) | VWAP + Body Filter + Multi-TP"
-    " (TP1, TP2, TP3)**"
+    f"**Live Feed Active (Refresh Count: {count}) | Dynamic Range + Price"
+    " Retracement + Multi-TP**"
 )
 
 # List of 30 Popular Crypto Assets, Metals, and Top Indian Market Stocks / Futures
@@ -132,14 +132,11 @@ class TWTEngine:
 
   def calculate_indicators(self):
     if self.df_5 is not None and len(self.df_5) >= 30:
-      current_date = self.df_5.index[-1].date()
-      day_df = self.df_5[self.df_5.index.date == current_date]
-      monitoring_df = day_df.head(4) if len(day_df) >= 4 else self.df_5.head(4)
+      # Dynamic Range: Using recent rolling window instead of static morning start
+      recent_window = self.df_5.tail(20)
+      self.or_high = float(recent_window["High"].max())
+      self.or_low = float(recent_window["Low"].min())
 
-      self.or_high = float(monitoring_df["High"].max())
-      self.or_low = float(monitoring_df["Low"].min())
-
-      # Indicators: VWAP, EMA, Volume SMA, ATR
       typical_price = (
           self.df_5["High"] + self.df_5["Low"] + self.df_5["Close"]
       ) / 3
@@ -213,44 +210,45 @@ class TWTEngine:
       elif last_15m["Close"] < last_15m["EMA_20"]:
         trend_15m = "BEARISH"
 
-    for i in range(5, len(self.candles)):
+    # Scanning with Price Retracement + Dynamic Range + Multi-TP
+    for i in range(6, len(self.candles)):
       c = self.candles[i]
       prev1 = self.candles[i - 1]
+      prev2 = self.candles[i - 2]
 
-      # Advanced Filters: Volume Spike + Strong Body + VWAP Trend + No Liquidity Sweep Wick
       is_volume_strong = c["volume"] >= (c["vol_avg"] * 1.2)
       candle_body = abs(c["close"] - c["open"])
-      total_candle_range = c["high"] - c["low"]
+      total_range = c["high"] - c["low"]
       is_body_strong = (
-          candle_body >= (total_candle_range * 0.5)
-          if total_candle_range > 0
-          else True
+          candle_body >= (total_range * 0.4) if total_range > 0 else True
       )
 
-      # 1. Buy Signal (VWAP + Body + Volume + Multi-TP)
-      if c["close"] > self.or_high and prev1["close"] > self.or_high:
-        if (
-            c["close"] > c["vwap"]
-            and c["close"] > c["ema"]
-            and c["close"] > c["open"]
-            and is_volume_strong
-            and is_body_strong
-            and trend_15m != "BEARISH"
-        ):
+      # Retracement Buy Check
+      is_retest_buy = (
+          prev1["low"] <= self.or_high or prev2["low"] <= self.or_high
+      )
+      if (
+          c["close"] > self.or_high
+          and is_retest_buy
+          and is_volume_strong
+          and is_body_strong
+          and trend_15m != "BEARISH"
+      ):
+        if c["close"] > c["vwap"] and c["close"] > c["open"]:
           sl = c["close"] - (1.2 * c["atr"])
           tp1 = c["close"] + (1.0 * c["atr"])
           tp2 = c["close"] + (2.0 * c["atr"])
           tp3 = c["close"] + (3.5 * c["atr"])
 
           if not any(
-              s["Setup"] == "TWT Bulletproof Buy"
+              s["Setup"] == "TWT Dynamic Retracement Buy"
               and abs(s["Candle #"] - c["id"]) < 5
               for s in self.signals
           ):
             self.signals.append({
                 "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": "TWT Bulletproof Buy",
+                "Setup": "TWT Dynamic Retracement Buy",
                 "Action": "Buy / Long (B)",
                 "Entry Price": round(c["close"], 2),
                 "Stop Loss (SL)": round(sl, 2),
@@ -259,30 +257,32 @@ class TWTEngine:
                 "TP 3": round(tp3, 2),
             })
 
-      # 2. Sell Signal (VWAP + Body + Volume + Multi-TP)
-      elif c["close"] < self.or_low and prev1["close"] < self.or_low:
-        if (
-            c["close"] < c["vwap"]
-            and c["close"] < c["ema"]
-            and c["close"] < c["open"]
-            and is_volume_strong
-            and is_body_strong
-            and trend_15m != "BULLISH"
-        ):
+      # Retracement Sell Check
+      is_retest_sell = (
+          prev1["high"] >= self.or_low or prev2["high"] >= self.or_low
+      )
+      if (
+          c["close"] < self.or_low
+          and is_retest_sell
+          and is_volume_strong
+          and is_body_strong
+          and trend_15m != "BULLISH"
+      ):
+        if c["close"] < c["vwap"] and c["close"] < c["open"]:
           sl = c["close"] + (1.2 * c["atr"])
           tp1 = c["close"] - (1.0 * c["atr"])
           tp2 = c["close"] - (2.0 * c["atr"])
           tp3 = c["close"] - (3.5 * c["atr"])
 
           if not any(
-              s["Setup"] == "TWT Bulletproof Sell"
+              s["Setup"] == "TWT Dynamic Retracement Sell"
               and abs(s["Candle #"] - c["id"]) < 5
               for s in self.signals
           ):
             self.signals.append({
                 "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": "TWT Bulletproof Sell",
+                "Setup": "TWT Dynamic Retracement Sell",
                 "Action": "Sell / Short (S)",
                 "Entry Price": round(c["close"], 2),
                 "Stop Loss (SL)": round(sl, 2),
@@ -306,17 +306,16 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-      st.metric(label="Opening Range High", value=f"{bot.or_high:.2f}")
+      st.metric(label="Dynamic Range High", value=f"{bot.or_high:.2f}")
     with col2:
-      st.metric(label="Opening Range Low", value=f"{bot.or_low:.2f}")
+      st.metric(label="Dynamic Range Low", value=f"{bot.or_low:.2f}")
     with col3:
       st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
     with col4:
-      st.metric(label="Advanced Filters", value="VWAP + Body + Multi-TP", delta="Active")
+      st.metric(label="Methodology", value="Retracement + Multi-TP", delta="Active")
 
-    # TWT English Signal Card with Multi-TP & Zero-Loss Break-Even Automation
     st.markdown("---")
-    st.subheader("🎯 Trade With Tuckyaa (TWT) Bulletproof Signal Engine")
+    st.subheader("🎯 Trade With Tuckyaa (TWT) Dynamic Retracement Engine")
 
     if bot.signals:
       latest_sig = bot.signals[-1]
@@ -329,12 +328,12 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
         active_sl = latest_sig["Stop Loss (SL)"]
         if current_profit_dist > (0.5 * curr_atr):
           active_sl = round(entry_p, 2)
-          trail_status = "🔒 Zero Loss (Trailed to Break-Even)"
+          trail_status = "🔒 Zero Loss (Break-Even Locked)"
         else:
           trail_status = "🛡️ Initial Strict SL"
 
         st.success(
-            f"🟢 **TWT BULLETPROOF SETUP: {latest_sig['Action']}**\n\n"
+            f"🟢 **TWT RETRACEMENT SETUP: {latest_sig['Action']}**\n\n"
             f"🕒 **Candle Formation Time (IST):** `{signal_time}` (Candle"
             f" #{latest_sig['Candle #']})\n"
             f"- **Locked Entry Price:** `{entry_p}`\n"
@@ -343,22 +342,21 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
             " Profit)\n"
             f"- **Target Profit 2 (TP2):** `{latest_sig['TP 2']}` (Book 30%"
             " Profit)\n"
-            f"- **Target Profit 3 (TP3):** `{latest_sig['TP 3']}` (Let Runner"
-            " Ride)\n\n"
-            "📌 *Instructions:* VWAP trend & strong candle body confirmed."
-            " Zero fakeout protection active. Execute order near entry!"
+            f"- **Target Profit 3 (TP3):** `{latest_sig['TP 3']}` (Runner)\n\n"
+            "📌 *Instructions:* Retest & volume confirmed near dynamic range."
+            " Execute trade safely!"
         )
       else:
         current_profit_dist = entry_p - curr_p
         active_sl = latest_sig["Stop Loss (SL)"]
         if current_profit_dist > (0.5 * curr_atr):
           active_sl = round(entry_p, 2)
-          trail_status = "🔒 Zero Loss (Trailed to Break-Even)"
+          trail_status = "🔒 Zero Loss (Break-Even Locked)"
         else:
           trail_status = "🛡️ Initial Strict SL"
 
         st.error(
-            f"🔴 **TWT BULLETPROOF SETUP: {latest_sig['Action']}**\n\n"
+            f"🔴 **TWT RETRACEMENT SETUP: {latest_sig['Action']}**\n\n"
             f"🕒 **Candle Formation Time (IST):** `{signal_time}` (Candle"
             f" #{latest_sig['Candle #']})\n"
             f"- **Locked Entry Price:** `{entry_p}`\n"
@@ -367,16 +365,15 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
             " Profit)\n"
             f"- **Target Profit 2 (TP2):** `{latest_sig['TP 2']}` (Book 30%"
             " Profit)\n"
-            f"- **Target Profit 3 (TP3):** `{latest_sig['TP 3']}` (Let Runner"
-            " Ride)\n\n"
-            "📌 *Instructions:* VWAP trend & strong candle body confirmed."
-            " Zero fakeout protection active. Execute order near entry!"
+            f"- **Target Profit 3 (TP3):** `{latest_sig['TP 3']}` (Runner)\n\n"
+            "📌 *Instructions:* Retest & volume confirmed near dynamic range."
+            " Execute trade safely!"
         )
     else:
       st.warning(
-          "🟡 **STATUS: HOLD / FILTERING FALSE BREAKOUTS**\n\n"
-          "📌 *Instructions:* Bot is checking VWAP, volume, and candle strength."
-          " No fakeout trade allowed. Wait for valid confirmation."
+          "🟡 **STATUS: HOLD / WAITING FOR RETRACEMENT**\n\n"
+          "📌 *Instructions:* Waiting for clean price pullback and retest"
+          " confirmation near dynamic boundaries."
       )
 
     if bot.signals:
@@ -419,12 +416,12 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
         color="#ff7043",
         linestyle="--",
         linewidth=2,
-        label="OR High",
+        label="Dynamic High",
     )
     ax.text(
         2,
         bot.or_high,
-        f"  OR High ({bot.or_high:.1f})",
+        f"  Dynamic High ({bot.or_high:.1f})",
         color="#ff7043",
         weight="bold",
         fontsize=10,
@@ -435,12 +432,12 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
         color="#26a69a",
         linestyle="--",
         linewidth=2,
-        label="OR Low",
+        label="Dynamic Low",
     )
     ax.text(
         2,
         bot.or_low,
-        f"  OR Low ({bot.or_low:.1f})",
+        f"  Dynamic Low ({bot.or_low:.1f})",
         color="#26a69a",
         weight="bold",
         fontsize=10,
@@ -465,7 +462,7 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
       ax.text(
           sig["Candle #"],
           sig["Entry Price"],
-          f" {tag} ",
+          f" RETEST {tag} ",
           color="white",
           weight="bold",
           bbox=dict(boxstyle="round,pad=0.2", facecolor=tag_color, alpha=0.9),
