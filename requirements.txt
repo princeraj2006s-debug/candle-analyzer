@@ -3,5 +3,5 @@ streamlit-autorefresh
 ccxt
 pandas
 numpy
-matplotlib
+plotly
 yfinance
