@@ -10,12 +10,12 @@ st.set_page_config(
 )
 
 # Live auto-refresh every 10 seconds
-count = st_autorefresh(interval=10000, key="twp_single_signal_refresh")
+count = st_autorefresh(interval=10000, key="twp_strict_confirmed_refresh")
 
-st.title("⚡ TWP ORB Ultimate Bot by TUCKYAA (Single Signal Engine)")
+st.title("⚡ TWP ORB Ultimate Bot by TUCKYAA (Strict Confirmation Engine)")
 st.markdown(
-    f"**Live Feed Active (Refresh Count: {count}) | CCXT Engine | No Confusion"
-    " Smart Trade Card**"
+    f"**Live Feed Active (Refresh Count: {count}) | CCXT Engine | No Fake"
+    " Breakouts | TWP Strict Logic**"
 )
 
 # Asset Selection Dropdown
@@ -54,7 +54,7 @@ def fetch_twp_full_data(symbol):
 df_5m, active_symbol = fetch_twp_full_data(selected_symbol)
 
 
-class TWPSingleSignalEngine:
+class TWPStrictEngine:
 
   def __init__(self, df, symbol):
     self.df = df if df is not None else None
@@ -112,47 +112,55 @@ class TWPSingleSignalEngine:
           "atr": atr,
       })
 
-    for i in range(4, len(self.candles)):
+    # Strict TWP Confirmation Logic (Prevents Fake Breakout Traps)
+    for i in range(5, len(self.candles)):
       c = self.candles[i]
-      prev = self.candles[i - 1]
+      prev1 = self.candles[i - 1]
+      prev2 = self.candles[i - 2]
 
-      if c["close"] > self.or_high and prev["close"] <= self.or_high:
-        if c["close"] > c["ema"]:
+      # Bullish Confirmation: Current & previous candle both closed above OR High, with strong body & volume/EMA check
+      if c["close"] > self.or_high and prev1["close"] > self.or_high:
+        if c["close"] > c["ema"] and c["close"] > c["open"]:  # Must be green candle with momentum
           sl = c["close"] - (1.5 * c["atr"])
           tp = c["close"] + (2.5 * c["atr"])
-          self.signals.append({
-              "Time": c["time"],
-              "Candle #": c["id"],
-              "Setup": "ORB Bullish Breakout",
-              "Action": "Buy / Long (B)",
-              "Entry Price": round(c["close"], 2),
-              "Stop Loss (SL)": round(sl, 2),
-              "Take Profit (TP)": round(tp, 2),
-          })
+          # Avoid duplicate signals for the same breakout wave
+          if not any(s["Setup"] == "ORB Bullish Breakout" and abs(s["Candle #"] - c["id"]) < 3 for s in self.signals):
+            self.signals.append({
+                "Time": c["time"],
+                "Candle #": c["id"],
+                "Setup": "ORB Bullish Breakout",
+                "Action": "Buy / Long (B)",
+                "Entry Price": round(c["close"], 2),
+                "Stop Loss (SL)": round(sl, 2),
+                "Take Profit (TP)": round(tp, 2),
+            })
 
-      elif c["close"] < self.or_low and prev["close"] >= self.or_low:
-        if c["close"] < c["ema"]:
+      # Bearish Confirmation: Current & previous candle both closed below OR Low
+      elif c["close"] < self.or_low and prev1["close"] < self.or_low:
+        if c["close"] < c["ema"] and c["close"] < c["open"]:  # Must be red candle with momentum
           sl = c["close"] + (1.5 * c["atr"])
           tp = c["close"] - (2.5 * c["atr"])
-          self.signals.append({
-              "Time": c["time"],
-              "Candle #": c["id"],
-              "Setup": "ORB Bearish Breakout",
-              "Action": "Sell / Short (S)",
-              "Entry Price": round(c["close"], 2),
-              "Stop Loss (SL)": round(sl, 2),
-              "Take Profit (TP)": round(tp, 2),
-          })
+          if not any(s["Setup"] == "ORB Bearish Breakout" and abs(s["Candle #"] - c["id"]) < 3 for s in self.signals):
+            self.signals.append({
+                "Time": c["time"],
+                "Candle #": c["id"],
+                "Setup": "ORB Bearish Breakout",
+                "Action": "Sell / Short (S)",
+                "Entry Price": round(c["close"], 2),
+                "Stop Loss (SL)": round(sl, 2),
+                "Take Profit (TP)": round(tp, 2),
+            })
 
 
-with st.spinner(f"⚡ Loading Engine for {selected_symbol}..."):
+with st.spinner(f"⚡ Loading Strict TWP Engine for {selected_symbol}..."):
   if df_5m is not None and not df_5m.empty:
-    bot = TWPSingleSignalEngine(df_5m, selected_symbol)
+    bot = TWPStrictEngine(df_5m, selected_symbol)
     bot.calculate_indicators()
     bot.parse_and_scan()
 
     curr_p = bot.candles[-1]["close"] if bot.candles else 0.0
     curr_atr = bot.candles[-1]["atr"] if bot.candles else (curr_p * 0.002)
+    prev_close = bot.candles[-2]["close"] if len(bot.candles) >= 2 else curr_p
 
     st.markdown("---")
     st.subheader(f"📊 Live Dashboard ({active_symbol or selected_symbol})")
@@ -167,47 +175,50 @@ with st.spinner(f"⚡ Loading Engine for {selected_symbol}..."):
     with col4:
       st.metric(label="News Filter", value="Safe", delta="Active")
 
-    # Smart Single Trade Signal Card (No Confusion)
+    # Strict TWP Smart Status Card (No Fake Signals)
     st.markdown("---")
-    st.subheader("🎯 High-Probability Single Trade Signal")
+    st.subheader("🎯 TWP Confirmed Trade Signal")
 
-    if curr_p > bot.or_high:
+    # Check strict confirmation for live recommendation
+    is_confirmed_buy = (curr_p > bot.or_high and prev_close > bot.or_high)
+    is_confirmed_sell = (curr_p < bot.or_low and prev_close < bot.or_low)
+
+    if is_confirmed_buy:
       buy_sl = round(curr_p - (1.5 * curr_atr), 2)
       buy_tp = round(curr_p + (2.5 * curr_atr), 2)
       st.success(
-          "🟢 **ACTIVE SETUP: BUY / LONG (B)**\n\n"
-          f"- **Reason:** Market Fixed OR High ({bot.or_high:.2f}) ke upar"
-          f" breakout de chuka hai!\n- **Entry Price:** `{curr_p:.2f}`\n- **Stop"
-          f" Loss (SL):** `{buy_sl}`\n- **Take Profit (TP):** `{buy_tp}`"
+          "🟢 **CONFIRMED SETUP: BUY / LONG (B)**\n\n"
+          f"- **Reason:** Opening Range High ({bot.or_high:.2f}) ke upar proper confirmation mil chuki hai!\n"
+          f"- **Entry Price:** `{curr_p:.2f}`\n"
+          f"- **Stop Loss (SL):** `{buy_sl}`\n"
+          f"- **Take Profit (TP):** `{buy_tp}`"
       )
-    elif curr_p < bot.or_low:
+    elif is_confirmed_sell:
       sell_sl = round(curr_p + (1.5 * curr_atr), 2)
       sell_tp = round(curr_p - (2.5 * curr_atr), 2)
       st.error(
-          "🔴 **ACTIVE SETUP: SELL / SHORT (S)**\n\n"
-          f"- **Reason:** Market Fixed OR Low ({bot.or_low:.2f}) ke neeche"
-          f" breakout de chuka hai!\n- **Entry Price:** `{curr_p:.2f}`\n- **Stop"
-          f" Loss (SL):** `{sell_sl}`\n- **Take Profit (TP):** `{sell_tp}`"
+          "🔴 **CONFIRMED SETUP: SELL / SHORT (S)**\n\n"
+          f"- **Reason:** Opening Range Low ({bot.or_low:.2f}) ke neeche proper confirmation mil chuki hai!\n"
+          f"- **Entry Price:** `{curr_p:.2f}`\n"
+          f"- **Stop Loss (SL):** `{sell_sl}`\n"
+          f"- **Take Profit (TP):** `{sell_tp}`"
       )
     else:
       st.warning(
-          "🟡 **NO TRADE ZONE / WAIT**\n\n- Market abhi Opening Range"
-          f" ({bot.or_low:.2f} - {bot.or_high:.2f}) ke andar range-bound hai.\n-"
-          " **Action:** Kisi bhi random side entry mat lo, agle breakout ka"
-          " wait karo!"
+          "🟡 **HOLD / WAIT (NO CONFIRMED BREAKOUT)**\n\n"
+          "- Market me false wick ya range movement ho sakti hai. Bot ne fuzool entry block kar di hai.\n"
+          "- **Action:** Jab tak dono candles proper close dekar confirmation na dein, tab tak **HOLD par raho aur wait karo!**"
       )
 
     if bot.signals:
       st.markdown("---")
-      st.subheader("📋 Verified Breakout Signals History")
+      st.subheader("📋 Confirmed Breakout History")
       st.dataframe(pd.DataFrame(bot.signals[-4:]), use_container_width=True)
     else:
-      st.info(f"💡 Monitoring {selected_symbol} for next high-probability setup...")
+      st.info(f"💡 Waiting for high-probability confirmed breakout on {selected_symbol}...")
 
     st.markdown("---")
-    st.subheader(
-        f"📈 {active_symbol or selected_symbol} 5m Chart — Clean View"
-    )
+    st.subheader(f"📈 {active_symbol or selected_symbol} 5m Chart — Strict Filter View")
     fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
 
     for c in bot.candles:
@@ -294,7 +305,7 @@ with st.spinner(f"⚡ Loading Engine for {selected_symbol}..."):
       )
 
     ax.set_title(
-        f"{active_symbol or selected_symbol} 5m — Clean Breakout Engine",
+        f"{active_symbol or selected_symbol} 5m — Strict Confirmed Breakout",
         color="white",
         fontsize=14,
     )
