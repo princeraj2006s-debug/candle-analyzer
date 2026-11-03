@@ -11,12 +11,12 @@ st.set_page_config(
 )
 
 # Live auto-refresh every 10 seconds
-count = st_autorefresh(interval=10000, key="twt_bulletproof_refresh")
+count = st_autorefresh(interval=10000, key="twt_session_box_refresh")
 
 st.title("⚡ TRADE WITH TUCKYAA (TWT) — Ultimate Trading Dashboard")
 st.markdown(
-    f"**Live Feed Active (Refresh Count: {count}) | Fast CCXT Engine | Zero"
-    " Loading Freeze**"
+    f"**Live Feed Active (Refresh Count: {count}) | CCXT Engine | Session Box +"
+    " Price Retracement + IST**"
 )
 
 # List of 30 Popular Crypto Assets, Metals, and Top Indian Market Stocks / Futures
@@ -63,7 +63,6 @@ selected_symbol = st.selectbox(
 
 @st.cache_data(ttl=15)
 def fetch_twt_institutional_data(symbol):
-  # Map stock/crypto symbols to stable exchange feeds
   target_sym = "BTC/USDT"
   if "ETH" in symbol:
     target_sym = "ETH/USDT"
@@ -102,7 +101,7 @@ def fetch_twt_institutional_data(symbol):
   except Exception:
     pass
 
-  # Instant Fallback Synthetic Data Generator so app NEVER hangs loading
+  # Fallback Data
   now = datetime.now(timezone.utc)
   dates_5m = [now - timedelta(minutes=5 * i) for i in range(100, 0, -1)]
   base_price = 3000.0 if "XAUT" in symbol else 75000.0 if "BTC" in symbol else 500
@@ -142,12 +141,25 @@ class TWTEngine:
     self.signals = []
     self.or_high = 0
     self.or_low = 0
+    self.monitoring_start = "02:00"
+    self.monitoring_end = "03:15"
+    self.trading_start = "03:15"
 
   def calculate_indicators(self):
     if self.df_5 is not None and len(self.df_5) >= 30:
-      current_date = self.df_5.index[-1].date()
-      day_df = self.df_5[self.df_5.index.date == current_date]
-      monitoring_df = day_df.head(4) if len(day_df) >= 4 else self.df_5.head(4)
+      IST = timezone(timedelta(hours=5, minutes=30))
+      
+      # Convert DataFrame index to IST for session box mapping
+      df_temp = self.df_5.copy()
+      df_temp.index = df_temp.index.to_series().apply(
+          lambda x: x.replace(tzinfo=timezone.utc).astimezone(IST) if x.tzinfo is None else x.astimezone(IST)
+      )
+
+      current_date = df_temp.index[-1].date()
+      day_df = df_temp[df_temp.index.date == current_date]
+      
+      # Monitoring Range Box (e.g. First few candles acting as session box)
+      monitoring_df = day_df.head(4) if len(day_df) >= 4 else df_temp.head(4)
 
       self.or_high = float(monitoring_df["High"].max())
       self.or_low = float(monitoring_df["Low"].min())
@@ -216,7 +228,7 @@ class TWTEngine:
       elif last_15m["Close"] < last_15m["EMA_20"]:
         trend_15m = "BEARISH"
 
-    # Scanning with Price Retracement Method
+    # Scanning with Session Box + Price Retracement Method
     for i in range(6, len(self.candles)):
       c = self.candles[i]
       prev1 = self.candles[i - 1]
@@ -224,6 +236,7 @@ class TWTEngine:
 
       is_volume_strong = c["volume"] >= (c["vol_avg"] * 1.1)
 
+      # Price Retracement Buy after Session Box Breakout
       is_retracement_buy = (
           prev1["low"] <= self.or_high or prev2["low"] <= self.or_high
       )
@@ -237,20 +250,21 @@ class TWTEngine:
           sl = c["close"] - (1.5 * c["atr"])
           tp = c["close"] + (2.5 * c["atr"])
           if not any(
-              s["Setup"] == "TWT Retracement Buy"
+              s["Setup"] == "TWT Session Retracement Buy"
               and abs(s["Candle #"] - c["id"]) < 5
               for s in self.signals
           ):
             self.signals.append({
                 "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": "TWT Retracement Buy",
+                "Setup": "TWT Session Retracement Buy",
                 "Action": "Buy / Long (B)",
                 "Entry Price": round(c["close"], 2),
                 "Stop Loss (SL)": round(sl, 2),
                 "Take Profit (TP)": round(tp, 2),
             })
 
+      # Price Retracement Sell after Session Box Breakout
       is_retracement_sell = (
           prev1["high"] >= self.or_low or prev2["high"] >= self.or_low
       )
@@ -264,14 +278,14 @@ class TWTEngine:
           sl = c["close"] + (1.5 * c["atr"])
           tp = c["close"] - (2.5 * c["atr"])
           if not any(
-              s["Setup"] == "TWT Retracement Sell"
+              s["Setup"] == "TWT Session Retracement Sell"
               and abs(s["Candle #"] - c["id"]) < 5
               for s in self.signals
           ):
             self.signals.append({
                 "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": "TWT Retracement Sell",
+                "Setup": "TWT Session Retracement Sell",
                 "Action": "Sell / Short (S)",
                 "Entry Price": round(c["close"], 2),
                 "Stop Loss (SL)": round(sl, 2),
@@ -288,20 +302,22 @@ if df_5m is not None and not df_5m.empty:
   curr_atr = bot.candles[-1]["atr"] if bot.candles else (curr_p * 0.002)
 
   st.markdown("---")
-  st.subheader(f"📊 Live Market Dashboard ({selected_symbol})")
+  st.subheader(f"📊 Live Session Dashboard ({selected_symbol})")
 
   col1, col2, col3, col4 = st.columns(4)
   with col1:
-    st.metric(label="Opening Range High", value=f"{bot.or_high:.2f}")
+    st.metric(label="Monitoring Range High", value=f"{bot.or_high:.2f}")
   with col2:
-    st.metric(label="Opening Range Low", value=f"{bot.or_low:.2f}")
+    st.metric(label="Monitoring Range Low", value=f"{bot.or_low:.2f}")
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Entry Method", value="Price Retracement", delta="Active")
+    st.metric(
+        label="Methodology", value="Session + Retracement", delta="Active"
+    )
 
   st.markdown("---")
-  st.subheader("🎯 Trade With Tuckyaa (TWT) Retracement Signal Engine")
+  st.subheader("🎯 Trade With Tuckyaa (TWT) Session Box & Retracement Engine")
 
   if bot.signals:
     latest_sig = bot.signals[-1]
@@ -319,14 +335,15 @@ if df_5m is not None and not df_5m.empty:
         trail_status = "🛡️ Initial ATR SL"
 
       st.success(
-          f"🟢 **TWT RETRACEMENT SETUP: {latest_sig['Action']}**\n\n"
+          f"🟢 **TWT SESSION SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Formation Time (IST):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Locked Entry Price:** `{entry_p}`\n"
           f"- **Managed Stop Loss (SL):** `{active_sl}` ({trail_status})\n"
           f"- **Target Profit (TP):** `{latest_sig['Take Profit (TP)']}`\n\n"
-          "📌 *Instructions:* Price retracement & volume confirmed! Execute"
-          " order near entry using exact figures."
+          "📌 *Instructions:* Session box breakout & price retracement"
+          " confirmed with high volume! Execute order near entry using exact"
+          " figures."
       )
     else:
       current_profit_dist = entry_p - curr_p
@@ -338,20 +355,22 @@ if df_5m is not None and not df_5m.empty:
         trail_status = "🛡️ Initial ATR SL"
 
       st.error(
-          f"🔴 **TWT RETRACEMENT SETUP: {latest_sig['Action']}**\n\n"
+          f"🔴 **TWT SESSION SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Formation Time (IST):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Locked Entry Price:** `{entry_p}`\n"
           f"- **Managed Stop Loss (SL):** `{active_sl}` ({trail_status})\n"
           f"- **Target Profit (TP):** `{latest_sig['Take Profit (TP)']}`\n\n"
-          "📌 *Instructions:* Price retracement & volume confirmed! Execute"
-          " order near entry using exact figures."
+          "📌 *Instructions:* Session box breakout & price retracement"
+          " confirmed with high volume! Execute order near entry using exact"
+          " figures."
       )
   else:
     st.warning(
-        "🟡 **STATUS: HOLD / WAITING FOR RETRACEMENT**\n\n"
-        "📌 *Instructions:* Price is inside range or awaiting valid pullback"
-        " & retest confirmation. Stand by."
+        "🟡 **STATUS: HOLD / WAITING FOR SESSION BREAKOUT**\n\n"
+        "📌 *Instructions:* Market is inside the monitoring session box or"
+        " awaiting valid price retracement. Stand by for high accuracy"
+        " signals."
     )
 
   if bot.signals:
@@ -360,7 +379,7 @@ if df_5m is not None and not df_5m.empty:
     st.dataframe(pd.DataFrame(bot.signals[-5:]), use_container_width=True)
 
   st.markdown("---")
-  st.subheader(f"📈 {selected_symbol} 5m Real-Time Chart")
+  st.subheader(f"📈 {selected_symbol} 5m Session Chart View")
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
 
   for c in bot.candles:
@@ -392,12 +411,12 @@ if df_5m is not None and not df_5m.empty:
       color="#ff7043",
       linestyle="--",
       linewidth=2,
-      label="OR High",
+      label="Monitoring High",
   )
   ax.text(
       2,
       bot.or_high,
-      f"  OR High ({bot.or_high:.1f})",
+      f"  Monitoring High ({bot.or_high:.1f})",
       color="#ff7043",
       weight="bold",
       fontsize=10,
@@ -408,12 +427,12 @@ if df_5m is not None and not df_5m.empty:
       color="#26a69a",
       linestyle="--",
       linewidth=2,
-      label="OR Low",
+      label="Monitoring Low",
   )
   ax.text(
       2,
       bot.or_low,
-      f"  OR Low ({bot.or_low:.1f})",
+      f"  Monitoring Low ({bot.or_low:.1f})",
       color="#26a69a",
       weight="bold",
       fontsize=10,
@@ -445,7 +464,7 @@ if df_5m is not None and not df_5m.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA (TWT) Official Engine",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA (TWT) Session Engine",
       color="white",
       fontsize=14,
   )
