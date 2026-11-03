@@ -10,44 +10,48 @@ st.set_page_config(
 )
 
 # Live auto-refresh every 10 seconds
-count = st_autorefresh(interval=10000, key="twp_full_orb_refresh")
+count = st_autorefresh(interval=10000, key="twp_gold_btc_refresh")
 
-st.title("⚡ TWP ORB Ultimate Bot by TUCKYAA")
+st.title("⚡ TWP ORB Ultimate Bot by TUCKYAA (Crypto & Gold)")
 st.markdown(
-    f"**Live Feed Active (Refresh Count: {count}) | CCXT Engine | ORB + EMA"
-    " Trend + ATR SL/TP + News Filter**"
+    f"**Live Feed Active (Refresh Count: {count}) | CCXT Multi-Exchange Engine"
+    " | ORB + EMA + ATR SL/TP + News Filter**"
 )
 
-selected_symbol = "BTC/USDT"
+# Asset Selection Dropdown (Gold XAUT/USDT & BTC/USDT)
+selected_symbol = st.selectbox(
+    "Select Trading Asset / Market", options=["XAUT/USDT", "BTC/USDT", "ETH/USDT"], index=0
+)
 
 
 @st.cache_data(ttl=10)
-def fetch_twp_full_data():
+def fetch_twp_full_data(symbol):
   exchanges_to_try = [
-      (ccxt.binance, "BTC/USDT"),
-      (ccxt.bybit, "BTC/USDT"),
-      (ccxt.kucoin, "BTC/USDT"),
-      (ccxt.mexc, "BTC/USDT"),
+      (ccxt.binance, symbol),
+      (ccxt.bybit, symbol),
+      (ccxt.kucoin, symbol),
+      (ccxt.mexc, symbol),
   ]
-  for ex_class, symbol in exchanges_to_try:
+  for ex_class, sym in exchanges_to_try:
     try:
       exchange = ex_class({"enableRateLimit": True, "timeout": 20000})
       exchange.load_markets()
-      ohlcv = exchange.fetch_ohlcv(symbol, timeframe="5m", limit=60)
-      if ohlcv and len(ohlcv) > 0:
-        df = pd.DataFrame(
-            ohlcv,
-            columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
-        )
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-        df.set_index("timestamp", inplace=True)
-        return df, symbol
+      if sym in exchange.markets:
+        ohlcv = exchange.fetch_ohlcv(sym, timeframe="5m", limit=60)
+        if ohlcv and len(ohlcv) > 0:
+          df = pd.DataFrame(
+              ohlcv,
+              columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
+          )
+          df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+          df.set_index("timestamp", inplace=True)
+          return df, sym
     except Exception:
       continue
   return None, None
 
 
-df_5m, active_symbol = fetch_twp_full_data()
+df_5m, active_symbol = fetch_twp_full_data(selected_symbol)
 
 
 class TWPCompleteEngine:
@@ -66,7 +70,7 @@ class TWPCompleteEngine:
       self.or_high = float(monitoring_df["High"].max())
       self.or_low = float(monitoring_df["Low"].min())
 
-      # EMA Trend Filter (50/200 EMA to avoid false breakouts)
+      # EMA Trend Filter (50 EMA)
       self.df["EMA"] = self.df["Close"].ewm(span=50, adjust=False).mean()
 
       # ATR (Average True Range) for dynamic Stop Loss & Take Profit
@@ -92,7 +96,7 @@ class TWPCompleteEngine:
           float(r["Close"]),
       )
       ema = float(r["EMA"]) if not pd.isna(r["EMA"]) else c
-      atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else 150.0
+      atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
 
       self.candles.append({
           "id": idx + 1,
@@ -139,18 +143,17 @@ class TWPCompleteEngine:
           })
 
 
-with st.spinner(f"⚡ Loading TWP ORB Ultimate Engine ({active_symbol})..."):
+with st.spinner(f"⚡ Loading TWP ORB Engine for {selected_symbol}..."):
   if df_5m is not None and not df_5m.empty:
     bot = TWPCompleteEngine(df_5m)
     bot.calculate_indicators()
     bot.parse_and_scan()
 
-    curr_p = bot.candles[-1]["close"] if bot.candles else 78000.0
+    curr_p = bot.candles[-1]["close"] if bot.candles else 0.0
 
     st.markdown("---")
-    st.subheader(f"📊 TWP Bot Dashboard & Settings ({active_symbol})")
+    st.subheader(f"📊 TWP Bot Dashboard & Settings ({active_symbol or selected_symbol})")
 
-    # Sidebar / Panel imitating TWP settings box
     col1, col2, col3, col4 = st.columns(4)
     with col1:
       st.metric(label="Opening Range High", value=f"{bot.or_high:.2f}")
@@ -161,7 +164,7 @@ with st.spinner(f"⚡ Loading TWP ORB Ultimate Engine ({active_symbol})..."):
     with col4:
       st.metric(
           label="News Filter Status",
-          value="Safe (No High Impact News)",
+          value="Safe (No High Impact)",
           delta="Active",
       )
 
@@ -171,12 +174,12 @@ with st.spinner(f"⚡ Loading TWP ORB Ultimate Engine ({active_symbol})..."):
       st.dataframe(pd.DataFrame(bot.signals[-4:]), use_container_width=True)
     else:
       st.info(
-          "💡 Bot is monitoring Opening Range breakouts with EMA & ATR filters..."
+          f"💡 Bot is monitoring {selected_symbol} Opening Range breakouts with EMA & ATR filters..."
       )
 
     st.markdown("---")
     st.subheader(
-        f"📈 {active_symbol} 5m Chart — TWP Opening Range Breakout Strategy"
+        f"📈 {active_symbol or selected_symbol} 5m Chart — TWP Opening Range Breakout"
     )
     fig, ax = plt.subplots(figsize=(12, 5))
 
@@ -240,7 +243,7 @@ with st.spinner(f"⚡ Loading TWP ORB Ultimate Engine ({active_symbol})..."):
       )
 
     ax.set_title(
-        f"{active_symbol} 5m — TWP Opening Range Breakout Engine",
+        f"{active_symbol or selected_symbol} 5m — TWP Opening Range Breakout Engine",
         color="white",
         fontsize=14,
     )
@@ -257,4 +260,7 @@ with st.spinner(f"⚡ Loading TWP ORB Ultimate Engine ({active_symbol})..."):
 
     st.pyplot(fig)
   else:
-    st.error("CCXT data load nahi ho paya. Please check connection.")
+    st.error(
+        f"Selected asset ({selected_symbol}) data load nahi ho paya. Please"
+        " check connection or symbol support."
+    )
