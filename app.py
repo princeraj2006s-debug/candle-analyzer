@@ -10,15 +10,15 @@ st.set_page_config(
 )
 
 # Live auto-refresh every 10 seconds
-count = st_autorefresh(interval=10000, key="twp_gold_btc_refresh_v2")
+count = st_autorefresh(interval=10000, key="twp_crystal_clear_refresh")
 
 st.title("⚡ TWP ORB Ultimate Bot by TUCKYAA (Crypto & Gold)")
 st.markdown(
     f"**Live Feed Active (Refresh Count: {count}) | CCXT Multi-Exchange Engine"
-    " | Enhanced Clear Chart View**"
+    " | Crystal Clear Dynamic Candles**"
 )
 
-# Asset Selection Dropdown (Gold XAUT/USDT & BTC/USDT)
+# Asset Selection Dropdown
 selected_symbol = st.selectbox(
     "Select Trading Asset / Market", options=["XAUT/USDT", "BTC/USDT", "ETH/USDT"], index=0
 )
@@ -56,8 +56,9 @@ df_5m, active_symbol = fetch_twp_full_data(selected_symbol)
 
 class TWPCompleteEngine:
 
-  def __init__(self, df):
+  def __init__(self, df, symbol):
     self.df = df if df is not None else None
+    self.symbol = symbol
     self.candles = []
     self.signals = []
     self.or_high = 0
@@ -65,15 +66,12 @@ class TWPCompleteEngine:
 
   def calculate_indicators(self):
     if self.df is not None and len(self.df) >= 25:
-      # Opening Range (First 4 candles as Monitoring Range)
       monitoring_df = self.df.head(4)
       self.or_high = float(monitoring_df["High"].max())
       self.or_low = float(monitoring_df["Low"].min())
 
-      # EMA Trend Filter (50 EMA)
       self.df["EMA"] = self.df["Close"].ewm(span=50, adjust=False).mean()
 
-      # ATR (Average True Range) for dynamic Stop Loss & Take Profit
       self.df["TR"] = np.maximum(
           self.df["High"] - self.df["Low"],
           np.maximum(
@@ -109,14 +107,12 @@ class TWPCompleteEngine:
           "atr": atr,
       })
 
-    # Breakout Entry Logic with EMA Trend Filter & ATR SL/TP
     for i in range(4, len(self.candles)):
       c = self.candles[i]
       prev = self.candles[i - 1]
 
-      # Bullish Breakout (Buy Signal)
       if c["close"] > self.or_high and prev["close"] <= self.or_high:
-        if c["close"] > c["ema"]:  # EMA Trend Filter Check
+        if c["close"] > c["ema"]:
           sl = c["close"] - (1.5 * c["atr"])
           tp = c["close"] + (2.5 * c["atr"])
           self.signals.append({
@@ -128,9 +124,8 @@ class TWPCompleteEngine:
               "Take Profit (TP)": round(tp, 2),
           })
 
-      # Bearish Breakout (Sell Signal)
       elif c["close"] < self.or_low and prev["close"] >= self.or_low:
-        if c["close"] < c["ema"]:  # EMA Trend Filter Check
+        if c["close"] < c["ema"]:
           sl = c["close"] + (1.5 * c["atr"])
           tp = c["close"] - (2.5 * c["atr"])
           self.signals.append({
@@ -145,7 +140,7 @@ class TWPCompleteEngine:
 
 with st.spinner(f"⚡ Loading TWP ORB Engine for {selected_symbol}..."):
   if df_5m is not None and not df_5m.empty:
-    bot = TWPCompleteEngine(df_5m)
+    bot = TWPCompleteEngine(df_5m, selected_symbol)
     bot.calculate_indicators()
     bot.parse_and_scan()
 
@@ -179,26 +174,35 @@ with st.spinner(f"⚡ Loading TWP ORB Engine for {selected_symbol}..."):
 
     st.markdown("---")
     st.subheader(
-        f"📈 {active_symbol or selected_symbol} 5m Chart — Clear View Engine"
+        f"📈 {active_symbol or selected_symbol} 5m Chart — Crystal Clear View"
     )
     
-    # Improved Figure Size and Resolution for Clarity
     fig, ax = plt.subplots(figsize=(12, 6.5), dpi=100)
 
     for c in bot.candles:
       col = "#26a69a" if c["color"] == "Green" else "#ef5350"
+      body_size = abs(c["close"] - c["open"])
+      
+      # Smart Minimum Body Height for small price assets like Gold so candles never look like thin invisible lines
+      min_body = curr_p * 0.0008 if "XAUT" in selected_symbol or "ETH" in selected_symbol else curr_p * 0.0003
+      plot_height = max(body_size, min_body)
+      
+      # Adjust bottom coordinate if height was padded
+      if body_size < min_body:
+        plot_bottom = min(c["open"], c["close"]) - ((min_body - body_size) / 2)
+      else:
+        plot_bottom = min(c["open"], c["close"])
+
       ax.bar(
           c["id"],
-          abs(c["close"] - c["open"])
-          if abs(c["close"] - c["open"]) > 0
-          else (curr_p * 0.0005),
-          bottom=min(c["open"], c["close"]),
+          plot_height,
+          bottom=plot_bottom,
           color=col,
-          width=0.6,
+          width=0.7, # Slightly thicker bars for better visibility
       )
-      ax.vlines(c["id"], c["low"], c["high"], color="#b2b5be", linewidth=1.2)
+      ax.vlines(c["id"], c["low"], c["high"], color="#b2b5be", linewidth=1.3)
 
-    # Plot OR High & Low
+    # Plot OR High & Low Lines
     ax.axhline(
         bot.or_high,
         color="#ff7043",
@@ -231,7 +235,7 @@ with st.spinner(f"⚡ Loading TWP ORB Engine for {selected_symbol}..."):
         fontsize=10,
     )
 
-    # Auto-adjust Y-axis limits with padding so lower/higher candles never get cut off
+    # Auto-adjust Y-axis limits with padding
     lows = [c["low"] for c in bot.candles]
     highs = [c["high"] for c in bot.candles]
     if bot.or_high > 0:
@@ -240,7 +244,7 @@ with st.spinner(f"⚡ Loading TWP ORB Engine for {selected_symbol}..."):
       lows.append(bot.or_low)
     
     if lows and highs:
-      margin = (max(highs) - min(lows)) * 0.08
+      margin = (max(highs) - min(lows)) * 0.09
       if margin == 0:
         margin = curr_p * 0.005
       ax.set_ylim(min(lows) - margin, max(highs) + margin)
@@ -259,7 +263,7 @@ with st.spinner(f"⚡ Loading TWP ORB Engine for {selected_symbol}..."):
       )
 
     ax.set_title(
-        f"{active_symbol or selected_symbol} 5m — Clear Opening Range Breakout",
+        f"{active_symbol or selected_symbol} 5m — Crystal Clear Opening Range Breakout",
         color="white",
         fontsize=14,
     )
