@@ -6,67 +6,73 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(
-    page_title="CANDLESENSE Pro by TUCKYAA", page_icon="⚡", layout="wide"
+    page_title="TWP ORB Pro by TUCKYAA", page_icon="⚡", layout="wide"
 )
 
-# Live auto-refresh every 10 seconds (TradingView Live Feed Style)
-count = st_autorefresh(interval=10000, key="tuckyaa_ccxt_strict_refresh")
+# Live auto-refresh every 10 seconds
+count = st_autorefresh(interval=10000, key="twp_orb_refresh")
 
-st.title("⚡ CANDLESENSE Pro by TUCKYAA: BTC CCXT Strict Real-Time Bot")
+st.title("⚡ TWP ORB Bot by TUCKYAA: Opening Range Breakout Strategy")
 st.markdown(
-    f"**Live Feed Active (Refresh Count: {count}) | CCXT Engine Powered | 5m"
-    " Execution | Exact Delta-Matched Levels**"
+    f"**Live Feed Active (Refresh Count: {count}) | Asset: BTC/USDT (CCXT)"
+    " | Strategy: Opening Range Breakout (TWP Style)**"
 )
+
+selected_symbol = "BTC/USDT"
 
 
 @st.cache_data(ttl=10)
-def fetch_strict_ccxt_data():
-  # Multi-exchange CCXT fallback to ensure 100% uptime on Streamlit Cloud
-  exchanges_to_try = [
-      (ccxt.binance, "BTC/USDT"),
-      (ccxt.kraken, "BTC/USD"),
-      (ccxt.coinbase, "BTC/USD"),
-  ]
-
-  for ex_class, symbol in exchanges_to_try:
-    try:
-      exchange = ex_class({
-          "enableRateLimit": True,
-          "timeout": 15000,
-      })
-      ohlcv = exchange.fetch_ohlcv(symbol, timeframe="5m", limit=50)
-      if ohlcv and len(ohlcv) > 0:
-        df = pd.DataFrame(
-            ohlcv,
-            columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
-        )
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-        df.set_index("timestamp", inplace=True)
-        return df, symbol
-    except Exception:
-      continue
-  return None, None
+def fetch_twp_data():
+  try:
+    exchange = ccxt.binance({"enableRateLimit": True, "timeout": 15000})
+    ohlcv = exchange.fetch_ohlcv(selected_symbol, timeframe="5m", limit=50)
+    if ohlcv and len(ohlcv) > 0:
+      df = pd.DataFrame(
+          ohlcv, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"]
+      )
+      df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+      df.set_index("timestamp", inplace=True)
+      return df
+  except Exception:
+    pass
+  return None
 
 
-df_5m, active_symbol = fetch_strict_ccxt_data()
+df_5m = fetch_twp_data()
 
 
-class TuckyasCCXTBot:
+class TWPORBEngine:
 
-  def __init__(self, df_5m):
-    self.df = df_5m.tail(45) if df_5m is not None else None
+  def __init__(self, df):
+    self.df = df if df is not None else None
     self.candles = []
-    self.htf_levels = {}
     self.signals = []
+    self.or_high = 0
+    self.or_low = 0
 
-  def set_exact_levels(self):
-    # Exact Delta Exchange matched levels (4H Resistance: 78009.5, 6H Support: 77764.5)
-    self.htf_levels["4H_Resistance"] = 78009.5
-    self.htf_levels["6H_Support"] = 77764.5
+  def calculate_orb_levels(self):
+    if self.df is not None and len(self.df) >= 10:
+      # Take first 3 candles of the fetched session as the Opening Range (Monitoring Range)
+      monitoring_df = self.df.head(3)
+      self.or_high = float(monitoring_df["High"].max())
+      self.or_low = float(monitoring_df["Low"].min())
 
-  def parse_candles(self):
+  def parse_and_scan(self):
     if self.df is None or self.df.empty:
       return
+
+    # Calculate EMA 20 for trend filter
+    self.df["EMA"] = self.df["Close"].ewm(span=20, adjust=False).mean()
+    # Calculate ATR for SL/TP
+    self.df["TR"] = np.maximum(
+        self.df["High"] - self.df["Low"],
+        np.maximum(
+            abs(self.df["High"] - self.df["Close"].shift(1)),
+            abs(self.df["Low"] - self.df["Close"].shift(1)),
+        ),
+    )
+    self.df["ATR"] = self.df["TR"].rolling(14).mean()
+
     for idx, row in enumerate(self.df.iterrows()):
       r = row[1]
       o, h, l, c = (
@@ -75,6 +81,9 @@ class TuckyasCCXTBot:
           float(r["Low"]),
           float(r["Close"]),
       )
+      ema = float(r["EMA"]) if not pd.isna(r["EMA"]) else c
+      atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else 100.0
+
       self.candles.append({
           "id": idx + 1,
           "color": "Green" if c >= o else "Red",
@@ -82,103 +91,68 @@ class TuckyasCCXTBot:
           "high": h,
           "low": l,
           "close": c,
-          "body": abs(c - o),
+          "ema": ema,
+          "atr": atr,
       })
 
-  def scan_signals(self):
-    if len(self.candles) < 5:
-      return
-    sup = self.htf_levels["6H_Support"]
-    res = self.htf_levels["4H_Resistance"]
-    bodies = [c["body"] for c in self.candles]
-    avg_b = np.mean(bodies) if bodies else 50
-
-    for i in range(4, len(self.candles)):
+    # Scan breakouts after monitoring range (from index 3 onwards)
+    for i in range(3, len(self.candles)):
       c = self.candles[i]
-      c_prev = self.candles[i - 1]
-      c_prev2 = self.candles[i - 2]
-
-      # Zone Reactions & SMC 5 Models Detection
-      if c["high"] >= res - 10 and c["close"] < res:
+      # Bullish Breakout above OR High
+      if c["close"] > self.or_high and self.candles[i - 1]["close"] <= self.or_high:
         self.signals.append({
             "Candle #": c["id"],
-            "Setup": "4H Resistance Rejection",
+            "Setup": "ORB Bullish Breakout",
+            "Action": "Buy / Long (B)",
+            "Price": c["close"],
+            "SL": c["close"] - (1.5 * c["atr"]),
+            "TP": c["close"] + (2.5 * c["atr"]),
+        })
+      # Bearish Breakout below OR Low
+      elif c["close"] < self.or_low and self.candles[i - 1]["close"] >= self.or_low:
+        self.signals.append({
+            "Candle #": c["id"],
+            "Setup": "ORB Bearish Breakout",
             "Action": "Sell / Short (S)",
-            "Price": c["high"],
-        })
-      elif c["low"] <= sup + 10 and c["close"] > sup:
-        self.signals.append({
-            "Candle #": c["id"],
-            "Setup": "6H Support Bounce",
-            "Action": "Buy / Long (B)",
-            "Price": c["low"],
-        })
-      elif (
-          c_prev2["color"] == "Red"
-          and c_prev["color"] == "Green"
-          and c["close"] > c_prev2["high"]
-      ):
-        self.signals.append({
-            "Candle #": c["id"],
-            "Setup": "Breaker Block / IFVG",
-            "Action": "Buy / Long (B)",
             "Price": c["close"],
-        })
-      elif c_prev2["high"] < c["low"] and c_prev["body"] > avg_b * 1.2:
-        self.signals.append({
-            "Candle #": c["id"],
-            "Setup": "Fair Value Gap (FVG)",
-            "Action": "Buy / Long (B)",
-            "Price": c["close"],
-        })
-      elif c_prev["color"] == "Red" and c["body"] > avg_b * 1.5:
-        self.signals.append({
-            "Candle #": c["id"],
-            "Setup": "Order Block (OB)",
-            "Action": "Buy / Long (B)",
-            "Price": c["close"],
+            "SL": c["close"] + (1.5 * c["atr"]),
+            "TP": c["close"] - (2.5 * c["atr"]),
         })
 
 
-with st.spinner(
-    f"⚡ Fetching CCXT Real-Time Clean Data ({active_symbol or 'BTC'})..."
-):
+with st.spinner("⚡ Loading TWP ORB Strategy Engine..."):
   if df_5m is not None and not df_5m.empty:
-    bot = TuckyasCCXTBot(df_5m)
-    bot.set_exact_levels()
-    bot.parse_candles()
-    bot.scan_signals()
+    bot = TWPORBEngine(df_5m)
+    bot.calculate_orb_levels()
+    bot.parse_and_scan()
 
-    curr_p = bot.candles[-1]["close"] if bot.candles else 77929.5
+    curr_p = bot.candles[-1]["close"] if bot.candles else 78000.0
 
     st.markdown("---")
-    st.subheader(f"🎯 TUCKYAA 5-Minute Trade Entries ({active_symbol})")
+    st.subheader("🎯 TWP ORB Trade Setup & Live Metrics")
     c1, c2, c3 = st.columns(3)
     with c1:
       st.info(
-          f"**1️⃣ Scalp Entry:** `{curr_p:.2f}`\n\n*SL:* `{curr_p-80:.2f}` |"
-          f" *TP:* `{curr_p+150:.2f}`"
+          f"**Opening Range High:** `{bot.or_high:.2f}`\n\n*Status:* Active"
+          " Resistance"
       )
     with c2:
       st.success(
-          f"**2️⃣ HTF Zone Re-Test (BEST):** `{curr_p-40:.2f}`\n\n*SL:*"
-          f" `{curr_p-150:.2f}` | *TP:* `{curr_p+300:.2f}`"
+          f"**Opening Range Low:** `{bot.or_low:.2f}`\n\n*Status:* Active"
+          " Support"
       )
     with c3:
       st.warning(
-          f"**3️⃣ Breakout Entry:** `{curr_p+60:.2f}`\n\n*SL:* `{curr_p-120:.2f}`"
-          f" | *TP:* `{curr_p+350:.2f}`"
+          f"**Current Price:** `{curr_p:.2f}`\n\n*Strategy:* Breakout Mode"
       )
 
     if bot.signals:
       st.markdown("---")
-      st.subheader("📋 Detected SMC & HTF Signals")
+      st.subheader("📋 Detected Opening Range Breakout Signals")
       st.dataframe(pd.DataFrame(bot.signals[-4:]), use_container_width=True)
 
     st.markdown("---")
-    st.subheader(
-        f"📈 {active_symbol} 5m Chart — TUCKYAA CCXT Live Execution"
-    )
+    st.subheader("📈 BTC/USDT 5m Chart — TWP Opening Range Breakout Strategy")
     fig, ax = plt.subplots(figsize=(12, 5))
 
     for c in bot.candles:
@@ -194,42 +168,43 @@ with st.spinner(
       )
       ax.vlines(c["id"], c["low"], c["high"], color="#b2b5be", linewidth=1.2)
 
-    sup_lvl = bot.htf_levels["6H_Support"]
+    # Plot OR High Line
     ax.axhline(
-        sup_lvl,
-        color="#26a69a",
-        linestyle="-",
-        linewidth=2,
-        label="6H Support",
-    )
-    ax.text(
-        2,
-        sup_lvl,
-        f"  6H Support ({sup_lvl:.1f})",
-        color="#26a69a",
-        weight="bold",
-        fontsize=10,
-    )
-
-    res_lvl = bot.htf_levels["4H_Resistance"]
-    ax.axhline(
-        res_lvl,
+        bot.or_high,
         color="#ff7043",
-        linestyle="-",
+        linestyle="--",
         linewidth=2,
-        label="4H Resistance",
+        label="OR High (Resistance)",
     )
     ax.text(
         2,
-        res_lvl,
-        f"  4H Resistance ({res_lvl:.1f})",
+        bot.or_high,
+        f"  OR High ({bot.or_high:.1f})",
         color="#ff7043",
         weight="bold",
         fontsize=10,
     )
 
+    # Plot OR Low Line
+    ax.axhline(
+        bot.or_low,
+        color="#26a69a",
+        linestyle="--",
+        linewidth=2,
+        label="OR Low (Support)",
+    )
+    ax.text(
+        2,
+        bot.or_low,
+        f"  OR Low ({bot.or_low:.1f})",
+        color="#26a69a",
+        weight="bold",
+        fontsize=10,
+    )
+
+    # Plot Signal Markers
     for sig in bot.signals[-3:]:
-      tag = "B" if "Buy" in sig["Action"] or "Long" in sig["Action"] else "S"
+      tag = "B" if "Buy" in sig["Action"] else "S"
       tag_color = "#00e676" if tag == "B" else "#ff1744"
       ax.text(
           sig["Candle #"],
@@ -241,9 +216,7 @@ with st.spinner(
       )
 
     ax.set_title(
-        f"{active_symbol} 5m Chart — TUCKYAA CCXT Execution Strategy",
-        color="white",
-        fontsize=14,
+        "BTC/USDT 5m — TWP Opening Range Breakout", color="white", fontsize=14
     )
     ax.set_facecolor("#131722")
     fig.patch.set_facecolor("#1e222d")
@@ -258,7 +231,4 @@ with st.spinner(
 
     st.pyplot(fig)
   else:
-    st.error(
-        "CCXT data load nahi ho paya. Please check your internet connection or"
-        " requirements.txt."
-    )
+    st.error("CCXT data load nahi ho paya. Please check connection.")
