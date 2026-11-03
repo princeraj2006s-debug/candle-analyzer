@@ -1,7 +1,7 @@
 import ccxt
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
@@ -10,12 +10,12 @@ st.set_page_config(
 )
 
 # Live auto-refresh every 10 seconds
-count = st_autorefresh(interval=10000, key="twp_crystal_clear_refresh")
+count = st_autorefresh(interval=10000, key="twp_interactive_refresh")
 
-st.title("⚡ TWP ORB Ultimate Bot by TUCKYAA (Crypto & Gold)")
+st.title("⚡ TWP ORB Ultimate Bot by TUCKYAA (Interactive Chart)")
 st.markdown(
-    f"**Live Feed Active (Refresh Count: {count}) | CCXT Multi-Exchange Engine"
-    " | Crystal Clear Dynamic Candles**"
+    f"**Live Feed Active (Refresh Count: {count}) | CCXT Engine | Interactive"
+    " Touch Chart + Breakout Time Logs**"
 )
 
 # Asset Selection Dropdown
@@ -54,17 +54,16 @@ def fetch_twp_full_data(symbol):
 df_5m, active_symbol = fetch_twp_full_data(selected_symbol)
 
 
-class TWPCompleteEngine:
+class TWPInteractiveEngine:
 
   def __init__(self, df, symbol):
     self.df = df if df is not None else None
     self.symbol = symbol
-    self.candles = []
     self.signals = []
     self.or_high = 0
     self.or_low = 0
 
-  def calculate_indicators(self):
+  def calculate_and_scan(self):
     if self.df is not None and len(self.df) >= 25:
       monitoring_df = self.df.head(4)
       self.or_high = float(monitoring_df["High"].max())
@@ -81,73 +80,49 @@ class TWPCompleteEngine:
       )
       self.df["ATR"] = self.df["TR"].rolling(14).mean()
 
-  def parse_and_scan(self):
-    if self.df is None or self.df.empty:
-      return
+      # Scan breakouts row by row with timestamp
+      for i in range(4, len(self.df)):
+        current_time = self.df.index[i].strftime("%H:%M:%S")
+        c = self.df.iloc[i]
+        prev = self.df.iloc[i - 1]
+        atr = float(c["ATR"]) if not pd.isna(c["ATR"]) else (float(c["Close"]) * 0.002)
 
-    for idx, row in enumerate(self.df.iterrows()):
-      r = row[1]
-      o, h, l, c = (
-          float(r["Open"]),
-          float(r["High"]),
-          float(r["Low"]),
-          float(r["Close"]),
-      )
-      ema = float(r["EMA"]) if not pd.isna(r["EMA"]) else c
-      atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
+        if float(c["Close"]) > self.or_high and float(prev["Close"]) <= self.or_high:
+          if float(c["Close"]) > float(c["EMA"]):
+            sl = float(c["Close"]) - (1.5 * atr)
+            tp = float(c["Close"]) + (2.5 * atr)
+            self.signals.append({
+                "Time": current_time,
+                "Setup": "ORB Bullish Breakout",
+                "Action": "Buy / Long (B)",
+                "Entry Price": round(float(c["Close"]), 2),
+                "Stop Loss (SL)": round(sl, 2),
+                "Take Profit (TP)": round(tp, 2),
+            })
 
-      self.candles.append({
-          "id": idx + 1,
-          "color": "Green" if c >= o else "Red",
-          "open": o,
-          "high": h,
-          "low": l,
-          "close": c,
-          "ema": ema,
-          "atr": atr,
-      })
-
-    for i in range(4, len(self.candles)):
-      c = self.candles[i]
-      prev = self.candles[i - 1]
-
-      if c["close"] > self.or_high and prev["close"] <= self.or_high:
-        if c["close"] > c["ema"]:
-          sl = c["close"] - (1.5 * c["atr"])
-          tp = c["close"] + (2.5 * c["atr"])
-          self.signals.append({
-              "Candle #": c["id"],
-              "Setup": "ORB Bullish Breakout",
-              "Action": "Buy / Long (B)",
-              "Entry Price": round(c["close"], 2),
-              "Stop Loss (SL)": round(sl, 2),
-              "Take Profit (TP)": round(tp, 2),
-          })
-
-      elif c["close"] < self.or_low and prev["close"] >= self.or_low:
-        if c["close"] < c["ema"]:
-          sl = c["close"] + (1.5 * c["atr"])
-          tp = c["close"] - (2.5 * c["atr"])
-          self.signals.append({
-              "Candle #": c["id"],
-              "Setup": "ORB Bearish Breakout",
-              "Action": "Sell / Short (S)",
-              "Entry Price": round(c["close"], 2),
-              "Stop Loss (SL)": round(sl, 2),
-              "Take Profit (TP)": round(tp, 2),
-          })
+        elif float(c["Close"]) < self.or_low and float(prev["Close"]) >= self.or_low:
+          if float(c["Close"]) < float(c["EMA"]):
+            sl = float(c["Close"]) + (1.5 * atr)
+            tp = float(c["Close"]) - (2.5 * atr)
+            self.signals.append({
+                "Time": current_time,
+                "Setup": "ORB Bearish Breakout",
+                "Action": "Sell / Short (S)",
+                "Entry Price": round(float(c["Close"]), 2),
+                "Stop Loss (SL)": round(sl, 2),
+                "Take Profit (TP)": round(tp, 2),
+            })
 
 
-with st.spinner(f"⚡ Loading TWP ORB Engine for {selected_symbol}..."):
+with st.spinner(f"⚡ Loading Interactive Engine for {selected_symbol}..."):
   if df_5m is not None and not df_5m.empty:
-    bot = TWPCompleteEngine(df_5m, selected_symbol)
-    bot.calculate_indicators()
-    bot.parse_and_scan()
+    bot = TWPInteractiveEngine(df_5m, selected_symbol)
+    bot.calculate_and_scan()
 
-    curr_p = bot.candles[-1]["close"] if bot.candles else 0.0
+    curr_p = float(df_5m["Close"].iloc[-1])
 
     st.markdown("---")
-    st.subheader(f"📊 TWP Bot Dashboard & Settings ({active_symbol or selected_symbol})")
+    st.subheader(f"📊 Live Dashboard ({active_symbol or selected_symbol})")
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
@@ -155,132 +130,60 @@ with st.spinner(f"⚡ Loading TWP ORB Engine for {selected_symbol}..."):
     with col2:
       st.metric(label="Opening Range Low", value=f"{bot.or_low:.2f}")
     with col3:
-      st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
+      st.metric(label="Current Price", value=f"{curr_p:.2f}")
     with col4:
-      st.metric(
-          label="News Filter Status",
-          value="Safe (No High Impact)",
-          delta="Active",
-      )
+      st.metric(label="News Filter", value="Safe", delta="Active")
 
     if bot.signals:
       st.markdown("---")
-      st.subheader("📋 Detected Breakout Signals with ATR SL & TP")
-      st.dataframe(pd.DataFrame(bot.signals[-4:]), use_container_width=True)
+      st.subheader("📋 Recent Breakout Signals & Timing History")
+      st.dataframe(pd.DataFrame(bot.signals).tail(5), use_container_width=True)
     else:
-      st.info(
-          f"💡 Bot is monitoring {selected_symbol} Opening Range breakouts with EMA & ATR filters..."
-      )
+      st.info(f"💡 Monitoring {selected_symbol} for breakout triggers...")
 
     st.markdown("---")
-    st.subheader(
-        f"📈 {active_symbol or selected_symbol} 5m Chart — Crystal Clear View"
-    )
-    
-    fig, ax = plt.subplots(figsize=(12, 6.5), dpi=100)
+    st.subheader(f"📈 Interactive Touch Chart — {active_symbol or selected_symbol}")
 
-    for c in bot.candles:
-      col = "#26a69a" if c["color"] == "Green" else "#ef5350"
-      body_size = abs(c["close"] - c["open"])
-      
-      # Smart Minimum Body Height for small price assets like Gold so candles never look like thin invisible lines
-      min_body = curr_p * 0.0008 if "XAUT" in selected_symbol or "ETH" in selected_symbol else curr_p * 0.0003
-      plot_height = max(body_size, min_body)
-      
-      # Adjust bottom coordinate if height was padded
-      if body_size < min_body:
-        plot_bottom = min(c["open"], c["close"]) - ((min_body - body_size) / 2)
-      else:
-        plot_bottom = min(c["open"], c["close"])
-
-      ax.bar(
-          c["id"],
-          plot_height,
-          bottom=plot_bottom,
-          color=col,
-          width=0.7, # Slightly thicker bars for better visibility
-      )
-      ax.vlines(c["id"], c["low"], c["high"], color="#b2b5be", linewidth=1.3)
-
-    # Plot OR High & Low Lines
-    ax.axhline(
-        bot.or_high,
-        color="#ff7043",
-        linestyle="--",
-        linewidth=2,
-        label="OR High (Resistance)",
-    )
-    ax.text(
-        2,
-        bot.or_high,
-        f"  OR High ({bot.or_high:.1f})",
-        color="#ff7043",
-        weight="bold",
-        fontsize=10,
+    # Plotly Candlestick Chart (Fully touch/zoom/pan enabled)
+    fig = go.Figure(
+        data=[
+            go.Candlestick(
+                x=df_5m.index,
+                open=df_5m["Open"],
+                high=df_5m["High"],
+                low=df_5m["Low"],
+                close=df_5m["Close"],
+                name="Candles",
+            )
+        ]
     )
 
-    ax.axhline(
-        bot.or_low,
-        color="#26a69a",
-        linestyle="--",
-        linewidth=2,
-        label="OR Low (Support)",
+    # Add OR High & Low Lines
+    fig.add_hline(
+        y=bot.or_high,
+        line_dash="dash",
+        line_color="#ff7043",
+        annotation_text=f"OR High ({bot.or_high:.1f})",
+        annotation_position="top left",
     )
-    ax.text(
-        2,
-        bot.or_low,
-        f"  OR Low ({bot.or_low:.1f})",
-        color="#26a69a",
-        weight="bold",
-        fontsize=10,
+    fig.add_hline(
+        y=bot.or_low,
+        line_dash="dash",
+        line_color="#26a69a",
+        annotation_text=f"OR Low ({bot.or_low:.1f})",
+        annotation_position="bottom left",
     )
 
-    # Auto-adjust Y-axis limits with padding
-    lows = [c["low"] for c in bot.candles]
-    highs = [c["high"] for c in bot.candles]
-    if bot.or_high > 0:
-      highs.append(bot.or_high)
-    if bot.or_low > 0:
-      lows.append(bot.or_low)
-    
-    if lows and highs:
-      margin = (max(highs) - min(lows)) * 0.09
-      if margin == 0:
-        margin = curr_p * 0.005
-      ax.set_ylim(min(lows) - margin, max(highs) + margin)
-
-    # Plot Signals on Chart
-    for sig in bot.signals[-3:]:
-      tag = "B" if "Buy" in sig["Action"] else "S"
-      tag_color = "#00e676" if tag == "B" else "#ff1744"
-      ax.text(
-          sig["Candle #"],
-          sig["Entry Price"],
-          f" {tag} ",
-          color="white",
-          weight="bold",
-          bbox=dict(boxstyle="round,pad=0.2", facecolor=tag_color, alpha=0.9),
-      )
-
-    ax.set_title(
-        f"{active_symbol or selected_symbol} 5m — Crystal Clear Opening Range Breakout",
-        color="white",
-        fontsize=14,
+    # Chart Styling (TradingView Dark Theme look)
+    fig.update_layout(
+        template="plotly_dark",
+        xaxis_rangeslider_visible=False,
+        height=550,
+        margin=dict(l=10, r=10, t=30, b=10),
+        paper_bgcolor="#1e222d",
+        plot_bgcolor="#131722",
     )
-    ax.set_facecolor("#131722")
-    fig.patch.set_facecolor("#1e222d")
-    ax.tick_params(colors="white")
-    ax.xaxis.label.set_color("white")
-    ax.yaxis.label.set_color("white")
-    ax.spines["bottom"].set_color("#363a45")
-    ax.spines["top"].set_color("#363a45")
-    ax.spines["left"].set_color("#363a45")
-    ax.spines["right"].set_color("#363a45")
-    ax.grid(color="#2a2e39", linestyle="--", linewidth=0.5)
 
-    st.pyplot(fig)
+    st.plotly_chart(fig, use_container_width=True)
   else:
-    st.error(
-        f"Selected asset ({selected_symbol}) data load nahi ho paya. Please"
-        " check connection or symbol support."
-    )
+    st.error("Data load nahi ho paya. Please check connection.")
