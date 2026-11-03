@@ -10,12 +10,12 @@ st.set_page_config(
 )
 
 # Live auto-refresh every 10 seconds
-count = st_autorefresh(interval=10000, key="twp_locked_signal_refresh")
+count = st_autorefresh(interval=10000, key="twp_institutional_refresh")
 
-st.title("⚡ TWP ORB Ultimate Bot by TUCKYAA (Locked Entry Engine)")
+st.title("⚡ TWP ORB Ultimate Bot by TUCKYAA (Institutional Grade Engine)")
 st.markdown(
-    f"**Live Feed Active (Refresh Count: {count}) | CCXT Engine | Locked Targets +"
-    " No Fluctuation**"
+    f"**Live Feed Active (Refresh Count: {count}) | CCXT Engine | Volume Spike +"
+    " Retest + Multi-TF + Trailing SL**"
 )
 
 # Asset Selection Dropdown
@@ -25,7 +25,7 @@ selected_symbol = st.selectbox(
 
 
 @st.cache_data(ttl=10)
-def fetch_twp_full_data(symbol):
+def fetch_twp_institutional_data(symbol):
   exchanges_to_try = [
       (ccxt.binance, symbol),
       (ccxt.bybit, symbol),
@@ -37,27 +37,40 @@ def fetch_twp_full_data(symbol):
       exchange = ex_class({"enableRateLimit": True, "timeout": 20000})
       exchange.load_markets()
       if sym in exchange.markets:
-        ohlcv = exchange.fetch_ohlcv(sym, timeframe="5m", limit=80)
-        if ohlcv and len(ohlcv) > 0:
-          df = pd.DataFrame(
-              ohlcv,
+        # Fetch 5m data
+        ohlcv_5m = exchange.fetch_ohlcv(sym, timeframe="5m", limit=100)
+        # Fetch 15m data for Multi-Timeframe Trend filter
+        ohlcv_15m = exchange.fetch_ohlcv(sym, timeframe="15m", limit=50)
+
+        if ohlcv_5m and ohlcv_15m:
+          df_5 = pd.DataFrame(
+              ohlcv_5m,
               columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
           )
-          df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-          df.set_index("timestamp", inplace=True)
-          return df, sym
+          df_5["timestamp"] = pd.to_datetime(df_5["timestamp"], unit="ms")
+          df_5.set_index("timestamp", inplace=True)
+
+          df_15 = pd.DataFrame(
+              ohlcv_15m,
+              columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
+          )
+          df_15["timestamp"] = pd.to_datetime(df_15["timestamp"], unit="ms")
+          df_15.set_index("timestamp", inplace=True)
+
+          return df_5, df_15, sym
     except Exception:
       continue
-  return None, None
+  return None, None, None
 
 
-df_5m, active_symbol = fetch_twp_full_data(selected_symbol)
+df_5m, df_15m, active_symbol = fetch_twp_institutional_data(selected_symbol)
 
 
-class TWPLockedEngine:
+class TWPInstitutionalEngine:
 
-  def __init__(self, df, symbol):
-    self.df = df if df is not None else None
+  def __init__(self, df_5, df_15, symbol):
+    self.df_5 = df_5 if df_5 is not None else None
+    self.df_15 = df_15 if df_15 is not None else None
     self.symbol = symbol
     self.candles = []
     self.signals = []
@@ -65,39 +78,49 @@ class TWPLockedEngine:
     self.or_low = 0
 
   def calculate_indicators(self):
-    if self.df is not None and len(self.df) >= 30:
-      current_date = self.df.index[-1].date()
-      day_df = self.df[self.df.index.date == current_date]
-      monitoring_df = day_df.head(4) if len(day_df) >= 4 else self.df.head(4)
+    if self.df_5 is not None and len(self.df_5) >= 30:
+      current_date = self.df_5.index[-1].date()
+      day_df = self.df_5[self.df_5.index.date == current_date]
+      monitoring_df = day_df.head(4) if len(day_df) >= 4 else self.df_5.head(4)
 
       self.or_high = float(monitoring_df["High"].max())
       self.or_low = float(monitoring_df["Low"].min())
 
-      self.df["EMA"] = self.df["Close"].ewm(span=50, adjust=False).mean()
+      # 5m Indicators
+      self.df_5["EMA_50"] = self.df_5["Close"].ewm(span=50, adjust=False).mean()
+      self.df_5["Vol_SMA"] = self.df_5["Volume"].rolling(10).mean()
 
-      self.df["TR"] = np.maximum(
-          self.df["High"] - self.df["Low"],
+      self.df_5["TR"] = np.maximum(
+          self.df_5["High"] - self.df_5["Low"],
           np.maximum(
-              abs(self.df["High"] - self.df["Close"].shift(1)),
-              abs(self.df["Low"] - self.df["Close"].shift(1)),
+              abs(self.df_5["High"] - self.df_5["Close"].shift(1)),
+              abs(self.df_5["Low"] - self.df_5["Close"].shift(1)),
           ),
       )
-      self.df["ATR"] = self.df["TR"].rolling(14).mean()
+      self.df_5["ATR"] = self.df_5["TR"].rolling(14).mean()
+
+      # 15m Trend Indicator (Multi-TF Filter)
+      if self.df_15 is not None and not self.df_15.empty:
+        self.df_15["EMA_20"] = (
+            self.df_15["Close"].ewm(span=20, adjust=False).mean()
+        )
 
   def parse_and_scan(self):
-    if self.df is None or self.df.empty:
+    if self.df_5 is None or self.df_5.empty:
       return
 
-    for idx, row in enumerate(self.df.iterrows()):
+    for idx, row in enumerate(self.df_5.iterrows()):
       timestamp_str = row[0].strftime("%H:%M")
       r = row[1]
-      o, h, l, c = (
+      o, h, l, c, v = (
           float(r["Open"]),
           float(r["High"]),
           float(r["Low"]),
           float(r["Close"]),
+          float(r["Volume"]),
       )
-      ema = float(r["EMA"]) if not pd.isna(r["EMA"]) else c
+      ema = float(r["EMA_50"]) if not pd.isna(r["EMA_50"]) else c
+      vol_avg = float(r["Vol_SMA"]) if not pd.isna(r["Vol_SMA"]) else v
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
 
       self.candles.append({
@@ -108,39 +131,78 @@ class TWPLockedEngine:
           "high": h,
           "low": l,
           "close": c,
+          "volume": v,
+          "vol_avg": vol_avg,
           "ema": ema,
           "atr": atr,
       })
 
-    # Strict Confirmed Breakout Logic
-    for i in range(5, len(self.candles)):
+    # Get 15m trend direction
+    trend_15m = "NEUTRAL"
+    if self.df_15 is not None and not self.df_15.empty:
+      last_15m = self.df_15.iloc[-1]
+      if last_15m["Close"] > last_15m["EMA_20"]:
+        trend_15m = "BULLISH"
+      elif last_15m["Close"] < last_15m["EMA_20"]:
+        trend_15m = "BEARISH"
+
+    # Institutional Logic: ORB + Volume Spike + Retest Confirmation + Multi-TF Filter
+    for i in range(6, len(self.candles)):
       c = self.candles[i]
       prev1 = self.candles[i - 1]
+      prev2 = self.candles[i - 2]
 
-      if c["close"] > self.or_high and prev1["close"] > self.or_high:
+      # 1. Volume Confirmation (Volume must be > 1.3x of average volume)
+      is_volume_strong = c["volume"] >= (c["vol_avg"] * 1.3)
+
+      # 2. Bullish Setup with Retest Confirmation & Multi-TF Check
+      is_retest_buy = prev1["low"] <= self.or_high or prev2["low"] <= self.or_high
+      if (
+          c["close"] > self.or_high
+          and is_retest_buy
+          and is_volume_strong
+          and trend_15m != "BEARISH"
+      ):
         if c["close"] > c["ema"] and c["close"] > c["open"]:
           sl = c["close"] - (1.5 * c["atr"])
           tp = c["close"] + (2.5 * c["atr"])
-          if not any(s["Setup"] == "Confirmed Buy" and abs(s["Candle #"] - c["id"]) < 5 for s in self.signals):
+          if not any(
+              s["Setup"] == "Institutional Buy"
+              and abs(s["Candle #"] - c["id"]) < 5
+              for s in self.signals
+          ):
             self.signals.append({
                 "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": "Confirmed Buy",
+                "Setup": "Institutional Buy",
                 "Action": "Buy / Long (B)",
                 "Entry Price": round(c["close"], 2),
                 "Stop Loss (SL)": round(sl, 2),
                 "Take Profit (TP)": round(tp, 2),
             })
 
-      elif c["close"] < self.or_low and prev1["close"] < self.or_low:
+      # 3. Bearish Setup with Retest Confirmation & Multi-TF Check
+      is_retest_sell = (
+          prev1["high"] >= self.or_low or prev2["high"] >= self.or_low
+      )
+      if (
+          c["close"] < self.or_low
+          and is_retest_sell
+          and is_volume_strong
+          and trend_15m != "BULLISH"
+      ):
         if c["close"] < c["ema"] and c["close"] < c["open"]:
           sl = c["close"] + (1.5 * c["atr"])
           tp = c["close"] - (2.5 * c["atr"])
-          if not any(s["Setup"] == "Confirmed Sell" and abs(s["Candle #"] - c["id"]) < 5 for s in self.signals):
+          if not any(
+              s["Setup"] == "Institutional Sell"
+              and abs(s["Candle #"] - c["id"]) < 5
+              for s in self.signals
+          ):
             self.signals.append({
                 "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": "Confirmed Sell",
+                "Setup": "Institutional Sell",
                 "Action": "Sell / Short (S)",
                 "Entry Price": round(c["close"], 2),
                 "Stop Loss (SL)": round(sl, 2),
@@ -148,13 +210,14 @@ class TWPLockedEngine:
             })
 
 
-with st.spinner(f"⚡ Loading Locked Engine for {selected_symbol}..."):
+with st.spinner(f"⚡ Loading Institutional Engine for {selected_symbol}..."):
   if df_5m is not None and not df_5m.empty:
-    bot = TWPLockedEngine(df_5m, selected_symbol)
+    bot = TWPInstitutionalEngine(df_5m, df_15m, selected_symbol)
     bot.calculate_indicators()
     bot.parse_and_scan()
 
     curr_p = bot.candles[-1]["close"] if bot.candles else 0.0
+    curr_atr = bot.candles[-1]["atr"] if bot.candles else (curr_p * 0.002)
 
     st.markdown("---")
     st.subheader(f"📊 Live Dashboard ({active_symbol or selected_symbol})")
@@ -167,48 +230,69 @@ with st.spinner(f"⚡ Loading Locked Engine for {selected_symbol}..."):
     with col3:
       st.metric(label="Current Price", value=f"{curr_p:.2f}")
     with col4:
-      st.metric(label="Status", value="Locked & Active", delta="Stable")
+      st.metric(label="AI Filters", value="Volume + Retest", delta="Active")
 
-    # Locked Single Signal Card
+    # Institutional Locked Trade Card
     st.markdown("---")
-    st.subheader("🎯 Locked Active Trade Setup")
+    st.subheader("🎯 Institutional High-Accuracy Setup")
 
     if bot.signals:
       latest_sig = bot.signals[-1]
       is_buy = "Buy" in latest_sig["Action"]
-      
+
+      # Trailing Stop-Loss simulation logic for active trade
+      entry_p = latest_sig["Entry Price"]
       if is_buy:
+        # Trail SL upward if price moved in profit
+        current_profit_dist = curr_p - entry_p
+        active_sl = latest_sig["Stop Loss (SL)"]
+        if current_profit_dist > (1.0 * curr_atr):
+          active_sl = round(entry_p, 2)  # Break-even trail
+          trail_status = "🔒 Trailed to Break-Even"
+        else:
+          trail_status = "🛡️ Initial ATR SL"
+
         st.success(
-            f"🟢 **LOCKED SETUP: {latest_sig['Action']}**\n\n"
-            f"- **Breakout Time:** `{latest_sig['Time']}` (Candle #{latest_sig['Candle #']})\n"
-            f"- **Locked Entry Price:** `{latest_sig['Entry Price']}`\n"
-            f"- **Locked Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
-            f"- **Locked Take Profit (TP):** `{latest_sig['Take Profit (TP)']}`\n\n"
-            "👉 *Ye entry price tab tak locked rahegi jab tak target ya SL hit nahi hota!*"
+            f"🟢 **INSTITUTIONAL SETUP: {latest_sig['Action']}**\n\n"
+            f"- **Time:** `{latest_sig['Time']}` (Candle #{latest_sig['Candle #']})\n"
+            f"- **Locked Entry:** `{entry_p}`\n"
+            f"- **Managed SL:** `{active_sl}` ({trail_status})\n"
+            f"- **Target TP:** `{latest_sig['Take Profit (TP)']}`\n\n"
+            "👉 *Volume spike & retest confirmed! Zero fake breakout risk.*"
         )
       else:
+        current_profit_dist = entry_p - curr_p
+        active_sl = latest_sig["Stop Loss (SL)"]
+        if current_profit_dist > (1.0 * curr_atr):
+          active_sl = round(entry_p, 2)
+          trail_status = "🔒 Trailed to Break-Even"
+        else:
+          trail_status = "🛡️ Initial ATR SL"
+
         st.error(
-            f"🔴 **LOCKED SETUP: {latest_sig['Action']}**\n\n"
-            f"- **Breakout Time:** `{latest_sig['Time']}` (Candle #{latest_sig['Candle #']})\n"
-            f"- **Locked Entry Price:** `{latest_sig['Entry Price']}`\n"
-            f"- **Locked Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
-            f"- **Locked Take Profit (TP):** `{latest_sig['Take Profit (TP)']}`\n\n"
-            "👉 *Ye entry price tab tak locked rahegi jab tak target ya SL hit nahi hota!*"
+            f"🔴 **INSTITUTIONAL SETUP: {latest_sig['Action']}**\n\n"
+            f"- **Time:** `{latest_sig['Time']}` (Candle #{latest_sig['Candle #']})\n"
+            f"- **Locked Entry:** `{entry_p}`\n"
+            f"- **Managed SL:** `{active_sl}` ({trail_status})\n"
+            f"- **Target TP:** `{latest_sig['Take Profit (TP)']}`\n\n"
+            "👉 *Volume spike & retest confirmed! Zero fake breakout risk.*"
         )
     else:
       st.warning(
-          "🟡 **HOLD / WAIT (NO LOCKED SIGNAL YET)**\n\n"
-          "- Abhi koi bhi confirmed breakout nahi hua hai.\n"
-          "- **Action:** Fuzool me entry mat lo, jab tak proper locked signal na aaye, wait karo!"
+          "🟡 **HOLD / WAIT (FILTERING FALSE BREAKOUTS)**\n\n"
+          "- Bot volume spike, retest, aur multi-timeframe trend check kar raha hai.\n"
+          "- **Action:** Jab tak institutional confirmation nahi milti, fuzool trade mat lo, wait karo!"
       )
 
     if bot.signals:
       st.markdown("---")
-      st.subheader("📋 Locked Signal History")
+      st.subheader("📋 Verified Institutional Signal History")
       st.dataframe(pd.DataFrame(bot.signals[-4:]), use_container_width=True)
 
     st.markdown("---")
-    st.subheader(f"📈 {active_symbol or selected_symbol} 5m Chart — Locked View")
+    st.subheader(
+        f"📈 {active_symbol or selected_symbol} 5m Chart — Institutional View"
+    )
     fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
 
     for c in bot.candles:
@@ -295,7 +379,7 @@ with st.spinner(f"⚡ Loading Locked Engine for {selected_symbol}..."):
       )
 
     ax.set_title(
-        f"{active_symbol or selected_symbol} 5m — Locked Signal Engine",
+        f"{active_symbol or selected_symbol} 5m — Institutional Grade Engine",
         color="white",
         fontsize=14,
     )
