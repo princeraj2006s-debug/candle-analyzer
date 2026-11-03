@@ -10,12 +10,12 @@ st.set_page_config(
 )
 
 # Live auto-refresh every 10 seconds
-count = st_autorefresh(interval=10000, key="twp_interactive_refresh")
+count = st_autorefresh(interval=10000, key="twp_fixed_interactive_refresh")
 
-st.title("⚡ TWP ORB Ultimate Bot by TUCKYAA (Interactive Chart)")
+st.title("⚡ TWP ORB Ultimate Bot by TUCKYAA (Interactive Chart + Signals)")
 st.markdown(
-    f"**Live Feed Active (Refresh Count: {count}) | CCXT Engine | Interactive"
-    " Touch Chart + Breakout Time Logs**"
+    f"**Live Feed Active (Refresh Count: {count}) | CCXT Engine | Touch Chart +"
+    " Visible Breakout Signals & Time Logs**"
 )
 
 # Asset Selection Dropdown
@@ -83,16 +83,19 @@ class TWPInteractiveEngine:
       # Scan breakouts row by row with timestamp
       for i in range(4, len(self.df)):
         current_time = self.df.index[i].strftime("%H:%M:%S")
+        current_timestamp = self.df.index[i]
         c = self.df.iloc[i]
         prev = self.df.iloc[i - 1]
         atr = float(c["ATR"]) if not pd.isna(c["ATR"]) else (float(c["Close"]) * 0.002)
 
+        # Bullish Breakout
         if float(c["Close"]) > self.or_high and float(prev["Close"]) <= self.or_high:
           if float(c["Close"]) > float(c["EMA"]):
             sl = float(c["Close"]) - (1.5 * atr)
             tp = float(c["Close"]) + (2.5 * atr)
             self.signals.append({
                 "Time": current_time,
+                "Timestamp": current_timestamp,
                 "Setup": "ORB Bullish Breakout",
                 "Action": "Buy / Long (B)",
                 "Entry Price": round(float(c["Close"]), 2),
@@ -100,12 +103,14 @@ class TWPInteractiveEngine:
                 "Take Profit (TP)": round(tp, 2),
             })
 
+        # Bearish Breakout
         elif float(c["Close"]) < self.or_low and float(prev["Close"]) >= self.or_low:
           if float(c["Close"]) < float(c["EMA"]):
             sl = float(c["Close"]) + (1.5 * atr)
             tp = float(c["Close"]) - (2.5 * atr)
             self.signals.append({
                 "Time": current_time,
+                "Timestamp": current_timestamp,
                 "Setup": "ORB Bearish Breakout",
                 "Action": "Sell / Short (S)",
                 "Entry Price": round(float(c["Close"]), 2),
@@ -137,12 +142,20 @@ with st.spinner(f"⚡ Loading Interactive Engine for {selected_symbol}..."):
     if bot.signals:
       st.markdown("---")
       st.subheader("📋 Recent Breakout Signals & Timing History")
-      st.dataframe(pd.DataFrame(bot.signals).tail(5), use_container_width=True)
+      df_sigs = pd.DataFrame(bot.signals)
+      st.dataframe(
+          df_sigs.drop(columns=["Timestamp"]).tail(5), use_container_width=True
+      )
     else:
-      st.info(f"💡 Monitoring {selected_symbol} for breakout triggers...")
+      st.info(
+          f"💡 Monitoring {selected_symbol} for breakout triggers with EMA &"
+          " ATR..."
+      )
 
     st.markdown("---")
-    st.subheader(f"📈 Interactive Touch Chart — {active_symbol or selected_symbol}")
+    st.subheader(
+        f"📈 Interactive Touch Chart with Signals — {active_symbol or selected_symbol}"
+    )
 
     # Plotly Candlestick Chart (Fully touch/zoom/pan enabled)
     fig = go.Figure(
@@ -173,6 +186,38 @@ with st.spinner(f"⚡ Loading Interactive Engine for {selected_symbol}..."):
         annotation_text=f"OR Low ({bot.or_low:.1f})",
         annotation_position="bottom left",
     )
+
+    # Add Buy / Sell Signal Markers directly on Plotly Chart
+    if bot.signals:
+      buy_x = [s["Timestamp"] for s in bot.signals if "Buy" in s["Action"]]
+      buy_y = [s["Entry Price"] for s in bot.signals if "Buy" in s["Action"]]
+      sell_x = [s["Timestamp"] for s in bot.signals if "Sell" in s["Action"]]
+      sell_y = [s["Entry Price"] for s in bot.signals if "Sell" in s["Action"]]
+
+      if buy_x:
+        fig.add_trace(
+            go.Scatter(
+                x=buy_x,
+                y=buy_y,
+                mode="text+markers",
+                text=["B"] * len(buy_x),
+                textfont=dict(color="white", size=12, family="Arial Black"),
+                marker=dict(size=14, color="#00e676", symbol="triangle-up"),
+                name="Buy Signal",
+            )
+        )
+      if sell_x:
+        fig.add_trace(
+            go.Scatter(
+                x=sell_x,
+                y=sell_y,
+                mode="text+markers",
+                text=["S"] * len(sell_x),
+                textfont=dict(color="white", size=12, family="Arial Black"),
+                marker=dict(size=14, color="#ff1744", symbol="triangle-down"),
+                name="Sell Signal",
+            )
+        )
 
     # Chart Styling (TradingView Dark Theme look)
     fig.update_layout(
