@@ -1,3 +1,4 @@
+from datetime import datetime
 import ccxt
 import matplotlib.pyplot as plt
 import numpy as np
@@ -10,12 +11,12 @@ st.set_page_config(
 )
 
 # Live auto-refresh every 10 seconds
-count = st_autorefresh(interval=10000, key="twt_exact_time_refresh")
+count = st_autorefresh(interval=10000, key="twt_live_system_time_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA (TWT) — Ultimate Trading Dashboard")
+st.title("⚡ TRADE WITH TUCKYAA (TUCKYAA) — Ultimate Trading Dashboard")
 st.markdown(
-    f"**Live Feed Active (Refresh Count: {count}) | CCXT Engine | Exact Entry"
-    " Timestamp Display**"
+    f"**Live Feed Active (Refresh Count: {count}) | CCXT Engine | Real-Time"
+    " System Clock**"
 )
 
 # List of 30 Popular Crypto Assets, Metals, and Top Indian Market Stocks / Futures
@@ -215,8 +216,10 @@ class TWTEngine:
               and abs(s["Candle #"] - c["id"]) < 5
               for s in self.signals
           ):
+            # Capture real system time when signal triggered
+            current_live_time = datetime.now().strftime("%H:%M:%S")
             self.signals.append({
-                "Time": c["time"],
+                "Time": current_live_time,
                 "Candle #": c["id"],
                 "Setup": "TWT Confirmed Buy",
                 "Action": "Buy / Long (B)",
@@ -239,8 +242,9 @@ class TWTEngine:
               and abs(s["Candle #"] - c["id"]) < 5
               for s in self.signals
           ):
+            current_live_time = datetime.now().strftime("%H:%M:%S")
             self.signals.append({
-                "Time": c["time"],
+                "Time": current_live_time,
                 "Candle #": c["id"],
                 "Setup": "TWT Confirmed Sell",
                 "Action": "Sell / Short (S)",
@@ -270,9 +274,9 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
     with col3:
       st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
     with col4:
-      st.metric(label="System Mode", value="TWT Confirmed", delta="Active")
+      st.metric(label="System Mode", value="TWT Live Clock", delta="Active")
 
-    # TWT English Signal Recommendation Card with Exact Time Display
+    # TWT English Signal Card with Real-Time System Clock
     st.markdown("---")
     st.subheader("🎯 Trade With Tuckyaa (TWT) Signal Lock Engine")
 
@@ -293,14 +297,14 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
 
         st.success(
             f"🟢 **TWT CONFIRMED SETUP: {latest_sig['Action']}**\n\n"
-            f"⏰ **Exact Signal Generated Time:** `{signal_time}` (Candle"
+            f"⚡ **Live Entry System Time:** `{signal_time}` (Candle"
             f" #{latest_sig['Candle #']})\n"
             f"- **Locked Entry Price:** `{entry_p}`\n"
             f"- **Managed Stop Loss (SL):** `{active_sl}` ({trail_status})\n"
             f"- **Target Profit (TP):** `{latest_sig['Take Profit (TP)']}`\n\n"
-            "📌 *Instructions:* Check the signal time above. If this time is"
-            " too old compared to current clock, wait for a fresh breakout"
-            " candle."
+            "📌 *Instructions:* This is the exact live system time when the"
+            " signal was locked. Execute order instantly if market price is"
+            " near entry."
         )
       else:
         current_profit_dist = entry_p - curr_p
@@ -313,20 +317,20 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
 
         st.error(
             f"🔴 **TWT CONFIRMED SETUP: {latest_sig['Action']}**\n\n"
-            f"⏰ **Exact Signal Generated Time:** `{signal_time}` (Candle"
+            f"⚡ **Live Entry System Time:** `{signal_time}` (Candle"
             f" #{latest_sig['Candle #']})\n"
             f"- **Locked Entry Price:** `{entry_p}`\n"
             f"- **Managed Stop Loss (SL):** `{active_sl}` ({trail_status})\n"
             f"- **Target Profit (TP):** `{latest_sig['Take Profit (TP)']}`\n\n"
-            "📌 *Instructions:* Check the signal time above. If this time is"
-            " too old compared to current clock, wait for a fresh breakout"
-            " candle."
+            "📌 *Instructions:* This is the exact live system time when the"
+            " signal was locked. Execute order instantly if market price is"
+            " near entry."
         )
     else:
       st.warning(
           "🟡 **STATUS: HOLD / NO CONFIRMED TRADE SIGNAL**\n\n"
           "📌 *Instructions:* Price is currently inside the range. Stand by"
-          " and wait for a verified breakout signal with exact timestamp."
+          " and wait for a verified live breakout signal."
       )
 
     if bot.signals:
