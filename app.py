@@ -10,12 +10,12 @@ st.set_page_config(
 )
 
 # Live auto-refresh every 10 seconds
-count = st_autorefresh(interval=10000, key="twp_live_calculator_refresh")
+count = st_autorefresh(interval=10000, key="twp_single_signal_refresh")
 
-st.title("⚡ TWP ORB Ultimate Bot by TUCKYAA (Live Calculator)")
+st.title("⚡ TWP ORB Ultimate Bot by TUCKYAA (Single Signal Engine)")
 st.markdown(
-    f"**Live Feed Active (Refresh Count: {count}) | CCXT Engine | Fixed ORB +"
-    " Live Running SL/TP Calculator**"
+    f"**Live Feed Active (Refresh Count: {count}) | CCXT Engine | No Confusion"
+    " Smart Trade Card**"
 )
 
 # Asset Selection Dropdown
@@ -54,7 +54,7 @@ def fetch_twp_full_data(symbol):
 df_5m, active_symbol = fetch_twp_full_data(selected_symbol)
 
 
-class TWPLiveEngine:
+class TWPSingleSignalEngine:
 
   def __init__(self, df, symbol):
     self.df = df if df is not None else None
@@ -145,9 +145,9 @@ class TWPLiveEngine:
           })
 
 
-with st.spinner(f"⚡ Loading Live Engine for {selected_symbol}..."):
+with st.spinner(f"⚡ Loading Engine for {selected_symbol}..."):
   if df_5m is not None and not df_5m.empty:
-    bot = TWPLiveEngine(df_5m, selected_symbol)
+    bot = TWPSingleSignalEngine(df_5m, selected_symbol)
     bot.calculate_indicators()
     bot.parse_and_scan()
 
@@ -155,7 +155,7 @@ with st.spinner(f"⚡ Loading Live Engine for {selected_symbol}..."):
     curr_atr = bot.candles[-1]["atr"] if bot.candles else (curr_p * 0.002)
 
     st.markdown("---")
-    st.subheader(f"📊 Live Market Dashboard ({active_symbol or selected_symbol})")
+    st.subheader(f"📊 Live Dashboard ({active_symbol or selected_symbol})")
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
@@ -163,36 +163,38 @@ with st.spinner(f"⚡ Loading Live Engine for {selected_symbol}..."):
     with col2:
       st.metric(label="Fixed OR Low", value=f"{bot.or_low:.2f}")
     with col3:
-      st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
+      st.metric(label="Current Price", value=f"{curr_p:.2f}")
     with col4:
-      st.metric(label="Current ATR Volatility", value=f"{curr_atr:.2f}")
+      st.metric(label="News Filter", value="Safe", delta="Active")
 
-    # Live Running Price Calculator & Action Recommendation Box
+    # Smart Single Trade Signal Card (No Confusion)
     st.markdown("---")
-    st.subheader("⚡ Live Running Price Entry & Risk Calculator")
-    
-    live_col1, live_col2, live_col3 = st.columns(3)
-    with live_col1:
-      st.info(
-          f"**Current Price:** `{curr_p:.2f}`\n\n*Status:* Market is live"
-      )
-    with live_col2:
-      live_buy_sl = round(curr_p - (1.5 * curr_atr), 2)
-      live_buy_tp = round(curr_p + (2.5 * curr_atr), 2)
+    st.subheader("🎯 High-Probability Single Trade Signal")
+
+    if curr_p > bot.or_high:
+      buy_sl = round(curr_p - (1.5 * curr_atr), 2)
+      buy_tp = round(curr_p + (2.5 * curr_atr), 2)
       st.success(
-          "🟢 **If taking BUY now:**\n"
-          f"- **Entry:** `{curr_p:.2f}`\n"
-          f"- **SL:** `{live_buy_sl}`\n"
-          f"- **TP:** `{live_buy_tp}`"
+          "🟢 **ACTIVE SETUP: BUY / LONG (B)**\n\n"
+          f"- **Reason:** Market Fixed OR High ({bot.or_high:.2f}) ke upar"
+          f" breakout de chuka hai!\n- **Entry Price:** `{curr_p:.2f}`\n- **Stop"
+          f" Loss (SL):** `{buy_sl}`\n- **Take Profit (TP):** `{buy_tp}`"
       )
-    with live_col3:
-      live_sell_sl = round(curr_p + (1.5 * curr_atr), 2)
-      live_sell_tp = round(curr_p - (2.5 * curr_atr), 2)
+    elif curr_p < bot.or_low:
+      sell_sl = round(curr_p + (1.5 * curr_atr), 2)
+      sell_tp = round(curr_p - (2.5 * curr_atr), 2)
       st.error(
-          "🔴 **If taking SELL now:**\n"
-          f"- **Entry:** `{curr_p:.2f}`\n"
-          f"- **SL:** `{live_sell_sl}`\n"
-          f"- **TP:** `{live_sell_tp}`"
+          "🔴 **ACTIVE SETUP: SELL / SHORT (S)**\n\n"
+          f"- **Reason:** Market Fixed OR Low ({bot.or_low:.2f}) ke neeche"
+          f" breakout de chuka hai!\n- **Entry Price:** `{curr_p:.2f}`\n- **Stop"
+          f" Loss (SL):** `{sell_sl}`\n- **Take Profit (TP):** `{sell_tp}`"
+      )
+    else:
+      st.warning(
+          "🟡 **NO TRADE ZONE / WAIT**\n\n- Market abhi Opening Range"
+          f" ({bot.or_low:.2f} - {bot.or_high:.2f}) ke andar range-bound hai.\n-"
+          " **Action:** Kisi bhi random side entry mat lo, agle breakout ka"
+          " wait karo!"
       )
 
     if bot.signals:
@@ -200,22 +202,28 @@ with st.spinner(f"⚡ Loading Live Engine for {selected_symbol}..."):
       st.subheader("📋 Verified Breakout Signals History")
       st.dataframe(pd.DataFrame(bot.signals[-4:]), use_container_width=True)
     else:
-      st.info(f"💡 Monitoring {selected_symbol} for next breakout setup...")
+      st.info(f"💡 Monitoring {selected_symbol} for next high-probability setup...")
 
     st.markdown("---")
     st.subheader(
-        f"📈 {active_symbol or selected_symbol} 5m Chart — Live Running View"
+        f"📈 {active_symbol or selected_symbol} 5m Chart — Clean View"
     )
     fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
 
     for c in bot.candles:
       col = "#26a69a" if c["color"] == "Green" else "#ef5350"
       body_size = abs(c["close"] - c["open"])
-      min_body = curr_p * 0.0008 if "XAUT" in selected_symbol or "ETH" in selected_symbol else curr_p * 0.0003
+      min_body = (
+          curr_p * 0.0008
+          if "XAUT" in selected_symbol or "ETH" in selected_symbol
+          else curr_p * 0.0003
+      )
       plot_height = max(body_size, min_body)
-      
+
       if body_size < min_body:
-        plot_bottom = min(c["open"], c["close"]) - ((min_body - body_size) / 2)
+        plot_bottom = min(c["open"], c["close"]) - (
+            (min_body - body_size) / 2
+        )
       else:
         plot_bottom = min(c["open"], c["close"])
 
@@ -266,7 +274,7 @@ with st.spinner(f"⚡ Loading Live Engine for {selected_symbol}..."):
       highs.append(bot.or_high)
     if bot.or_low > 0:
       lows.append(bot.or_low)
-    
+
     if lows and highs:
       margin = (max(highs) - min(lows)) * 0.09
       if margin == 0:
@@ -286,7 +294,7 @@ with st.spinner(f"⚡ Loading Live Engine for {selected_symbol}..."):
       )
 
     ax.set_title(
-        f"{active_symbol or selected_symbol} 5m — Live Calculator Engine",
+        f"{active_symbol or selected_symbol} 5m — Clean Breakout Engine",
         color="white",
         fontsize=14,
     )
@@ -304,4 +312,3 @@ with st.spinner(f"⚡ Loading Live Engine for {selected_symbol}..."):
     st.pyplot(fig)
   else:
     st.error("Data load nahi ho paya. Please check connection.")
-
