@@ -10,35 +10,48 @@ st.set_page_config(
 )
 
 # Live auto-refresh every 10 seconds
-count = st_autorefresh(interval=10000, key="twp_orb_refresh")
+count = st_autorefresh(interval=10000, key="twp_orb_ccxt_refresh")
 
-st.title("⚡ TWP ORB Bot by TUCKYAA: Opening Range Breakout Strategy")
+st.title("⚡ TWP ORB Bot by TUCKYAA: CCXT Opening Range Breakout")
 st.markdown(
-    f"**Live Feed Active (Refresh Count: {count}) | Asset: BTC/USDT (CCXT)"
-    " | Strategy: Opening Range Breakout (TWP Style)**"
+    f"**Live Feed Active (Refresh Count: {count}) | CCXT Multi-Exchange Engine"
+    " | Strategy: TWP ORB**"
 )
-
-selected_symbol = "BTC/USDT"
 
 
 @st.cache_data(ttl=10)
-def fetch_twp_data():
-  try:
-    exchange = ccxt.binance({"enableRateLimit": True, "timeout": 15000})
-    ohlcv = exchange.fetch_ohlcv(selected_symbol, timeframe="5m", limit=50)
-    if ohlcv and len(ohlcv) > 0:
-      df = pd.DataFrame(
-          ohlcv, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"]
-      )
-      df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-      df.set_index("timestamp", inplace=True)
-      return df
-  except Exception:
-    pass
-  return None
+def fetch_strict_ccxt_orb_data():
+  # Multi-exchange CCXT fallback list to bypass Streamlit Cloud IP restrictions on Binance
+  exchanges_to_try = [
+      (ccxt.binance, "BTC/USDT"),
+      (ccxt.bybit, "BTC/USDT"),
+      (ccxt.kucoin, "BTC/USDT"),
+      (ccxt.mexc, "BTC/USDT"),
+      (ccxt.kraken, "BTC/USD"),
+  ]
+
+  for ex_class, symbol in exchanges_to_try:
+    try:
+      exchange = ex_class({
+          "enableRateLimit": True,
+          "timeout": 20000,
+      })
+      exchange.load_markets()
+      ohlcv = exchange.fetch_ohlcv(symbol, timeframe="5m", limit=50)
+      if ohlcv and len(ohlcv) > 0:
+        df = pd.DataFrame(
+            ohlcv,
+            columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
+        )
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        df.set_index("timestamp", inplace=True)
+        return df, symbol
+    except Exception:
+      continue
+  return None, None
 
 
-df_5m = fetch_twp_data()
+df_5m, active_symbol = fetch_strict_ccxt_orb_data()
 
 
 class TWPORBEngine:
@@ -52,7 +65,6 @@ class TWPORBEngine:
 
   def calculate_orb_levels(self):
     if self.df is not None and len(self.df) >= 10:
-      # Take first 3 candles of the fetched session as the Opening Range (Monitoring Range)
       monitoring_df = self.df.head(3)
       self.or_high = float(monitoring_df["High"].max())
       self.or_low = float(monitoring_df["Low"].min())
@@ -61,9 +73,7 @@ class TWPORBEngine:
     if self.df is None or self.df.empty:
       return
 
-    # Calculate EMA 20 for trend filter
     self.df["EMA"] = self.df["Close"].ewm(span=20, adjust=False).mean()
-    # Calculate ATR for SL/TP
     self.df["TR"] = np.maximum(
         self.df["High"] - self.df["Low"],
         np.maximum(
@@ -95,10 +105,8 @@ class TWPORBEngine:
           "atr": atr,
       })
 
-    # Scan breakouts after monitoring range (from index 3 onwards)
     for i in range(3, len(self.candles)):
       c = self.candles[i]
-      # Bullish Breakout above OR High
       if c["close"] > self.or_high and self.candles[i - 1]["close"] <= self.or_high:
         self.signals.append({
             "Candle #": c["id"],
@@ -108,7 +116,6 @@ class TWPORBEngine:
             "SL": c["close"] - (1.5 * c["atr"]),
             "TP": c["close"] + (2.5 * c["atr"]),
         })
-      # Bearish Breakout below OR Low
       elif c["close"] < self.or_low and self.candles[i - 1]["close"] >= self.or_low:
         self.signals.append({
             "Candle #": c["id"],
@@ -120,7 +127,9 @@ class TWPORBEngine:
         })
 
 
-with st.spinner("⚡ Loading TWP ORB Strategy Engine..."):
+with st.spinner(
+    f"⚡ Fetching CCXT Live Data ({active_symbol or 'Crypto'})..."
+):
   if df_5m is not None and not df_5m.empty:
     bot = TWPORBEngine(df_5m)
     bot.calculate_orb_levels()
@@ -129,7 +138,7 @@ with st.spinner("⚡ Loading TWP ORB Strategy Engine..."):
     curr_p = bot.candles[-1]["close"] if bot.candles else 78000.0
 
     st.markdown("---")
-    st.subheader("🎯 TWP ORB Trade Setup & Live Metrics")
+    st.subheader(f"🎯 TWP ORB Trade Setup & Live Metrics ({active_symbol})")
     c1, c2, c3 = st.columns(3)
     with c1:
       st.info(
@@ -152,7 +161,9 @@ with st.spinner("⚡ Loading TWP ORB Strategy Engine..."):
       st.dataframe(pd.DataFrame(bot.signals[-4:]), use_container_width=True)
 
     st.markdown("---")
-    st.subheader("📈 BTC/USDT 5m Chart — TWP Opening Range Breakout Strategy")
+    st.subheader(
+        f"📈 {active_symbol} 5m Chart — TWP Opening Range Breakout Strategy"
+    )
     fig, ax = plt.subplots(figsize=(12, 5))
 
     for c in bot.candles:
@@ -168,13 +179,12 @@ with st.spinner("⚡ Loading TWP ORB Strategy Engine..."):
       )
       ax.vlines(c["id"], c["low"], c["high"], color="#b2b5be", linewidth=1.2)
 
-    # Plot OR High Line
     ax.axhline(
         bot.or_high,
         color="#ff7043",
         linestyle="--",
         linewidth=2,
-        label="OR High (Resistance)",
+        label="OR High",
     )
     ax.text(
         2,
@@ -185,13 +195,12 @@ with st.spinner("⚡ Loading TWP ORB Strategy Engine..."):
         fontsize=10,
     )
 
-    # Plot OR Low Line
     ax.axhline(
         bot.or_low,
         color="#26a69a",
         linestyle="--",
         linewidth=2,
-        label="OR Low (Support)",
+        label="OR Low",
     )
     ax.text(
         2,
@@ -202,7 +211,6 @@ with st.spinner("⚡ Loading TWP ORB Strategy Engine..."):
         fontsize=10,
     )
 
-    # Plot Signal Markers
     for sig in bot.signals[-3:]:
       tag = "B" if "Buy" in sig["Action"] else "S"
       tag_color = "#00e676" if tag == "B" else "#ff1744"
@@ -216,7 +224,9 @@ with st.spinner("⚡ Loading TWP ORB Strategy Engine..."):
       )
 
     ax.set_title(
-        "BTC/USDT 5m — TWP Opening Range Breakout", color="white", fontsize=14
+        f"{active_symbol} 5m — TWP Opening Range Breakout",
+        color="white",
+        fontsize=14,
     )
     ax.set_facecolor("#131722")
     fig.patch.set_facecolor("#1e222d")
@@ -231,4 +241,7 @@ with st.spinner("⚡ Loading TWP ORB Strategy Engine..."):
 
     st.pyplot(fig)
   else:
-    st.error("CCXT data load nahi ho paya. Please check connection.")
+    st.error(
+        "CCXT data load nahi ho paya. Please check internet connection or"
+        " requirements.txt."
+    )
