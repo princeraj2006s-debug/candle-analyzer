@@ -1,7 +1,6 @@
 streamlit
 streamlit-autorefresh
 ccxt
-pandas
+matplotlib
 numpy
-plotly
-yfinance
+pandas
