@@ -3,26 +3,8 @@ import ccxt
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import requests
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
-
-# ---------------------------------------------------------
-# Telegram Broadcast Integration
-# ---------------------------------------------------------
-TELEGRAM_BOT_TOKEN = "9133468091:AAHIYg_SlGmmBpi-TTZOdITxYmGqvuGaN0k"
-TELEGRAM_CHAT_ID = "-1004389609447"
-
-
-def send_telegram_signal(msg):
-  url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-  payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"}
-  try:
-    res = requests.post(url, json=payload, timeout=10)
-    return res.status_code == 200
-  except Exception:
-    return False
-
 
 st.set_page_config(
     page_title="TWT ORB Pro by TUCKYAA", page_icon="⚡", layout="wide"
@@ -37,6 +19,7 @@ st.markdown(
     " Price Retracement + Multi-TP**"
 )
 
+# List of 30 Popular Crypto Assets, Metals, and Top Indian Market Stocks / Futures
 ASSET_LIST = [
     "BTC/USDT",
     "ETH/USDT",
@@ -70,7 +53,7 @@ ASSET_LIST = [
     "MARUTI/USDT",
 ]
 
-# Sidebar Session Box Panel
+# Sidebar Session Box Panel (Matching MT5 Expert Advisor Layout)
 st.sidebar.markdown("### 🤖 TWT Expert Panel")
 st.sidebar.markdown("---")
 st.sidebar.text(
@@ -87,6 +70,7 @@ st.sidebar.text("Entry method     : Price Retracement")
 st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss          : ATR Managed")
 
+# Asset Selection Dropdown
 selected_symbol = st.selectbox(
     "Select Trading Market Asset (Top 30 Assets)",
     options=ASSET_LIST,
@@ -165,6 +149,7 @@ class TWTEngine:
 
   def calculate_indicators(self):
     if self.df_5 is not None and len(self.df_5) >= 30:
+      # FIXED Opening Range based on the session's first few candles (Non-shifting)
       current_date = self.df_5.index[-1].date()
       day_df = self.df_5[self.df_5.index.date == current_date]
       monitoring_df = day_df.head(4) if len(day_df) >= 4 else self.df_5.head(4)
@@ -245,6 +230,7 @@ class TWTEngine:
       elif last_15m["Close"] < last_15m["EMA_20"]:
         trend_15m = "BEARISH"
 
+    # Scanning with Fixed ORB + Price Retracement Method
     for i in range(6, len(self.candles)):
       c = self.candles[i]
       prev1 = self.candles[i - 1]
@@ -257,6 +243,7 @@ class TWTEngine:
           candle_body >= (total_range * 0.4) if total_range > 0 else True
       )
 
+      # Retracement Buy Check against Fixed OR High
       is_retest_buy = (
           prev1["low"] <= self.or_high or prev2["low"] <= self.or_high
       )
@@ -290,6 +277,7 @@ class TWTEngine:
                 "TP 3": round(tp3, 2),
             })
 
+      # Retracement Sell Check against Fixed OR Low
       is_retest_sell = (
           prev1["high"] >= self.or_low or prev2["high"] >= self.or_low
       )
@@ -347,42 +335,13 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
       st.metric(label="Methodology", value="Fixed ORB + Retest", delta="Active")
 
     st.markdown("---")
-    st.subheader("🎯 Trade With Tuckyaa (TUCKYAA) Fixed ORB Engine")
+    st.subheader("🎯 Trade With Tuckyaa (TWT) Fixed ORB Engine")
 
     if bot.signals:
       latest_sig = bot.signals[-1]
       is_buy = "Buy" in latest_sig["Action"]
       entry_p = latest_sig["Entry Price"]
       signal_time = latest_sig["Time"]
-
-      # Initialize session state for tracking last sent signal to prevent duplicates
-      if "last_auto_sent_sig" not in st.session_state:
-        st.session_state.last_auto_sent_sig = None
-
-      sig_unique_id = (
-          f"{selected_symbol}_{signal_time}_{latest_sig['Action']}_{entry_p}"
-      )
-
-      # Automatically send to Telegram if it's a new signal
-      if st.session_state.last_auto_sent_sig != sig_unique_id:
-        telegram_msg = (
-            f"🚨 *TWT VIP TRADE SIGNAL* 🚨\n\n"
-            f"💎 *Asset:* `{selected_symbol}`\n"
-            f"📊 *Action:* *{latest_sig['Action']}*\n"
-            f"🕒 *Time (IST):* `{signal_time}`\n\n"
-            f"🎯 *Entry Price:* `{entry_p}`\n"
-            f"🛡️ *Stop Loss (SL):* `{latest_sig['Stop Loss (SL)']}`\n"
-            f"🎯 *Target 1 (TP1):* `{latest_sig['TP 1']}`\n"
-            f"🎯 *Target 2 (TP2):* `{latest_sig['TP 2']}`\n"
-            f"🎯 *Target 3 (TP3):* `{latest_sig['TP 3']}`\n\n"
-            f"⚡ *Powered by Trade With Tuckyaa*"
-        )
-        if send_telegram_signal(telegram_msg):
-          st.session_state.last_auto_sent_sig = sig_unique_id
-          st.toast(
-              "🚀 Naya signal automatically Telegram par bhej diya gaya hai!",
-              icon="✅",
-          )
 
       if is_buy:
         current_profit_dist = curr_p - entry_p
@@ -394,12 +353,16 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
           trail_status = "🛡️ Initial Strict SL"
 
         st.success(
-            f"🟢 **TWT SETUP: {latest_sig['Action']}** (Auto-Broadcasted to"
-            f" Telegram)\n\n🕒 **Candle Time (IST):** `{signal_time}` (Candle"
-            f" #{latest_sig['Candle #']})\n- **Entry Price:** `{entry_p}`\n-"
-            f" **Stop Loss (SL):** `{active_sl}` ({trail_status})\n- **TP1:**"
-            f" `{latest_sig['TP 1']}`\n- **TP2:** `{latest_sig['TP 2']}`\n- **TP3:**"
-            f" `{latest_sig['TP 3']}`"
+            f"🟢 **TWT SETUP: {latest_sig['Action']}**\n\n"
+            f"🕒 **Candle Formation Time (IST):** `{signal_time}` (Candle"
+            f" #{latest_sig['Candle #']})\n"
+            f"- **Locked Entry Price:** `{entry_p}`\n"
+            f"- **Managed Stop Loss (SL):** `{active_sl}` ({trail_status})\n"
+            f"- **Target Profit 1 (TP1):** `{latest_sig['TP 1']}`\n"
+            f"- **Target Profit 2 (TP2):** `{latest_sig['TP 2']}`\n"
+            f"- **Target Profit 3 (TP3):** `{latest_sig['TP 3']}`\n\n"
+            "📌 *Instructions:* Fixed session range retest confirmed. Execute"
+            " trade safely!"
         )
       else:
         current_profit_dist = entry_p - curr_p
@@ -411,12 +374,16 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
           trail_status = "🛡️ Initial Strict SL"
 
         st.error(
-            f"🔴 **TWT SETUP: {latest_sig['Action']}** (Auto-Broadcasted to"
-            f" Telegram)\n\n🕒 **Candle Time (IST):** `{signal_time}` (Candle"
-            f" #{latest_sig['Candle #']})\n- **Entry Price:** `{entry_p}`\n-"
-            f" **Stop Loss (SL):** `{active_sl}` ({trail_status})\n- **TP1:**"
-            f" `{latest_sig['TP 1']}`\n- **TP2:** `{latest_sig['TP 2']}`\n- **TP3:**"
-            f" `{latest_sig['TP 3']}`"
+            f"🔴 **TWT SETUP: {latest_sig['Action']}**\n\n"
+            f"🕒 **Candle Formation Time (IST):** `{signal_time}` (Candle"
+            f" #{latest_sig['Candle #']})\n"
+            f"- **Locked Entry Price:** `{entry_p}`\n"
+            f"- **Managed Stop Loss (SL):** `{active_sl}` ({trail_status})\n"
+            f"- **Target Profit 1 (TP1):** `{latest_sig['TP 1']}`\n"
+            f"- **Target Profit 2 (TP2):** `{latest_sig['TP 2']}`\n"
+            f"- **Target Profit 3 (TP3):** `{latest_sig['TP 3']}`\n\n"
+            "📌 *Instructions:* Fixed session range retest confirmed. Execute"
+            " trade safely!"
         )
     else:
       st.warning(
@@ -518,7 +485,7 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
       )
 
     ax.set_title(
-        f"{selected_symbol} 5m — TRADE WITH TUCKYAA (TUCKYAA) Official Engine",
+        f"{selected_symbol} 5m — TRADE WITH TUCKYAA (TWT) Official Engine",
         color="white",
         fontsize=14,
     )
