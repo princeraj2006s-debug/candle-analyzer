@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import ccxt
 import matplotlib.pyplot as plt
 import numpy as np
@@ -17,7 +17,7 @@ count = st_autorefresh(interval=10000, key="twt_telegram_refresh")
 st.title("⚡ TRADE WITH TUCKYAA (TUCKYAA) — Ultimate Trading Dashboard")
 st.markdown(
     f"**Live Feed Active (Refresh Count: {count}) | Fixed ORB + Retracement +"
-    " Telegram VIP Alerts**"
+    " Auto Telegram Alerts**"
 )
 
 # List of 30 Popular Crypto Assets, Metals, and Top Indian Market Stocks / Futures
@@ -54,16 +54,34 @@ ASSET_LIST = [
     "MARUTI/USDT",
 ]
 
-# Sidebar Telegram & Session Panel
-st.sidebar.markdown("### 🤖 TWT Telegram Bot Panel")
+# Sidebar Telegram & Timezone Panel
+st.sidebar.markdown("### 🤖 TWT Telegram Bot & Settings")
 st.sidebar.markdown("---")
 tg_token = st.sidebar.text_input(
     "Telegram Bot Token", value="9133468091:AAHIYg_SlGmmBpi-TTZOdITxYmGqvuGaN0k"
 )
-# Pre-filled with your verified private channel ID
-tg_chat_id = st.sidebar.text_input(
-    "Channel ID (e.g. -100xxxxxxxxxx)", value="-1004389609447"
+tg_chat_id = st.sidebar.text_input("Channel ID", value="-1004389609447")
+
+# Global Timezone selector for users worldwide
+tz_option = st.sidebar.selectbox(
+    "Select Display Timezone",
+    options=["UTC", "IST (India +5:30)", "EST (US)", "CET (Europe)"],
+    index=0,
 )
+
+
+def get_selected_timezone(tz_name):
+  if "IST" in tz_name:
+    return timezone(timedelta(hours=5, minutes=30))
+  elif "EST" in tz_name:
+    return timezone(timedelta(hours=-5))
+  elif "CET" in tz_name:
+    return timezone(timedelta(hours=1))
+  else:
+    return timezone.utc
+
+
+selected_tz = get_selected_timezone(tz_option)
 
 
 def send_telegram_alert(token, chat_id, message):
@@ -78,24 +96,15 @@ def send_telegram_alert(token, chat_id, message):
     return False
 
 
-if st.sidebar.button("🚀 Send Test Signal to Telegram"):
-  test_msg = (
-      "⚡ *TWT VIP TEST SIGNAL* ⚡\n\n"
-      "✅ Bot connection successful!\n"
-      "🎯 Ready to broadcast institutional signals automatically."
-  )
-  if send_telegram_alert(tg_token, tg_chat_id, test_msg):
-    st.sidebar.success("Message sent successfully to Telegram!")
-  else:
-    st.sidebar.error(
-        "Failed! Check Channel ID and ensure bot is admin in the channel."
-    )
+# Initialize session state for tracking sent automatic signals to prevent duplicates
+if "sent_signal_ids" not in st.session_state:
+  st.session_state.sent_signal_ids = set()
 
 st.sidebar.markdown("---")
 st.sidebar.text(
-    f"Server time          ———  {datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime('%H:%M')}"
+    f"Server Time ——— {datetime.now(selected_tz).strftime('%H:%M %Z')}"
 )
-st.sidebar.text("Trading on Session — Active")
+st.sidebar.text("Auto-Broadcast: ACTIVE 🟢")
 
 # Asset Selection Dropdown
 selected_symbol = st.selectbox(
@@ -165,10 +174,11 @@ df_5m, df_15m, active_symbol = fetch_twt_institutional_data(selected_symbol)
 
 class TWTEngine:
 
-  def __init__(self, df_5, df_15, symbol):
+  def __init__(self, df_5, df_15, symbol, tz):
     self.df_5 = df_5 if df_5 is not None else None
     self.df_15 = df_15 if df_15 is not None else None
     self.symbol = symbol
+    self.tz = tz
     self.candles = []
     self.signals = []
     self.or_high = 0
@@ -211,14 +221,12 @@ class TWTEngine:
     if self.df_5 is None or self.df_5.empty:
       return
 
-    IST = timezone(timedelta(hours=5, minutes=30))
-
     for idx, row in enumerate(self.df_5.iterrows()):
       dt_utc = row[0]
       if dt_utc.tzinfo is None:
         dt_utc = dt_utc.replace(tzinfo=timezone.utc)
-      dt_ist = dt_utc.astimezone(IST)
-      timestamp_str = dt_ist.strftime("%H:%M")
+      dt_local = dt_utc.astimezone(self.tz)
+      timestamp_str = dt_local.strftime("%H:%M")
 
       r = row[1]
       o, h, l, c, v = (
@@ -289,7 +297,9 @@ class TWTEngine:
               and abs(s["Candle #"] - c["id"]) < 5
               for s in self.signals
           ):
+            unique_sig_key = f"{self.symbol}_{c['time']}_BUY"
             self.signals.append({
+                "Key": unique_sig_key,
                 "Symbol": self.symbol,
                 "Time": c["time"],
                 "Candle #": c["id"],
@@ -323,7 +333,9 @@ class TWTEngine:
               and abs(s["Candle #"] - c["id"]) < 5
               for s in self.signals
           ):
+            unique_sig_key = f"{self.symbol}_{c['time']}_SELL"
             self.signals.append({
+                "Key": unique_sig_key,
                 "Symbol": self.symbol,
                 "Time": c["time"],
                 "Candle #": c["id"],
@@ -339,12 +351,11 @@ class TWTEngine:
 
 with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
   if df_5m is not None and not df_5m.empty:
-    bot = TWTEngine(df_5m, df_15m, selected_symbol)
+    bot = TWTEngine(df_5m, df_15m, selected_symbol, selected_tz)
     bot.calculate_indicators()
     bot.parse_and_scan()
 
     curr_p = bot.candles[-1]["close"] if bot.candles else 0.0
-    curr_atr = bot.candles[-1]["atr"] if bot.candles else (curr_p * 0.002)
 
     st.markdown("---")
     st.subheader(f"📊 Live Market Dashboard ({selected_symbol})")
@@ -357,22 +368,23 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
     with col3:
       st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
     with col4:
-      st.metric(label="Methodology", value="Fixed ORB + Retest", delta="Active")
+      st.metric(label="Timezone Mode", value=tz_option, delta="Active")
 
     st.markdown("---")
-    st.subheader("🎯 Trade With Tuckyaa (TWT) Fixed ORB Engine")
+    st.subheader("🎯 Trade With Tuckyaa (TUCKYAA) Auto-Signal Engine")
 
     if bot.signals:
       latest_sig = bot.signals[-1]
       is_buy = "BUY" in latest_sig["Action"]
       entry_p = latest_sig["Entry Price"]
       signal_time = latest_sig["Time"]
+      sig_key = latest_sig["Key"]
 
       signal_text = (
           f"🚨 *TWT VIP TRADE SIGNAL* 🚨\n\n"
           f"💎 *Asset:* `{selected_symbol}`\n"
           f"📊 *Action:* *{latest_sig['Action']}*\n"
-          f"🕒 *Time (IST):* `{signal_time}`\n\n"
+          f"🕒 *Time ({tz_option}):* `{signal_time}`\n\n"
           f"🎯 *Entry Price:* `{entry_p}`\n"
           f"🛡️ *Stop Loss (SL):* `{latest_sig['Stop Loss (SL)']}`\n"
           f"🎯 *Target 1 (TP1):* `{latest_sig['TP 1']}`\n"
@@ -381,36 +393,38 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
           f"⚡ *Powered by Trade With Tuckyaa*"
       )
 
+      # --- AUTOMATIC TELEGRAM BROADCAST LOGIC ---
+      if sig_key not in st.session_state.sent_signal_ids:
+        success = send_telegram_alert(tg_token, tg_chat_id, signal_text)
+        if success:
+          st.session_state.sent_signal_ids.add(sig_key)
+          st.success(
+              f"🚀 **Auto-Broadcasted new signal for {selected_symbol} to"
+              " Telegram!**"
+          )
+        else:
+          st.error("Auto-broadcast failed! Check Channel ID or Bot Admin rights.")
+
       if is_buy:
         st.success(
             f"🟢 **TWT SETUP: {latest_sig['Action']}**\n\n"
-            f"🕒 **Time (IST):** `{signal_time}`\n- **Entry:** `{entry_p}`\n-"
-            f" **SL:** `{latest_sig['Stop Loss (SL)']}`\n- **TP1:**"
+            f"🕒 **Time:** `{signal_time}`\n- **Entry:** `{entry_p}`\n- **SL:**"
+            f" `{latest_sig['Stop Loss (SL)']}`\n- **TP1:**"
             f" `{latest_sig['TP 1']}` | **TP2:** `{latest_sig['TP 2']}` |"
             f" **TP3:** `{latest_sig['TP 3']}`"
         )
       else:
         st.error(
             f"🔴 **TWT SETUP: {latest_sig['Action']}**\n\n"
-            f"🕒 **Time (IST):** `{signal_time}`\n- **Entry:** `{entry_p}`\n-"
-            f" **SL:** `{latest_sig['Stop Loss (SL)']}`\n- **TP1:**"
+            f"🕒 **Time:** `{signal_time}`\n- **Entry:** `{entry_p}`\n- **SL:**"
+            f" `{latest_sig['Stop Loss'] if 'Stop Loss' in latest_sig else latest_sig['Stop Loss (SL)']}`\n- **TP1:**"
             f" `{latest_sig['TP 1']}` | **TP2:** `{latest_sig['TP 2']}` |"
             f" **TP3:** `{latest_sig['TP 3']}`"
         )
-
-      if st.button("📢 Broadcast Latest Signal to Telegram Channel"):
-        if send_telegram_alert(tg_token, tg_chat_id, signal_text):
-          st.success("Signal successfully broadcasted to Telegram channel!")
-        else:
-          st.error(
-              "Broadcast failed! Make sure Channel ID is correct and bot is"
-              " Admin."
-          )
     else:
       st.warning(
           "🟡 **STATUS: HOLD / WAITING FOR FIXED RANGE RETEST**\n\n"
-          "📌 *Instructions:* Waiting for clean price pullback near fixed"
-          " opening range boundaries."
+          "📌 *Instructions:* Bot is monitoring live markets automatically."
       )
 
     if bot.signals:
