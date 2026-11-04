@@ -11,12 +11,12 @@ st.set_page_config(
 )
 
 # Live auto-refresh every 10 seconds
-count = st_autorefresh(interval=10000, key="twt_clean_warnings_refresh")
+count = st_autorefresh(interval=10000, key="twt_fixed_orb_refresh")
 
 st.title("⚡ TRADE WITH TUCKYAA (TUCKYAA) — Ultimate Trading Dashboard")
 st.markdown(
-    f"**Live Feed Active (Refresh Count: {count}) | Dynamic Range + Price"
-    " Retracement + Multi-TP**"
+    f"**Live Feed Active (Refresh Count: {count}) | Fixed Opening Range +"
+    " Price Retracement + Multi-TP**"
 )
 
 # List of 30 Popular Crypto Assets, Metals, and Top Indian Market Stocks / Futures
@@ -149,9 +149,13 @@ class TWTEngine:
 
   def calculate_indicators(self):
     if self.df_5 is not None and len(self.df_5) >= 30:
-      recent_window = self.df_5.tail(20)
-      self.or_high = float(recent_window["High"].max())
-      self.or_low = float(recent_window["Low"].min())
+      # FIXED Opening Range based on the session's first few candles (Non-shifting)
+      current_date = self.df_5.index[-1].date()
+      day_df = self.df_5[self.df_5.index.date == current_date]
+      monitoring_df = day_df.head(4) if len(day_df) >= 4 else self.df_5.head(4)
+
+      self.or_high = float(monitoring_df["High"].max())
+      self.or_low = float(monitoring_df["Low"].min())
 
       typical_price = (
           self.df_5["High"] + self.df_5["Low"] + self.df_5["Close"]
@@ -226,6 +230,7 @@ class TWTEngine:
       elif last_15m["Close"] < last_15m["EMA_20"]:
         trend_15m = "BEARISH"
 
+    # Scanning with Fixed ORB + Price Retracement Method
     for i in range(6, len(self.candles)):
       c = self.candles[i]
       prev1 = self.candles[i - 1]
@@ -238,6 +243,7 @@ class TWTEngine:
           candle_body >= (total_range * 0.4) if total_range > 0 else True
       )
 
+      # Retracement Buy Check against Fixed OR High
       is_retest_buy = (
           prev1["low"] <= self.or_high or prev2["low"] <= self.or_high
       )
@@ -255,14 +261,14 @@ class TWTEngine:
           tp3 = c["close"] + (3.5 * c["atr"])
 
           if not any(
-              s["Setup"] == "TWT Dynamic Retracement Buy"
+              s["Setup"] == "TWT Fixed Retracement Buy"
               and abs(s["Candle #"] - c["id"]) < 5
               for s in self.signals
           ):
             self.signals.append({
                 "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": "TWT Dynamic Retracement Buy",
+                "Setup": "TWT Fixed Retracement Buy",
                 "Action": "Buy / Long (B)",
                 "Entry Price": round(c["close"], 2),
                 "Stop Loss (SL)": round(sl, 2),
@@ -271,6 +277,7 @@ class TWTEngine:
                 "TP 3": round(tp3, 2),
             })
 
+      # Retracement Sell Check against Fixed OR Low
       is_retest_sell = (
           prev1["high"] >= self.or_low or prev2["high"] >= self.or_low
       )
@@ -288,14 +295,14 @@ class TWTEngine:
           tp3 = c["close"] - (3.5 * c["atr"])
 
           if not any(
-              s["Setup"] == "TWT Dynamic Retracement Sell"
+              s["Setup"] == "TWT Fixed Retracement Sell"
               and abs(s["Candle #"] - c["id"]) < 5
               for s in self.signals
           ):
             self.signals.append({
                 "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": "TWT Dynamic Retracement Sell",
+                "Setup": "TWT Fixed Retracement Sell",
                 "Action": "Sell / Short (S)",
                 "Entry Price": round(c["close"], 2),
                 "Stop Loss (SL)": round(sl, 2),
@@ -319,16 +326,16 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-      st.metric(label="Dynamic Range High", value=f"{bot.or_high:.2f}")
+      st.metric(label="Fixed Opening High", value=f"{bot.or_high:.2f}")
     with col2:
-      st.metric(label="Dynamic Range Low", value=f"{bot.or_low:.2f}")
+      st.metric(label="Fixed Opening Low", value=f"{bot.or_low:.2f}")
     with col3:
       st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
     with col4:
-      st.metric(label="Methodology", value="Retracement + Multi-TP", delta="Active")
+      st.metric(label="Methodology", value="Fixed ORB + Retest", delta="Active")
 
     st.markdown("---")
-    st.subheader("🎯 Trade With Tuckyaa (TWT) Dynamic Retracement Engine")
+    st.subheader("🎯 Trade With Tuckyaa (TWT) Fixed ORB Engine")
 
     if bot.signals:
       latest_sig = bot.signals[-1]
@@ -346,18 +353,16 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
           trail_status = "🛡️ Initial Strict SL"
 
         st.success(
-            f"🟢 **TWT RETRACEMENT SETUP: {latest_sig['Action']}**\n\n"
+            f"🟢 **TWT SETUP: {latest_sig['Action']}**\n\n"
             f"🕒 **Candle Formation Time (IST):** `{signal_time}` (Candle"
             f" #{latest_sig['Candle #']})\n"
             f"- **Locked Entry Price:** `{entry_p}`\n"
             f"- **Managed Stop Loss (SL):** `{active_sl}` ({trail_status})\n"
-            f"- **Target Profit 1 (TP1):** `{latest_sig['TP 1']}` (Book 50%"
-            " Profit)\n"
-            f"- **Target Profit 2 (TP2):** `{latest_sig['TP 2']}` (Book 30%"
-            " Profit)\n"
-            f"- **Target Profit 3 (TP3):** `{latest_sig['TP 3']}` (Runner)\n\n"
-            "📌 *Instructions:* Retest & volume confirmed near dynamic range."
-            " Execute trade safely!"
+            f"- **Target Profit 1 (TP1):** `{latest_sig['TP 1']}`\n"
+            f"- **Target Profit 2 (TP2):** `{latest_sig['TP 2']}`\n"
+            f"- **Target Profit 3 (TP3):** `{latest_sig['TP 3']}`\n\n"
+            "📌 *Instructions:* Fixed session range retest confirmed. Execute"
+            " trade safely!"
         )
       else:
         current_profit_dist = entry_p - curr_p
@@ -369,24 +374,22 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
           trail_status = "🛡️ Initial Strict SL"
 
         st.error(
-            f"🔴 **TWT RETRACEMENT SETUP: {latest_sig['Action']}**\n\n"
+            f"🔴 **TWT SETUP: {latest_sig['Action']}**\n\n"
             f"🕒 **Candle Formation Time (IST):** `{signal_time}` (Candle"
             f" #{latest_sig['Candle #']})\n"
             f"- **Locked Entry Price:** `{entry_p}`\n"
             f"- **Managed Stop Loss (SL):** `{active_sl}` ({trail_status})\n"
-            f"- **Target Profit 1 (TP1):** `{latest_sig['TP 1']}` (Book 50%"
-            " Profit)\n"
-            f"- **Target Profit 2 (TP2):** `{latest_sig['TP 2']}` (Book 30%"
-            " Profit)\n"
-            f"- **Target Profit 3 (TP3):** `{latest_sig['TP 3']}` (Runner)\n\n"
-            "📌 *Instructions:* Retest & volume confirmed near dynamic range."
-            " Execute trade safely!"
+            f"- **Target Profit 1 (TP1):** `{latest_sig['TP 1']}`\n"
+            f"- **Target Profit 2 (TP2):** `{latest_sig['TP 2']}`\n"
+            f"- **Target Profit 3 (TP3):** `{latest_sig['TP 3']}`\n\n"
+            "📌 *Instructions:* Fixed session range retest confirmed. Execute"
+            " trade safely!"
         )
     else:
       st.warning(
-          "🟡 **STATUS: HOLD / WAITING FOR RETRACEMENT**\n\n"
-          "📌 *Instructions:* Waiting for clean price pullback and retest"
-          " confirmation near dynamic boundaries."
+          "🟡 **STATUS: HOLD / WAITING FOR FIXED RANGE RETEST**\n\n"
+          "📌 *Instructions:* Waiting for clean price pullback near fixed"
+          " opening range boundaries."
       )
 
     if bot.signals:
@@ -429,12 +432,12 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
         color="#ff7043",
         linestyle="--",
         linewidth=2,
-        label="Dynamic High",
+        label="Opening High",
     )
     ax.text(
         2,
         bot.or_high,
-        f"  Dynamic High ({bot.or_high:.1f})",
+        f"  Opening High ({bot.or_high:.1f})",
         color="#ff7043",
         weight="bold",
         fontsize=10,
@@ -445,12 +448,12 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
         color="#26a69a",
         linestyle="--",
         linewidth=2,
-        label="Dynamic Low",
+        label="Opening Low",
     )
     ax.text(
         2,
         bot.or_low,
-        f"  Dynamic Low ({bot.or_low:.1f})",
+        f"  Opening Low ({bot.or_low:.1f})",
         color="#26a69a",
         weight="bold",
         fontsize=10,
