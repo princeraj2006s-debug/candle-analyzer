@@ -238,7 +238,6 @@ class TWTEngine:
           "vwap": vwap,
           "ema": ema,
           "atr": atr,
-          "datetime_utc": dt_utc,  # Added for expiry check
       })
 
     trend_15m = "NEUTRAL"
@@ -294,7 +293,6 @@ class TWTEngine:
                 "TP 1": round(tp1, 2),
                 "TP 2": round(tp2, 2),
                 "TP 3": round(tp3, 2),
-                "Timestamp_UTC": c["datetime_utc"],  # Added for expiry check
             })
 
       # Retracement Sell Check against Fixed OR Low
@@ -329,7 +327,6 @@ class TWTEngine:
                 "TP 1": round(tp1, 2),
                 "TP 2": round(tp2, 2),
                 "TP 3": round(tp3, 2),
-                "Timestamp_UTC": c["datetime_utc"],  # Added for expiry check
             })
 
 
@@ -341,19 +338,6 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
 
     curr_p = bot.candles[-1]["close"] if bot.candles else 0.0
     curr_atr = bot.candles[-1]["atr"] if bot.candles else (curr_p * 0.002)
-
-    # ⏱️ EXPIRY FILTER: Check if the latest signal is older than 30 minutes
-    valid_latest_signal = None
-    if bot.signals:
-      latest_sig = bot.signals[-1]
-      sig_time_utc = latest_sig.get("Timestamp_UTC")
-      if sig_time_utc:
-        if sig_time_utc.tzinfo is None:
-          sig_time_utc = sig_time_utc.replace(tzinfo=timezone.utc)
-        current_utc = datetime.now(timezone.utc)
-        # 30 Minutes Expiry Window
-        if (current_utc - sig_time_utc) <= timedelta(minutes=30):
-          valid_latest_signal = latest_sig
 
     st.markdown("---")
     st.subheader(f"📊 Live Market Dashboard ({selected_symbol})")
@@ -371,8 +355,8 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
     st.markdown("---")
     st.subheader("🎯 Trade With Tuckyaa (TWT) Fixed ORB Engine")
 
-    if valid_latest_signal:
-      latest_sig = valid_latest_signal
+    if bot.signals:
+      latest_sig = bot.signals[-1]
       is_buy = "Buy" in latest_sig["Action"]
       entry_p = latest_sig["Entry Price"]
       signal_time = latest_sig["Time"]
