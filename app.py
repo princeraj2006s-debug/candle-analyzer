@@ -60,8 +60,9 @@ st.sidebar.markdown("---")
 tg_token = st.sidebar.text_input(
     "Telegram Bot Token", value="9133468091:AAHIYg_SlGmmBpi-TTZOdITxYmGqvuGaN0k"
 )
+# Pre-filled with your verified private channel ID
 tg_chat_id = st.sidebar.text_input(
-    "Channel ID (e.g. -100xxxxxxxxxx)", value=""
+    "Channel ID (e.g. -100xxxxxxxxxx)", value="-1004389609447"
 )
 
 
@@ -87,8 +88,7 @@ if st.sidebar.button("🚀 Send Test Signal to Telegram"):
     st.sidebar.success("Message sent successfully to Telegram!")
   else:
     st.sidebar.error(
-        "Failed! Check Channel ID (must start with -100 for private channels)"
-        " and ensure bot is admin."
+        "Failed! Check Channel ID and ensure bot is admin in the channel."
     )
 
 st.sidebar.markdown("---")
@@ -398,7 +398,6 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
             f" **TP3:** `{latest_sig['TP 3']}`"
         )
 
-      # Optional auto-broadcast button or state
       if st.button("📢 Broadcast Latest Signal to Telegram Channel"):
         if send_telegram_alert(tg_token, tg_chat_id, signal_text):
           st.success("Signal successfully broadcasted to Telegram channel!")
