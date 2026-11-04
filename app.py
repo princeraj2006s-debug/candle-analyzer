@@ -11,7 +11,7 @@ st.set_page_config(
 )
 
 # Live auto-refresh every 10 seconds
-count = st_autorefresh(interval=10000, key="twt_dynamic_retrace_refresh")
+count = st_autorefresh(interval=10000, key="twt_clean_warnings_refresh")
 
 st.title("⚡ TRADE WITH TUCKYAA (TUCKYAA) — Ultimate Trading Dashboard")
 st.markdown(
@@ -52,6 +52,23 @@ ASSET_LIST = [
     "ITC/USDT",
     "MARUTI/USDT",
 ]
+
+# Sidebar Session Box Panel (Matching MT5 Expert Advisor Layout)
+st.sidebar.markdown("### 🤖 TWT Expert Panel")
+st.sidebar.markdown("---")
+st.sidebar.text(
+    f"Server time          ———  {datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime('%H:%M')}"
+)
+st.sidebar.text("Monitoring range  ———  02:00 ➔ 03:15")
+st.sidebar.text("Trading range      ———  03:15 ➔ 05:10")
+st.sidebar.markdown("---")
+st.sidebar.text("Trading on Session — Active")
+st.sidebar.text("Spread:  4 (Max. = 50)")
+st.sidebar.markdown("---")
+st.sidebar.markdown("#### Trading Settings")
+st.sidebar.text("Entry method     : Price Retracement")
+st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
+st.sidebar.text("Stop loss          : ATR Managed")
 
 # Asset Selection Dropdown
 selected_symbol = st.selectbox(
@@ -101,14 +118,14 @@ def fetch_twt_institutional_data(symbol):
               columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
           )
           df_5["timestamp"] = pd.to_datetime(df_5["timestamp"], unit="ms")
-          df_5.set_index("timestamp", inplace=True)
+          df_5 = df_5.set_index("timestamp")
 
           df_15 = pd.DataFrame(
               ohlcv_15m,
               columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
           )
           df_15["timestamp"] = pd.to_datetime(df_15["timestamp"], unit="ms")
-          df_15.set_index("timestamp", inplace=True)
+          df_15 = df_15.set_index("timestamp")
 
           return df_5, df_15, symbol
     except Exception:
@@ -132,7 +149,6 @@ class TWTEngine:
 
   def calculate_indicators(self):
     if self.df_5 is not None and len(self.df_5) >= 30:
-      # Dynamic Range: Using recent rolling window instead of static morning start
       recent_window = self.df_5.tail(20)
       self.or_high = float(recent_window["High"].max())
       self.or_low = float(recent_window["Low"].min())
@@ -210,7 +226,6 @@ class TWTEngine:
       elif last_15m["Close"] < last_15m["EMA_20"]:
         trend_15m = "BEARISH"
 
-    # Scanning with Price Retracement + Dynamic Range + Multi-TP
     for i in range(6, len(self.candles)):
       c = self.candles[i]
       prev1 = self.candles[i - 1]
@@ -223,7 +238,6 @@ class TWTEngine:
           candle_body >= (total_range * 0.4) if total_range > 0 else True
       )
 
-      # Retracement Buy Check
       is_retest_buy = (
           prev1["low"] <= self.or_high or prev2["low"] <= self.or_high
       )
@@ -257,7 +271,6 @@ class TWTEngine:
                 "TP 3": round(tp3, 2),
             })
 
-      # Retracement Sell Check
       is_retest_sell = (
           prev1["high"] >= self.or_low or prev2["high"] >= self.or_low
       )
@@ -379,7 +392,7 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
     if bot.signals:
       st.markdown("---")
       st.subheader("📋 Verified TWT Signal Execution History")
-      st.dataframe(pd.DataFrame(bot.signals[-5:]), use_container_width=True)
+      st.dataframe(pd.DataFrame(bot.signals[-5:]), width="stretch")
 
     st.markdown("---")
     st.subheader(f"📈 {selected_symbol} 5m Real-Time Chart")
