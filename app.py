@@ -14,11 +14,12 @@ st.set_page_config(
 count = st_autorefresh(interval=10000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Delta Exchange 4H/6H Retest Dashboard"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Delta Exchange 4H/6H Resistance/Support"
+    " Dashboard"
 )
 st.markdown(
     f"**Live Feed Active (Refresh Count: {count}) | 6H Support & 4H Resistance +"
-    " Verified Retest & Confirmation Engine + Multi-TP**"
+    " Verified Retest & Rejection Engine + Multi-TP**"
 )
 
 # Delta Exchange 20 Crypto & Metal Assets (No Indian Stocks)
@@ -58,7 +59,7 @@ st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.text("Spread:  4 (Max. = 50)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Settings")
-st.sidebar.text("Entry method     : 5m Retest + Rejection")
+st.sidebar.text("Entry method     : Resistance Rejection & Retest")
 st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss          : ATR Managed")
 
@@ -141,11 +142,9 @@ class TWTDeltaEngine:
 
   def calculate_indicators(self):
     if self.df_5 is not None and len(self.df_5) >= 30:
-      # 4H Resistance (1:30 candle high reference)
       if self.df_4 is not None and not self.df_4.empty:
         self.resistance_lvl = float(self.df_4["High"].iloc[-1])
 
-      # 6H Support (5:30 candle low reference)
       if self.df_6 is not None and not self.df_6.empty:
         self.support_lvl = float(self.df_6["Low"].iloc[-1])
       elif self.df_4 is not None:
@@ -216,134 +215,100 @@ class TWTDeltaEngine:
           "atr": atr,
       })
 
-    breakout_active_buy = False
-    breakout_active_sell = False
-    last_breakout_high_idx = -1
-    last_breakout_low_idx = -1
-
     for i in range(7, len(self.candles)):
       c = self.candles[i]
       prev1 = self.candles[i - 1]
 
-      is_volume_strong = c["volume"] >= (c["vol_avg"] * 1.2)
+      is_volume_strong = c["volume"] >= (c["vol_avg"] * 1.1)
       candle_body = abs(c["close"] - c["open"])
       total_range = c["high"] - c["low"]
       is_body_strong = (
-          candle_body >= (total_range * 0.5) if total_range > 0 else True
+          candle_body >= (total_range * 0.4) if total_range > 0 else True
       )
       atr = c["atr"]
 
-      # News / Volatility Filter Check
+      # Volatility / News Filter
       avg_atr = np.mean([x["atr"] for x in self.candles[-20:]])
       if atr > (2.5 * avg_atr):
         continue
 
-      # 1. Breakout Confirmation past 4H Resistance
-      if (
-          prev1["close"] > self.resistance_lvl
-          and prev1["id"] > last_breakout_high_idx
-      ):
-        breakout_active_buy = True
-        last_breakout_high_idx = prev1["id"]
-
-      # 2. Breakdown Confirmation past 6H Support
-      if (
-          prev1["close"] < self.support_lvl
-          and prev1["id"] > last_breakout_low_idx
-      ):
-        breakout_active_sell = True
-        last_breakout_low_idx = prev1["id"]
-
-      # Invalidation Check
-      if breakout_active_buy and c["close"] < (
-          self.resistance_lvl - (0.5 * (self.resistance_lvl - self.support_lvl))
-      ):
-        breakout_active_buy = False
-
-      if breakout_active_sell and c["close"] > (
-          self.support_lvl + (0.5 * (self.resistance_lvl - self.support_lvl))
-      ):
-        breakout_active_sell = False
-
-      # 3. 5m Retest & Rejection Confirmation for BUY
-      is_pin_bar_buy = (min(c["open"], c["close"]) - c["low"]) >= (
-          candle_body * 1.5
+      # Resistance Rejection Sell Check (Jab price 4H Resistance ke paas ho aur wahan se reject ho)
+      is_near_resistance = (
+          c["high"] >= self.resistance_lvl - (0.5 * atr)
+          and c["high"] <= self.resistance_lvl + (0.8 * atr)
       )
-      if breakout_active_buy:
-        is_pullback_touch = (
-            c["low"] <= self.resistance_lvl + (0.3 * atr)
-            and c["low"] >= self.resistance_lvl - (0.5 * atr)
-        )
-        if (
-            is_pullback_touch
-            and (is_pin_bar_buy or c["close"] > c["open"])
-            and c["close"] > c["vwap"]
-            and c["rsi"] > 50.0
-            and is_volume_strong
-            and is_body_strong
+      upper_wick_rejection = (
+          c["high"] - max(c["open"], c["close"])
+      ) >= candle_body * 1.2
+
+      if (
+          is_near_resistance
+          and (upper_wick_rejection or c["close"] < c["open"])
+          and c["close"] < self.resistance_lvl
+          and c["close"] < c["vwap"]
+          and rsi < 55.0
+          and is_volume_strong
+      ):
+        sl = c["high"] + (1.2 * atr)
+        tp1 = c["close"] - (1.0 * atr)
+        tp2 = c["close"] - (2.0 * atr)
+        tp3 = c["close"] - (3.5 * atr)
+
+        if not any(
+            s["Setup"] == "TWT Resistance Rejection Sell"
+            and abs(s["Candle #"] - c["id"]) < 8
+            for s in self.signals
         ):
-          sl = c["close"] - (1.2 * atr)
-          tp1 = c["close"] + (1.0 * atr)
-          tp2 = c["close"] + (2.0 * atr)
-          tp3 = c["close"] + (3.5 * atr)
+          self.signals.append({
+              "Time": c["time"],
+              "Candle #": c["id"],
+              "Setup": "TWT Resistance Rejection Sell",
+              "Action": "Sell / Short (S)",
+              "Entry Price": round(c["close"], 2),
+              "Stop Loss (SL)": round(sl, 2),
+              "TP 1": round(tp1, 2),
+              "TP 2": round(tp2, 2),
+              "TP 3": round(tp3, 2),
+          })
 
-          if not any(
-              s["Setup"] == "TWT Delta 4H/6H Retest Buy"
-              and abs(s["Candle #"] - c["id"]) < 8
-              for s in self.signals
-          ):
-            self.signals.append({
-                "Time": c["time"],
-                "Candle #": c["id"],
-                "Setup": "TWT Delta 4H/6H Retest Buy",
-                "Action": "Buy / Long (B)",
-                "Entry Price": round(c["close"], 2),
-                "Stop Loss (SL)": round(sl, 2),
-                "TP 1": round(tp1, 2),
-                "TP 2": round(tp2, 2),
-                "TP 3": round(tp3, 2),
-            })
-            breakout_active_buy = False
-
-      # 4. 5m Retest & Rejection Confirmation for SELL
-      is_pin_bar_sell = (c["high"] - max(c["open"], c["close"])) >= (
-          candle_body * 1.5
+      # Support Rejection Buy Check (Jab price 6H Support ke paas ho aur wahan se bounce kare)
+      is_near_support = (
+          c["low"] <= self.support_lvl + (0.5 * atr)
+          and c["low"] >= self.support_lvl - (0.8 * atr)
       )
-      if breakout_active_sell:
-        is_pullback_touch = (
-            c["high"] >= self.support_lvl - (0.3 * atr)
-            and c["high"] <= self.support_lvl + (0.5 * atr)
-        )
-        if (
-            is_pullback_touch
-            and (is_pin_bar_sell or c["close"] < c["open"])
-            and c["close"] < c["vwap"]
-            and c["rsi"] < 50.0
-            and is_volume_strong
-            and is_body_strong
-        ):
-          sl = c["close"] + (1.2 * atr)
-          tp1 = c["close"] - (1.0 * atr)
-          tp2 = c["close"] - (2.0 * atr)
-          tp3 = c["close"] - (3.5 * atr)
+      lower_wick_rejection = (
+          min(c["open"], c["close"]) - c["low"]
+      ) >= candle_body * 1.2
 
-          if not any(
-              s["Setup"] == "TWT Delta 4H/6H Retest Sell"
-              and abs(s["Candle #"] - c["id"]) < 8
-              for s in self.signals
-          ):
-            self.signals.append({
-                "Time": c["time"],
-                "Candle #": c["id"],
-                "Setup": "TWT Delta 4H/6H Retest Sell",
-                "Action": "Sell / Short (S)",
-                "Entry Price": round(c["close"], 2),
-                "Stop Loss (SL)": round(sl, 2),
-                "TP 1": round(tp1, 2),
-                "TP 2": round(tp2, 2),
-                "TP 3": round(tp3, 2),
-            })
-            breakout_active_sell = False
+      if (
+          is_near_support
+          and (lower_wick_rejection or c["close"] > c["open"])
+          and c["close"] > self.support_lvl
+          and c["close"] > c["vwap"]
+          and rsi > 45.0
+          and is_volume_strong
+      ):
+        sl = c["low"] - (1.2 * atr)
+        tp1 = c["close"] + (1.0 * atr)
+        tp2 = c["close"] + (2.0 * atr)
+        tp3 = c["close"] + (3.5 * atr)
+
+        if not any(
+            s["Setup"] == "TWT Support Rejection Buy"
+            and abs(s["Candle #"] - c["id"]) < 8
+            for s in self.signals
+        ):
+          self.signals.append({
+              "Time": c["time"],
+              "Candle #": c["id"],
+              "Setup": "TWT Support Rejection Buy",
+              "Action": "Buy / Long (B)",
+              "Entry Price": round(c["close"], 2),
+              "Stop Loss (SL)": round(sl, 2),
+              "TP 1": round(tp1, 2),
+              "TP 2": round(tp2, 2),
+              "TP 3": round(tp3, 2),
+          })
 
 
 with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
@@ -367,11 +332,13 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
       st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
     with col4:
       st.metric(
-          label="Methodology", value="4H/6H Retest + Rejection", delta="Active"
+          label="Methodology",
+          value="Resistance/Support Rejection",
+          delta="Active",
       )
 
     st.markdown("---")
-    st.subheader("🎯 Trade With Tuckyaa (TWT) Delta Retest Engine")
+    st.subheader("🎯 Trade With Tuckyaa (TWT) Delta Rejection Engine")
 
     if bot.signals:
       latest_sig = bot.signals[-1]
@@ -397,8 +364,8 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
             f"- **Target Profit 1 (TP1):** `{latest_sig['TP 1']}`\n"
             f"- **Target Profit 2 (TP2):** `{latest_sig['TP 2']}`\n"
             f"- **Target Profit 3 (TP3):** `{latest_sig['TP 3']}`\n\n"
-            "📌 *Instructions:* 4H/6H level retest & rejection confirmed."
-            " Execute trade safely!"
+            "📌 *Instructions:* Support bounce & rejection confirmed. Execute"
+            " trade safely!"
         )
       else:
         current_profit_dist = entry_p - curr_p
@@ -418,14 +385,14 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
             f"- **Target Profit 1 (TP1):** `{latest_sig['TP 1']}`\n"
             f"- **Target Profit 2 (TP2):** `{latest_sig['TP 2']}`\n"
             f"- **Target Profit 3 (TP3):** `{latest_sig['TP 3']}`\n\n"
-            "📌 *Instructions:* 4H/6H level retest & rejection confirmed."
-            " Execute trade safely!"
+            "📌 *Instructions:* Resistance rejection confirmed. Execute short"
+            " trade safely!"
         )
     else:
       st.warning(
-          "🟡 **STATUS: HOLD / WAITING FOR 4H/6H RETEST**\n\n"
-          "📌 *Instructions:* Waiting for clean price breakout and retest near"
-          " 4H Resistance or 6H Support."
+          "🟡 **STATUS: HOLD / WAITING FOR KEY LEVEL REJECTION**\n\n"
+          "📌 *Instructions:* Waiting for clean price reaction near 4H"
+          " Resistance or 6H Support."
       )
 
     if bot.signals:
@@ -508,7 +475,7 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
       ax.text(
           sig["Candle #"],
           sig["Entry Price"],
-          f" RETEST {tag} ",
+          f" {tag} ",
           color="white",
           weight="bold",
           bbox=dict(boxstyle="round,pad=0.2", facecolor=tag_color, alpha=0.9),
