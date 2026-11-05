@@ -7,19 +7,21 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(
-    page_title="TWT ORB Pro by TUCKYAA", page_icon="⚡", layout="wide"
+    page_title="TWT Delta Pro by TUCKYAA", page_icon="⚡", layout="wide"
 )
 
 # Live auto-refresh every 10 seconds
-count = st_autorefresh(interval=10000, key="twt_fixed_orb_refresh")
+count = st_autorefresh(interval=10000, key="twt_delta_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA (TUCKYAA) — Ultimate Trading Dashboard")
+st.title(
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Delta Exchange 4H/6H Retest Dashboard"
+)
 st.markdown(
-    f"**Live Feed Active (Refresh Count: {count}) | Fixed Opening Range +"
-    " Price Retracement + Multi-TP**"
+    f"**Live Feed Active (Refresh Count: {count}) | 6H Support & 4H Resistance +"
+    " Verified Retest & Confirmation Engine + Multi-TP**"
 )
 
-# List of 30 Popular Crypto Assets, Metals, and Top Indian Market Stocks / Futures
+# Delta Exchange 20 Crypto & Metal Assets (No Indian Stocks)
 ASSET_LIST = [
     "BTC/USDT",
     "ETH/USDT",
@@ -36,83 +38,54 @@ ASSET_LIST = [
     "DOT/USDT",
     "NEAR/USDT",
     "APT/USDT",
-    "NIFTY/USDT",
-    "BANKNIFTY/USDT",
-    "RELIANCE/USDT",
-    "TCS/USDT",
-    "INFY/USDT",
-    "HDFCBANK/USDT",
-    "ICICIBANK/USDT",
-    "TATAMOTORS/USDT",
-    "SBIN/USDT",
-    "ADANIENT/USDT",
-    "AXISBANK/USDT",
-    "LT/USDT",
-    "BHARTIARTL/USDT",
-    "ITC/USDT",
-    "MARUTI/USDT",
+    "ARB/USDT",
+    "OP/USDT",
+    "SUI/USDT",
+    "FIL/USDT",
+    "RENDER/USDT",
 ]
 
-# Sidebar Session Box Panel (Matching MT5 Expert Advisor Layout)
+# Sidebar Session Box Panel
 st.sidebar.markdown("### 🤖 TWT Expert Panel")
 st.sidebar.markdown("---")
 st.sidebar.text(
     f"Server time          ———  {datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime('%H:%M')}"
 )
-st.sidebar.text("Monitoring range  ———  02:00 ➔ 03:15")
-st.sidebar.text("Trading range      ———  03:15 ➔ 05:10")
+st.sidebar.text("Support Ref (6H)   ———  05:30 Candle Low")
+st.sidebar.text("Resistance Ref (4H) ———  01:30 Candle High")
 st.sidebar.markdown("---")
-st.sidebar.text("Trading on Session — Active")
+st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.text("Spread:  4 (Max. = 50)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Settings")
-st.sidebar.text("Entry method     : Price Retracement")
+st.sidebar.text("Entry method     : 5m Retest + Rejection")
 st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss          : ATR Managed")
 
 # Asset Selection Dropdown
 selected_symbol = st.selectbox(
-    "Select Trading Market Asset (Top 30 Assets)",
-    options=ASSET_LIST,
-    index=0,
+    "Select Delta Exchange Asset", options=ASSET_LIST, index=0
 )
 
 
 @st.cache_data(ttl=10)
-def fetch_twt_institutional_data(symbol):
+def fetch_twt_delta_data(symbol):
   exchanges_to_try = [
       (ccxt.binance, symbol),
       (ccxt.bybit, symbol),
       (ccxt.kucoin, symbol),
-      (ccxt.mexc, symbol),
   ]
-
-  fallback_symbol = symbol
-  if "NIFTY" in symbol:
-    fallback_symbol = "BTC/USDT"
-  elif "BANKNIFTY" in symbol:
-    fallback_symbol = "ETH/USDT"
-  elif "RELIANCE" in symbol or "TCS" in symbol:
-    fallback_symbol = "SOL/USDT"
-  elif "INFY" in symbol or "HDFCBANK" in symbol:
-    fallback_symbol = "XRP/USDT"
-  elif "ICICIBANK" in symbol or "TATAMOTORS" in symbol:
-    fallback_symbol = "BNB/USDT"
-  elif "SBIN" in symbol or "ADANIENT" in symbol:
-    fallback_symbol = "AVAX/USDT"
 
   for ex_class, sym in exchanges_to_try:
     try:
       exchange = ex_class({"enableRateLimit": True, "timeout": 20000})
       exchange.load_markets()
-      target_sym = sym if sym in exchange.markets else fallback_symbol
-      if target_sym in exchange.markets:
-        ohlcv_5m = exchange.fetch_ohlcv(target_sym, timeframe="5m", limit=100)
-        ohlcv_15m = exchange.fetch_ohlcv(
-            target_sym, timeframe="15m", limit=50
-        )
+      if sym in exchange.markets:
+        ohlcv_5m = exchange.fetch_ohlcv(sym, timeframe="5m", limit=100)
+        ohlcv_4h = exchange.fetch_ohlcv(sym, timeframe="4h", limit=20)
+        ohlcv_6h = exchange.fetch_ohlcv(sym, timeframe="6h", limit=20)
 
-        if ohlcv_5m and ohlcv_15m:
+        if ohlcv_5m and ohlcv_4h:
           df_5 = pd.DataFrame(
               ohlcv_5m,
               columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
@@ -120,42 +93,63 @@ def fetch_twt_institutional_data(symbol):
           df_5["timestamp"] = pd.to_datetime(df_5["timestamp"], unit="ms")
           df_5 = df_5.set_index("timestamp")
 
-          df_15 = pd.DataFrame(
-              ohlcv_15m,
+          df_4 = pd.DataFrame(
+              ohlcv_4h,
               columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
           )
-          df_15["timestamp"] = pd.to_datetime(df_15["timestamp"], unit="ms")
-          df_15 = df_15.set_index("timestamp")
+          df_4["timestamp"] = pd.to_datetime(df_4["timestamp"], unit="ms")
+          df_4 = df_4.set_index("timestamp")
 
-          return df_5, df_15, symbol
+          df_6 = (
+              pd.DataFrame(
+                  ohlcv_6h,
+                  columns=[
+                      "timestamp",
+                      "Open",
+                      "High",
+                      "Low",
+                      "Close",
+                      "Volume",
+                  ],
+              )
+              if ohlcv_6h
+              else df_4.copy()
+          )
+          df_6["timestamp"] = pd.to_datetime(df_6["timestamp"], unit="ms")
+          df_6 = df_6.set_index("timestamp")
+
+          return df_5, df_4, df_6, symbol
     except Exception:
       continue
-  return None, None, None
+  return None, None, None, None
 
 
-df_5m, df_15m, active_symbol = fetch_twt_institutional_data(selected_symbol)
+df_5m, df_4h, df_6h, active_symbol = fetch_twt_delta_data(selected_symbol)
 
 
-class TWTEngine:
+class TWTDeltaEngine:
 
-  def __init__(self, df_5, df_15, symbol):
+  def __init__(self, df_5, df_4, df_6, symbol):
     self.df_5 = df_5 if df_5 is not None else None
-    self.df_15 = df_15 if df_15 is not None else None
+    self.df_4 = df_4 if df_4 is not None else None
+    self.df_6 = df_6 if df_6 is not None else None
     self.symbol = symbol
     self.candles = []
     self.signals = []
-    self.or_high = 0
-    self.or_low = 0
+    self.resistance_lvl = 0
+    self.support_lvl = 0
 
   def calculate_indicators(self):
     if self.df_5 is not None and len(self.df_5) >= 30:
-      # FIXED Opening Range based on the session's first few candles (Non-shifting)
-      current_date = self.df_5.index[-1].date()
-      day_df = self.df_5[self.df_5.index.date == current_date]
-      monitoring_df = day_df.head(4) if len(day_df) >= 4 else self.df_5.head(4)
+      # 4H Resistance (1:30 candle high reference)
+      if self.df_4 is not None and not self.df_4.empty:
+        self.resistance_lvl = float(self.df_4["High"].iloc[-1])
 
-      self.or_high = float(monitoring_df["High"].max())
-      self.or_low = float(monitoring_df["Low"].min())
+      # 6H Support (5:30 candle low reference)
+      if self.df_6 is not None and not self.df_6.empty:
+        self.support_lvl = float(self.df_6["Low"].iloc[-1])
+      elif self.df_4 is not None:
+        self.support_lvl = float(self.df_4["Low"].iloc[-1])
 
       typical_price = (
           self.df_5["High"] + self.df_5["Low"] + self.df_5["Close"]
@@ -164,8 +158,13 @@ class TWTEngine:
           (typical_price * self.df_5["Volume"]).cumsum()
           / self.df_5["Volume"].cumsum()
       )
-      self.df_5["EMA_50"] = self.df_5["Close"].ewm(span=50, adjust=False).mean()
       self.df_5["Vol_SMA"] = self.df_5["Volume"].rolling(10).mean()
+
+      delta = self.df_5["Close"].diff()
+      gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+      loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+      rs = gain / loss
+      self.df_5["RSI_14"] = 100 - (100 / (1 + rs))
 
       self.df_5["TR"] = np.maximum(
           self.df_5["High"] - self.df_5["Low"],
@@ -175,11 +174,6 @@ class TWTEngine:
           ),
       )
       self.df_5["ATR"] = self.df_5["TR"].rolling(14).mean()
-
-      if self.df_15 is not None and not self.df_15.empty:
-        self.df_15["EMA_20"] = (
-            self.df_15["Close"].ewm(span=20, adjust=False).mean()
-        )
 
   def parse_and_scan(self):
     if self.df_5 is None or self.df_5.empty:
@@ -203,8 +197,8 @@ class TWTEngine:
           float(r["Volume"]),
       )
       vwap = float(r["VWAP"]) if not pd.isna(r["VWAP"]) else c
-      ema = float(r["EMA_50"]) if not pd.isna(r["EMA_50"]) else c
       vol_avg = float(r["Vol_SMA"]) if not pd.isna(r["Vol_SMA"]) else v
+      rsi = float(r["RSI_14"]) if not pd.isna(r["RSI_14"]) else 50.0
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
 
       self.candles.append({
@@ -218,57 +212,90 @@ class TWTEngine:
           "volume": v,
           "vol_avg": vol_avg,
           "vwap": vwap,
-          "ema": ema,
+          "rsi": rsi,
           "atr": atr,
       })
 
-    trend_15m = "NEUTRAL"
-    if self.df_15 is not None and not self.df_15.empty:
-      last_15m = self.df_15.iloc[-1]
-      if last_15m["Close"] > last_15m["EMA_20"]:
-        trend_15m = "BULLISH"
-      elif last_15m["Close"] < last_15m["EMA_20"]:
-        trend_15m = "BEARISH"
+    breakout_active_buy = False
+    breakout_active_sell = False
+    last_breakout_high_idx = -1
+    last_breakout_low_idx = -1
 
-    # Scanning with Fixed ORB + Price Retracement Method
-    for i in range(6, len(self.candles)):
+    for i in range(7, len(self.candles)):
       c = self.candles[i]
       prev1 = self.candles[i - 1]
-      prev2 = self.candles[i - 2]
 
       is_volume_strong = c["volume"] >= (c["vol_avg"] * 1.2)
       candle_body = abs(c["close"] - c["open"])
       total_range = c["high"] - c["low"]
       is_body_strong = (
-          candle_body >= (total_range * 0.4) if total_range > 0 else True
+          candle_body >= (total_range * 0.5) if total_range > 0 else True
       )
+      atr = c["atr"]
 
-      # Retracement Buy Check against Fixed OR High
-      is_retest_buy = (
-          prev1["low"] <= self.or_high or prev2["low"] <= self.or_high
-      )
+      # News / Volatility Filter Check
+      avg_atr = np.mean([x["atr"] for x in self.candles[-20:]])
+      if atr > (2.5 * avg_atr):
+        continue
+
+      # 1. Breakout Confirmation past 4H Resistance
       if (
-          c["close"] > self.or_high
-          and is_retest_buy
-          and is_volume_strong
-          and is_body_strong
-          and trend_15m != "BEARISH"
+          prev1["close"] > self.resistance_lvl
+          and prev1["id"] > last_breakout_high_idx
       ):
-        if c["close"] > c["vwap"] and c["close"] > c["open"]:
-          sl = c["close"] - (1.2 * c["atr"])
-          tp1 = c["close"] + (1.0 * c["atr"])
-          tp2 = c["close"] + (2.0 * c["atr"])
-          tp3 = c["close"] + (3.5 * c["atr"])
+        breakout_active_buy = True
+        last_breakout_high_idx = prev1["id"]
+
+      # 2. Breakdown Confirmation past 6H Support
+      if (
+          prev1["close"] < self.support_lvl
+          and prev1["id"] > last_breakout_low_idx
+      ):
+        breakout_active_sell = True
+        last_breakout_low_idx = prev1["id"]
+
+      # Invalidation Check
+      if breakout_active_buy and c["close"] < (
+          self.resistance_lvl - (0.5 * (self.resistance_lvl - self.support_lvl))
+      ):
+        breakout_active_buy = False
+
+      if breakout_active_sell and c["close"] > (
+          self.support_lvl + (0.5 * (self.resistance_lvl - self.support_lvl))
+      ):
+        breakout_active_sell = False
+
+      # 3. 5m Retest & Rejection Confirmation for BUY
+      is_pin_bar_buy = (min(c["open"], c["close"]) - c["low"]) >= (
+          candle_body * 1.5
+      )
+      if breakout_active_buy:
+        is_pullback_touch = (
+            c["low"] <= self.resistance_lvl + (0.3 * atr)
+            and c["low"] >= self.resistance_lvl - (0.5 * atr)
+        )
+        if (
+            is_pullback_touch
+            and (is_pin_bar_buy or c["close"] > c["open"])
+            and c["close"] > c["vwap"]
+            and c["rsi"] > 50.0
+            and is_volume_strong
+            and is_body_strong
+        ):
+          sl = c["close"] - (1.2 * atr)
+          tp1 = c["close"] + (1.0 * atr)
+          tp2 = c["close"] + (2.0 * atr)
+          tp3 = c["close"] + (3.5 * atr)
 
           if not any(
-              s["Setup"] == "TWT Fixed Retracement Buy"
-              and abs(s["Candle #"] - c["id"]) < 5
+              s["Setup"] == "TWT Delta 4H/6H Retest Buy"
+              and abs(s["Candle #"] - c["id"]) < 8
               for s in self.signals
           ):
             self.signals.append({
                 "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": "TWT Fixed Retracement Buy",
+                "Setup": "TWT Delta 4H/6H Retest Buy",
                 "Action": "Buy / Long (B)",
                 "Entry Price": round(c["close"], 2),
                 "Stop Loss (SL)": round(sl, 2),
@@ -276,33 +303,39 @@ class TWTEngine:
                 "TP 2": round(tp2, 2),
                 "TP 3": round(tp3, 2),
             })
+            breakout_active_buy = False
 
-      # Retracement Sell Check against Fixed OR Low
-      is_retest_sell = (
-          prev1["high"] >= self.or_low or prev2["high"] >= self.or_low
+      # 4. 5m Retest & Rejection Confirmation for SELL
+      is_pin_bar_sell = (c["high"] - max(c["open"], c["close"])) >= (
+          candle_body * 1.5
       )
-      if (
-          c["close"] < self.or_low
-          and is_retest_sell
-          and is_volume_strong
-          and is_body_strong
-          and trend_15m != "BULLISH"
-      ):
-        if c["close"] < c["vwap"] and c["close"] < c["open"]:
-          sl = c["close"] + (1.2 * c["atr"])
-          tp1 = c["close"] - (1.0 * c["atr"])
-          tp2 = c["close"] - (2.0 * c["atr"])
-          tp3 = c["close"] - (3.5 * c["atr"])
+      if breakout_active_sell:
+        is_pullback_touch = (
+            c["high"] >= self.support_lvl - (0.3 * atr)
+            and c["high"] <= self.support_lvl + (0.5 * atr)
+        )
+        if (
+            is_pullback_touch
+            and (is_pin_bar_sell or c["close"] < c["open"])
+            and c["close"] < c["vwap"]
+            and c["rsi"] < 50.0
+            and is_volume_strong
+            and is_body_strong
+        ):
+          sl = c["close"] + (1.2 * atr)
+          tp1 = c["close"] - (1.0 * atr)
+          tp2 = c["close"] - (2.0 * atr)
+          tp3 = c["close"] - (3.5 * atr)
 
           if not any(
-              s["Setup"] == "TWT Fixed Retracement Sell"
-              and abs(s["Candle #"] - c["id"]) < 5
+              s["Setup"] == "TWT Delta 4H/6H Retest Sell"
+              and abs(s["Candle #"] - c["id"]) < 8
               for s in self.signals
           ):
             self.signals.append({
                 "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": "TWT Fixed Retracement Sell",
+                "Setup": "TWT Delta 4H/6H Retest Sell",
                 "Action": "Sell / Short (S)",
                 "Entry Price": round(c["close"], 2),
                 "Stop Loss (SL)": round(sl, 2),
@@ -310,11 +343,12 @@ class TWTEngine:
                 "TP 2": round(tp2, 2),
                 "TP 3": round(tp3, 2),
             })
+            breakout_active_sell = False
 
 
-with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
+with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
   if df_5m is not None and not df_5m.empty:
-    bot = TWTEngine(df_5m, df_15m, selected_symbol)
+    bot = TWTDeltaEngine(df_5m, df_4h, df_6h, selected_symbol)
     bot.calculate_indicators()
     bot.parse_and_scan()
 
@@ -322,20 +356,22 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
     curr_atr = bot.candles[-1]["atr"] if bot.candles else (curr_p * 0.002)
 
     st.markdown("---")
-    st.subheader(f"📊 Live Market Dashboard ({selected_symbol})")
+    st.subheader(f"📊 Delta Exchange Live Dashboard ({selected_symbol})")
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-      st.metric(label="Fixed Opening High", value=f"{bot.or_high:.2f}")
+      st.metric(label="4H Resistance", value=f"{bot.resistance_lvl:.2f}")
     with col2:
-      st.metric(label="Fixed Opening Low", value=f"{bot.or_low:.2f}")
+      st.metric(label="6H Support", value=f"{bot.support_lvl:.2f}")
     with col3:
       st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
     with col4:
-      st.metric(label="Methodology", value="Fixed ORB + Retest", delta="Active")
+      st.metric(
+          label="Methodology", value="4H/6H Retest + Rejection", delta="Active"
+      )
 
     st.markdown("---")
-    st.subheader("🎯 Trade With Tuckyaa (TWT) Fixed ORB Engine")
+    st.subheader("🎯 Trade With Tuckyaa (TWT) Delta Retest Engine")
 
     if bot.signals:
       latest_sig = bot.signals[-1]
@@ -353,7 +389,7 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
           trail_status = "🛡️ Initial Strict SL"
 
         st.success(
-            f"🟢 **TWT SETUP: {latest_sig['Action']}**\n\n"
+            f"🟢 **TWT DELTA SETUP: {latest_sig['Action']}**\n\n"
             f"🕒 **Candle Formation Time (IST):** `{signal_time}` (Candle"
             f" #{latest_sig['Candle #']})\n"
             f"- **Locked Entry Price:** `{entry_p}`\n"
@@ -361,8 +397,8 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
             f"- **Target Profit 1 (TP1):** `{latest_sig['TP 1']}`\n"
             f"- **Target Profit 2 (TP2):** `{latest_sig['TP 2']}`\n"
             f"- **Target Profit 3 (TP3):** `{latest_sig['TP 3']}`\n\n"
-            "📌 *Instructions:* Fixed session range retest confirmed. Execute"
-            " trade safely!"
+            "📌 *Instructions:* 4H/6H level retest & rejection confirmed."
+            " Execute trade safely!"
         )
       else:
         current_profit_dist = entry_p - curr_p
@@ -374,7 +410,7 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
           trail_status = "🛡️ Initial Strict SL"
 
         st.error(
-            f"🔴 **TWT SETUP: {latest_sig['Action']}**\n\n"
+            f"🔴 **TWT DELTA SETUP: {latest_sig['Action']}**\n\n"
             f"🕒 **Candle Formation Time (IST):** `{signal_time}` (Candle"
             f" #{latest_sig['Candle #']})\n"
             f"- **Locked Entry Price:** `{entry_p}`\n"
@@ -382,14 +418,14 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
             f"- **Target Profit 1 (TP1):** `{latest_sig['TP 1']}`\n"
             f"- **Target Profit 2 (TP2):** `{latest_sig['TP 2']}`\n"
             f"- **Target Profit 3 (TP3):** `{latest_sig['TP 3']}`\n\n"
-            "📌 *Instructions:* Fixed session range retest confirmed. Execute"
-            " trade safely!"
+            "📌 *Instructions:* 4H/6H level retest & rejection confirmed."
+            " Execute trade safely!"
         )
     else:
       st.warning(
-          "🟡 **STATUS: HOLD / WAITING FOR FIXED RANGE RETEST**\n\n"
-          "📌 *Instructions:* Waiting for clean price pullback near fixed"
-          " opening range boundaries."
+          "🟡 **STATUS: HOLD / WAITING FOR 4H/6H RETEST**\n\n"
+          "📌 *Instructions:* Waiting for clean price breakout and retest near"
+          " 4H Resistance or 6H Support."
       )
 
     if bot.signals:
@@ -404,19 +440,13 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
     for c in bot.candles:
       col = "#26a69a" if c["color"] == "Green" else "#ef5350"
       body_size = abs(c["close"] - c["open"])
-      min_body = (
-          curr_p * 0.0008
-          if "XAUT" in selected_symbol or "ETH" in selected_symbol
-          else curr_p * 0.0003
-      )
+      min_body = curr_p * 0.0003
       plot_height = max(body_size, min_body)
-
-      if body_size < min_body:
-        plot_bottom = min(c["open"], c["close"]) - (
-            (min_body - body_size) / 2
-        )
-      else:
-        plot_bottom = min(c["open"], c["close"])
+      plot_bottom = (
+          min(c["open"], c["close"]) - ((min_body - body_size) / 2)
+          if body_size < min_body
+          else min(c["open"], c["close"])
+      )
 
       ax.bar(
           c["id"],
@@ -428,32 +458,32 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
       ax.vlines(c["id"], c["low"], c["high"], color="#b2b5be", linewidth=1.3)
 
     ax.axhline(
-        bot.or_high,
+        bot.resistance_lvl,
         color="#ff7043",
         linestyle="--",
         linewidth=2,
-        label="Opening High",
+        label="4H Resistance",
     )
     ax.text(
         2,
-        bot.or_high,
-        f"  Opening High ({bot.or_high:.1f})",
+        bot.resistance_lvl,
+        f"  4H Resistance ({bot.resistance_lvl:.1f})",
         color="#ff7043",
         weight="bold",
         fontsize=10,
     )
 
     ax.axhline(
-        bot.or_low,
+        bot.support_lvl,
         color="#26a69a",
         linestyle="--",
         linewidth=2,
-        label="Opening Low",
+        label="6H Support",
     )
     ax.text(
         2,
-        bot.or_low,
-        f"  Opening Low ({bot.or_low:.1f})",
+        bot.support_lvl,
+        f"  6H Support ({bot.support_lvl:.1f})",
         color="#26a69a",
         weight="bold",
         fontsize=10,
@@ -461,10 +491,10 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
 
     lows = [c["low"] for c in bot.candles]
     highs = [c["high"] for c in bot.candles]
-    if bot.or_high > 0:
-      highs.append(bot.or_high)
-    if bot.or_low > 0:
-      lows.append(bot.or_low)
+    if bot.resistance_lvl > 0:
+      highs.append(bot.resistance_lvl)
+    if bot.support_lvl > 0:
+      lows.append(bot.support_lvl)
 
     if lows and highs:
       margin = (max(highs) - min(lows)) * 0.09
@@ -485,7 +515,7 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
       )
 
     ax.set_title(
-        f"{selected_symbol} 5m — TRADE WITH TUCKYAA (TWT) Official Engine",
+        f"{selected_symbol} 5m — TRADE WITH TUCKYAA (TUCKYAA) Delta Engine",
         color="white",
         fontsize=14,
     )
