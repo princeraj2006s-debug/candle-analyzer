@@ -18,11 +18,11 @@ st.title(
     " Dashboard"
 )
 st.markdown(
-    f"**Live Feed Active (Refresh Count: {count}) | 6H Support & 4H Resistance +"
-    " Verified Retest & Rejection Engine + Multi-TP**"
+    f"**Live Feed Active (Refresh Count: {count}) | 4H Resistance & 6H Support +"
+    " Rejection Engine + Multi-TP**"
 )
 
-# Delta Exchange 20 Crypto & Metal Assets (No Indian Stocks)
+# Delta Exchange 20 Crypto & Metal Assets
 ASSET_LIST = [
     "BTC/USDT",
     "ETH/USDT",
@@ -52,14 +52,14 @@ st.sidebar.markdown("---")
 st.sidebar.text(
     f"Server time          ———  {datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime('%H:%M')}"
 )
-st.sidebar.text("Support Ref (6H)   ———  05:30 Candle Low")
-st.sidebar.text("Resistance Ref (4H) ———  01:30 Candle High")
+st.sidebar.text("Support Ref (6H)   ———  Recent Valley Low")
+st.sidebar.text("Resistance Ref (4H) ———  Recent Peak High")
 st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.text("Spread:  4 (Max. = 50)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Settings")
-st.sidebar.text("Entry method     : Resistance Rejection & Retest")
+st.sidebar.text("Entry method     : Resistance/Support Rejection")
 st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss          : ATR Managed")
 
@@ -83,8 +83,8 @@ def fetch_twt_delta_data(symbol):
       exchange.load_markets()
       if sym in exchange.markets:
         ohlcv_5m = exchange.fetch_ohlcv(sym, timeframe="5m", limit=100)
-        ohlcv_4h = exchange.fetch_ohlcv(sym, timeframe="4h", limit=20)
-        ohlcv_6h = exchange.fetch_ohlcv(sym, timeframe="6h", limit=20)
+        ohlcv_4h = exchange.fetch_ohlcv(sym, timeframe="4h", limit=30)
+        ohlcv_6h = exchange.fetch_ohlcv(sym, timeframe="6h", limit=30)
 
         if ohlcv_5m and ohlcv_4h:
           df_5 = pd.DataFrame(
@@ -142,13 +142,14 @@ class TWTDeltaEngine:
 
   def calculate_indicators(self):
     if self.df_5 is not None and len(self.df_5) >= 30:
+      # Corrected 4H Resistance & 6H Support mapping from higher timeframe peaks/valleys
       if self.df_4 is not None and not self.df_4.empty:
-        self.resistance_lvl = float(self.df_4["High"].iloc[-1])
+        self.resistance_lvl = float(self.df_4["High"].tail(12).max())
 
       if self.df_6 is not None and not self.df_6.empty:
-        self.support_lvl = float(self.df_6["Low"].iloc[-1])
+        self.support_lvl = float(self.df_6["Low"].tail(12).min())
       elif self.df_4 is not None:
-        self.support_lvl = float(self.df_4["Low"].iloc[-1])
+        self.support_lvl = float(self.df_4["Low"].tail(12).min())
 
       typical_price = (
           self.df_5["High"] + self.df_5["Low"] + self.df_5["Close"]
@@ -217,14 +218,10 @@ class TWTDeltaEngine:
 
     for i in range(7, len(self.candles)):
       c = self.candles[i]
-      prev1 = self.candles[i - 1]
 
       is_volume_strong = c["volume"] >= (c["vol_avg"] * 1.1)
       candle_body = abs(c["close"] - c["open"])
       total_range = c["high"] - c["low"]
-      is_body_strong = (
-          candle_body >= (total_range * 0.4) if total_range > 0 else True
-      )
       atr = c["atr"]
 
       # Volatility / News Filter
@@ -232,10 +229,10 @@ class TWTDeltaEngine:
       if atr > (2.5 * avg_atr):
         continue
 
-      # Resistance Rejection Sell Check (Jab price 4H Resistance ke paas ho aur wahan se reject ho)
+      # 1. Resistance Rejection Sell Check (4H Resistance)
       is_near_resistance = (
-          c["high"] >= self.resistance_lvl - (0.5 * atr)
-          and c["high"] <= self.resistance_lvl + (0.8 * atr)
+          c["high"] >= self.resistance_lvl - (0.8 * atr)
+          and c["high"] <= self.resistance_lvl + (0.5 * atr)
       )
       upper_wick_rejection = (
           c["high"] - max(c["open"], c["close"])
@@ -271,10 +268,10 @@ class TWTDeltaEngine:
               "TP 3": round(tp3, 2),
           })
 
-      # Support Rejection Buy Check (Jab price 6H Support ke paas ho aur wahan se bounce kare)
+      # 2. Support Bounce Buy Check (6H Support)
       is_near_support = (
-          c["low"] <= self.support_lvl + (0.5 * atr)
-          and c["low"] >= self.support_lvl - (0.8 * atr)
+          c["low"] <= self.support_lvl + (0.8 * atr)
+          and c["low"] >= self.support_lvl - (0.5 * atr)
       )
       lower_wick_rejection = (
           min(c["open"], c["close"]) - c["low"]
@@ -294,14 +291,14 @@ class TWTDeltaEngine:
         tp3 = c["close"] + (3.5 * atr)
 
         if not any(
-            s["Setup"] == "TWT Support Rejection Buy"
+            s["Setup"] == "TWT Support Bounce Buy"
             and abs(s["Candle #"] - c["id"]) < 8
             for s in self.signals
         ):
           self.signals.append({
               "Time": c["time"],
               "Candle #": c["id"],
-              "Setup": "TWT Support Rejection Buy",
+              "Setup": "TWT Support Bounce Buy",
               "Action": "Buy / Long (B)",
               "Entry Price": round(c["close"], 2),
               "Stop Loss (SL)": round(sl, 2),
@@ -398,7 +395,7 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
     if bot.signals:
       st.markdown("---")
       st.subheader("📋 Verified TWT Signal Execution History")
-      st.dataframe(pd.DataFrame(bot.signals[-5:]), width="stretch")
+      st.dataframe(pd.DataFrame(bot.signals[-5:]), use_container_width=True)
 
     st.markdown("---")
     st.subheader(f"📈 {selected_symbol} 5m Real-Time Chart")
@@ -426,7 +423,7 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
 
     ax.axhline(
         bot.resistance_lvl,
-        color="#ff7043",
+        color="#ffeb3b",
         linestyle="--",
         linewidth=2,
         label="4H Resistance",
@@ -435,7 +432,7 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
         2,
         bot.resistance_lvl,
         f"  4H Resistance ({bot.resistance_lvl:.1f})",
-        color="#ff7043",
+        color="#ffeb3b",
         weight="bold",
         fontsize=10,
     )
