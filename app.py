@@ -16,7 +16,7 @@ count = st_autorefresh(interval=10000, key="twt_fixed_orb_refresh")
 st.title("⚡ TRADE WITH TUCKYAA (TUCKYAA) — Ultimate Trading Dashboard")
 st.markdown(
     f"**Live Feed Active (Refresh Count: {count}) | Fixed Opening Range +"
-    " Price Retracement + Strict Freshness Filter + Multi-TP**"
+    " Price Retracement + Multi-TP**"
 )
 
 # List of 30 Popular Crypto Assets, Metals, and Top Indian Market Stocks / Futures
@@ -67,7 +67,7 @@ st.sidebar.text("Spread:  4 (Max. = 50)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Settings")
 st.sidebar.text("Entry method     : Price Retracement")
-st.sidebar.text("Freshness Limit  : Strict 30 Mins Expiry")
+st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss          : ATR Managed")
 
 # Asset Selection Dropdown
@@ -149,6 +149,7 @@ class TWTEngine:
 
   def calculate_indicators(self):
     if self.df_5 is not None and len(self.df_5) >= 30:
+      # FIXED Opening Range based on the session's first few candles (Non-shifting)
       current_date = self.df_5.index[-1].date()
       day_df = self.df_5[self.df_5.index.date == current_date]
       monitoring_df = day_df.head(4) if len(day_df) >= 4 else self.df_5.head(4)
@@ -219,7 +220,6 @@ class TWTEngine:
           "vwap": vwap,
           "ema": ema,
           "atr": atr,
-          "datetime_utc": dt_utc,
       })
 
     trend_15m = "NEUTRAL"
@@ -230,7 +230,7 @@ class TWTEngine:
       elif last_15m["Close"] < last_15m["EMA_20"]:
         trend_15m = "BEARISH"
 
-    # Scanning with Fixed ORB + Price Retracement + Enhanced Body Filter
+    # Scanning with Fixed ORB + Price Retracement Method
     for i in range(6, len(self.candles)):
       c = self.candles[i]
       prev1 = self.candles[i - 1]
@@ -239,9 +239,8 @@ class TWTEngine:
       is_volume_strong = c["volume"] >= (c["vol_avg"] * 1.2)
       candle_body = abs(c["close"] - c["open"])
       total_range = c["high"] - c["low"]
-      # Upgraded body strength filter to 50% for cleaner entries
       is_body_strong = (
-          candle_body >= (total_range * 0.5) if total_range > 0 else True
+          candle_body >= (total_range * 0.4) if total_range > 0 else True
       )
 
       # Retracement Buy Check against Fixed OR High
@@ -276,7 +275,6 @@ class TWTEngine:
                 "TP 1": round(tp1, 2),
                 "TP 2": round(tp2, 2),
                 "TP 3": round(tp3, 2),
-                "Timestamp_UTC": c["datetime_utc"],
             })
 
       # Retracement Sell Check against Fixed OR Low
@@ -311,7 +309,6 @@ class TWTEngine:
                 "TP 1": round(tp1, 2),
                 "TP 2": round(tp2, 2),
                 "TP 3": round(tp3, 2),
-                "Timestamp_UTC": c["datetime_utc"],
             })
 
 
@@ -323,18 +320,6 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
 
     curr_p = bot.candles[-1]["close"] if bot.candles else 0.0
     curr_atr = bot.candles[-1]["atr"] if bot.candles else (curr_p * 0.002)
-
-    # ⏱️ Strict 30-Minute Expiry Filter Check for Latest Signal
-    valid_latest_signal = None
-    if bot.signals:
-      latest_sig = bot.signals[-1]
-      sig_time_utc = latest_sig.get("Timestamp_UTC")
-      if sig_time_utc:
-        if sig_time_utc.tzinfo is None:
-          sig_time_utc = sig_time_utc.replace(tzinfo=timezone.utc)
-        current_utc = datetime.now(timezone.utc)
-        if (current_utc - sig_time_utc) <= timedelta(minutes=30):
-          valid_latest_signal = latest_sig
 
     st.markdown("---")
     st.subheader(f"📊 Live Market Dashboard ({selected_symbol})")
@@ -352,8 +337,8 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
     st.markdown("---")
     st.subheader("🎯 Trade With Tuckyaa (TWT) Fixed ORB Engine")
 
-    if valid_latest_signal:
-      latest_sig = valid_latest_signal
+    if bot.signals:
+      latest_sig = bot.signals[-1]
       is_buy = "Buy" in latest_sig["Action"]
       entry_p = latest_sig["Entry Price"]
       signal_time = latest_sig["Time"]
@@ -368,7 +353,7 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
           trail_status = "🛡️ Initial Strict SL"
 
         st.success(
-            f"🟢 **TWT FRESH SETUP: {latest_sig['Action']}**\n\n"
+            f"🟢 **TWT SETUP: {latest_sig['Action']}**\n\n"
             f"🕒 **Candle Formation Time (IST):** `{signal_time}` (Candle"
             f" #{latest_sig['Candle #']})\n"
             f"- **Locked Entry Price:** `{entry_p}`\n"
@@ -376,8 +361,8 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
             f"- **Target Profit 1 (TP1):** `{latest_sig['TP 1']}`\n"
             f"- **Target Profit 2 (TP2):** `{latest_sig['TP 2']}`\n"
             f"- **Target Profit 3 (TP3):** `{latest_sig['TP 3']}`\n\n"
-            "📌 *Instructions:* Fresh session range retest confirmed within"
-            " active 30-min window. Execute trade safely!"
+            "📌 *Instructions:* Fixed session range retest confirmed. Execute"
+            " trade safely!"
         )
       else:
         current_profit_dist = entry_p - curr_p
@@ -389,7 +374,7 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
           trail_status = "🛡️ Initial Strict SL"
 
         st.error(
-            f"🔴 **TWT FRESH SETUP: {latest_sig['Action']}**\n\n"
+            f"🔴 **TWT SETUP: {latest_sig['Action']}**\n\n"
             f"🕒 **Candle Formation Time (IST):** `{signal_time}` (Candle"
             f" #{latest_sig['Candle #']})\n"
             f"- **Locked Entry Price:** `{entry_p}`\n"
@@ -397,15 +382,14 @@ with st.spinner(f"⚡ Loading TWT Engine for {selected_symbol}..."):
             f"- **Target Profit 1 (TP1):** `{latest_sig['TP 1']}`\n"
             f"- **Target Profit 2 (TP2):** `{latest_sig['TP 2']}`\n"
             f"- **Target Profit 3 (TP3):** `{latest_sig['TP 3']}`\n\n"
-            "📌 *Instructions:* Fresh session range retest confirmed within"
-            " active 30-min window. Execute trade safely!"
+            "📌 *Instructions:* Fixed session range retest confirmed. Execute"
+            " trade safely!"
         )
     else:
       st.warning(
-          "🟡 **STATUS: HOLD / WAITING FOR FRESH RETEST**\n\n"
-          "📌 *Instructions:* No fresh setup within the last 30 minutes. All"
-          " previous signals expired. Waiting for a clean new price pullback"
-          " near boundaries."
+          "🟡 **STATUS: HOLD / WAITING FOR FIXED RANGE RETEST**\n\n"
+          "📌 *Instructions:* Waiting for clean price pullback near fixed"
+          " opening range boundaries."
       )
 
     if bot.signals:
