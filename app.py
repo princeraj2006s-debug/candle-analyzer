@@ -1,4 +1,4 @@
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 import ccxt
 import matplotlib.pyplot as plt
 import numpy as np
@@ -18,11 +18,11 @@ st.title(
     " Dashboard"
 )
 st.markdown(
-    f"**Live Feed Active (Refresh Count: {count}) | 01:30 4H Resistance & 05:30"
-    " 6H Support + Rejection Engine + Multi-TP**"
+    f"**Live Feed Active (Refresh Count: {count}) | 6H Support & 4H Resistance +"
+    " Verified Retest & Rejection Engine + Multi-TP**"
 )
 
-# Delta Exchange 20 Crypto & Metal Assets
+# Delta Exchange 20 Crypto & Metal Assets (No Indian Stocks)
 ASSET_LIST = [
     "BTC/USDT",
     "ETH/USDT",
@@ -49,16 +49,17 @@ ASSET_LIST = [
 # Sidebar Session Box Panel
 st.sidebar.markdown("### 🤖 TWT Expert Panel")
 st.sidebar.markdown("---")
-server_time_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
-st.sidebar.text(f"Server time          ———  {server_time_ist.strftime('%H:%M')}")
-st.sidebar.text("Support Ref (6H)   ———  05:30 IST Candle Low")
-st.sidebar.text("Resistance Ref (4H) ———  01:30 IST Candle High")
-st.sidebar.text("No-Trade Zone      ———  01:00 ➔ 06:00 IST")
+st.sidebar.text(
+    f"Server time          ———  {datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime('%H:%M')}"
+)
+st.sidebar.text("Support Ref (6H)   ———  05:30 Candle Low")
+st.sidebar.text("Resistance Ref (4H) ———  01:30 Candle High")
 st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
+st.sidebar.text("Spread:  4 (Max. = 50)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Settings")
-st.sidebar.text("Entry method     : Resistance/Support Rejection")
+st.sidebar.text("Entry method     : Resistance Rejection & Retest")
 st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss          : ATR Managed")
 
@@ -66,15 +67,6 @@ st.sidebar.text("Stop loss          : ATR Managed")
 selected_symbol = st.selectbox(
     "Select Delta Exchange Asset", options=ASSET_LIST, index=0
 )
-
-
-def get_decimals(price):
-  if price < 1:
-    return 4
-  elif price < 10:
-    return 3
-  else:
-    return 2
 
 
 @st.cache_data(ttl=10)
@@ -91,8 +83,8 @@ def fetch_twt_delta_data(symbol):
       exchange.load_markets()
       if sym in exchange.markets:
         ohlcv_5m = exchange.fetch_ohlcv(sym, timeframe="5m", limit=100)
-        ohlcv_4h = exchange.fetch_ohlcv(sym, timeframe="4h", limit=30)
-        ohlcv_6h = exchange.fetch_ohlcv(sym, timeframe="6h", limit=30)
+        ohlcv_4h = exchange.fetch_ohlcv(sym, timeframe="4h", limit=20)
+        ohlcv_6h = exchange.fetch_ohlcv(sym, timeframe="6h", limit=20)
 
         if ohlcv_5m and ohlcv_4h:
           df_5 = pd.DataFrame(
@@ -149,27 +141,12 @@ class TWTDeltaEngine:
     self.support_lvl = 0
 
   def calculate_indicators(self):
-    IST = timezone(timedelta(hours=5, minutes=30))
     if self.df_5 is not None and len(self.df_5) >= 30:
-      # Exact 4H Resistance from 01:30 IST candle high
       if self.df_4 is not None and not self.df_4.empty:
-        df_4_ist = self.df_4.index.tz_localize("UTC").tz_convert(IST)
-        mask_4h = df_4_ist.hour == 1
-        filtered_4h = self.df_4[mask_4h]
-        if not filtered_4h.empty:
-          self.resistance_lvl = float(filtered_4h["High"].iloc[-1])
-        else:
-          self.resistance_lvl = float(self.df_4["High"].iloc[-1])
+        self.resistance_lvl = float(self.df_4["High"].iloc[-1])
 
-      # Exact 6H Support from 05:30 IST candle low
       if self.df_6 is not None and not self.df_6.empty:
-        df_6_ist = self.df_6.index.tz_localize("UTC").tz_convert(IST)
-        mask_6h = df_6_ist.hour == 5
-        filtered_6h = self.df_6[mask_6h]
-        if not filtered_6h.empty:
-          self.support_lvl = float(filtered_6h["Low"].iloc[-1])
-        else:
-          self.support_lvl = float(self.df_6["Low"].iloc[-1])
+        self.support_lvl = float(self.df_6["Low"].iloc[-1])
       elif self.df_4 is not None:
         self.support_lvl = float(self.df_4["Low"].iloc[-1])
 
@@ -226,7 +203,6 @@ class TWTDeltaEngine:
       self.candles.append({
           "id": idx + 1,
           "time": timestamp_str,
-          "dt_ist": dt_ist,
           "color": "Green" if c >= o else "Red",
           "open": o,
           "high": h,
@@ -241,26 +217,25 @@ class TWTDeltaEngine:
 
     for i in range(7, len(self.candles)):
       c = self.candles[i]
-
-      # No-Trade Zone: 01:00 AM se 06:00 AM IST ke beech trade mat lo
-      c_time = c["dt_ist"].time()
-      if time(1, 0) <= c_time <= time(6, 0):
-        continue
+      prev1 = self.candles[i - 1]
 
       is_volume_strong = c["volume"] >= (c["vol_avg"] * 1.1)
       candle_body = abs(c["close"] - c["open"])
+      total_range = c["high"] - c["low"]
+      is_body_strong = (
+          candle_body >= (total_range * 0.4) if total_range > 0 else True
+      )
       atr = c["atr"]
-      dec = get_decimals(c["close"])
 
       # Volatility / News Filter
       avg_atr = np.mean([x["atr"] for x in self.candles[-20:]])
       if atr > (2.5 * avg_atr):
         continue
 
-      # 1. Resistance Rejection Sell Check (4H Resistance)
+      # Resistance Rejection Sell Check (Jab price 4H Resistance ke paas ho aur wahan se reject ho)
       is_near_resistance = (
-          c["high"] >= self.resistance_lvl - (0.8 * atr)
-          and c["high"] <= self.resistance_lvl + (0.5 * atr)
+          c["high"] >= self.resistance_lvl - (0.5 * atr)
+          and c["high"] <= self.resistance_lvl + (0.8 * atr)
       )
       upper_wick_rejection = (
           c["high"] - max(c["open"], c["close"])
@@ -274,10 +249,10 @@ class TWTDeltaEngine:
           and rsi < 55.0
           and is_volume_strong
       ):
-        sl = round(c["high"] + (1.2 * atr), dec)
-        tp1 = round(c["close"] - (1.0 * atr), dec)
-        tp2 = round(c["close"] - (2.2 * atr), dec)
-        tp3 = round(c["close"] - (3.8 * atr), dec)
+        sl = c["high"] + (1.2 * atr)
+        tp1 = c["close"] - (1.0 * atr)
+        tp2 = c["close"] - (2.0 * atr)
+        tp3 = c["close"] - (3.5 * atr)
 
         if not any(
             s["Setup"] == "TWT Resistance Rejection Sell"
@@ -289,17 +264,17 @@ class TWTDeltaEngine:
               "Candle #": c["id"],
               "Setup": "TWT Resistance Rejection Sell",
               "Action": "Sell / Short (S)",
-              "Entry Price": round(c["close"], dec),
-              "Stop Loss (SL)": sl,
-              "TP 1": tp1,
-              "TP 2": tp2,
-              "TP 3": tp3,
+              "Entry Price": round(c["close"], 2),
+              "Stop Loss (SL)": round(sl, 2),
+              "TP 1": round(tp1, 2),
+              "TP 2": round(tp2, 2),
+              "TP 3": round(tp3, 2),
           })
 
-      # 2. Support Bounce Buy Check (6H Support)
+      # Support Rejection Buy Check (Jab price 6H Support ke paas ho aur wahan se bounce kare)
       is_near_support = (
-          c["low"] <= self.support_lvl + (0.8 * atr)
-          and c["low"] >= self.support_lvl - (0.5 * atr)
+          c["low"] <= self.support_lvl + (0.5 * atr)
+          and c["low"] >= self.support_lvl - (0.8 * atr)
       )
       lower_wick_rejection = (
           min(c["open"], c["close"]) - c["low"]
@@ -313,26 +288,26 @@ class TWTDeltaEngine:
           and rsi > 45.0
           and is_volume_strong
       ):
-        sl = round(c["low"] - (1.2 * atr), dec)
-        tp1 = round(c["close"] + (1.0 * atr), dec)
-        tp2 = round(c["close"] + (2.2 * atr), dec)
-        tp3 = round(c["close"] + (3.8 * atr), dec)
+        sl = c["low"] - (1.2 * atr)
+        tp1 = c["close"] + (1.0 * atr)
+        tp2 = c["close"] + (2.0 * atr)
+        tp3 = c["close"] + (3.5 * atr)
 
         if not any(
-            s["Setup"] == "TWT Support Bounce Buy"
+            s["Setup"] == "TWT Support Rejection Buy"
             and abs(s["Candle #"] - c["id"]) < 8
             for s in self.signals
         ):
           self.signals.append({
               "Time": c["time"],
               "Candle #": c["id"],
-              "Setup": "TWT Support Bounce Buy",
+              "Setup": "TWT Support Rejection Buy",
               "Action": "Buy / Long (B)",
-              "Entry Price": round(c["close"], dec),
-              "Stop Loss (SL)": sl,
-              "TP 1": tp1,
-              "TP 2": tp2,
-              "TP 3": tp3,
+              "Entry Price": round(c["close"], 2),
+              "Stop Loss (SL)": round(sl, 2),
+              "TP 1": round(tp1, 2),
+              "TP 2": round(tp2, 2),
+              "TP 3": round(tp3, 2),
           })
 
 
@@ -350,9 +325,9 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-      st.metric(label="4H Resistance (01:30 High)", value=f"{bot.resistance_lvl:.2f}")
+      st.metric(label="4H Resistance", value=f"{bot.resistance_lvl:.2f}")
     with col2:
-      st.metric(label="6H Support (05:30 Low)", value=f"{bot.support_lvl:.2f}")
+      st.metric(label="6H Support", value=f"{bot.support_lvl:.2f}")
     with col3:
       st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
     with col4:
@@ -375,7 +350,7 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
         current_profit_dist = curr_p - entry_p
         active_sl = latest_sig["Stop Loss (SL)"]
         if current_profit_dist > (0.5 * curr_atr):
-          active_sl = round(entry_p, get_decimals(entry_p))
+          active_sl = round(entry_p, 2)
           trail_status = "🔒 Zero Loss (Break-Even Locked)"
         else:
           trail_status = "🛡️ Initial Strict SL"
@@ -396,7 +371,7 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
         current_profit_dist = entry_p - curr_p
         active_sl = latest_sig["Stop Loss (SL)"]
         if current_profit_dist > (0.5 * curr_atr):
-          active_sl = round(entry_p, get_decimals(entry_p))
+          active_sl = round(entry_p, 2)
           trail_status = "🔒 Zero Loss (Break-Even Locked)"
         else:
           trail_status = "🛡️ Initial Strict SL"
@@ -417,7 +392,7 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
       st.warning(
           "🟡 **STATUS: HOLD / WAITING FOR KEY LEVEL REJECTION**\n\n"
           "📌 *Instructions:* Waiting for clean price reaction near 4H"
-          " Resistance or 6H Support after 06:00 IST."
+          " Resistance or 6H Support."
       )
 
     if bot.signals:
@@ -451,7 +426,7 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
 
     ax.axhline(
         bot.resistance_lvl,
-        color="#ffeb3b",
+        color="#ff7043",
         linestyle="--",
         linewidth=2,
         label="4H Resistance",
@@ -460,7 +435,7 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
         2,
         bot.resistance_lvl,
         f"  4H Resistance ({bot.resistance_lvl:.1f})",
-        color="#ffeb3b",
+        color="#ff7043",
         weight="bold",
         fontsize=10,
     )
