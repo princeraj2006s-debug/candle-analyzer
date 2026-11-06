@@ -4,6 +4,7 @@ import ccxt
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
@@ -79,9 +80,7 @@ def login_register_page():
 
   with tab2:
     st.subheader("New User Registration")
-    r_user = st.text_input(
-        "Choose Username / Mobile Number", key="r_user"
-    )
+    r_user = st.text_input("Choose Username / Mobile Number", key="r_user")
     r_pass = st.text_input("Choose Password", type="password", key="r_pass")
     if st.button("Submit Access Request"):
       if r_user and r_pass:
@@ -158,10 +157,6 @@ count = st_autorefresh(interval=10000, key="twt_delta_refresh")
 st.title(
     "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Delta Exchange Multi-Retest Level Engine"
 )
-st.markdown(
-    f"**Live Feed Active (Refresh Count: {count}) | 01:30 4H Resistance & 05:30"
-    " 6H Support + Smart Multi-Touch Retest Engine + Multi-TP**"
-)
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -186,10 +181,32 @@ ASSET_LIST = [
     "RENDER/USDT",
 ]
 
+# Timezone Mapping Dictionary
+TIMEZONE_MAP = {
+    "IST (UTC+5:30)": timezone(timedelta(hours=5, minutes=30)),
+    "UTC (Coordinated Universal Time)": timezone.utc,
+    "EST (UTC-5:00 - US East)": timezone(timedelta(hours=-5)),
+    "GMT (UTC+0:00 - London)": timezone(timedelta(hours=0)),
+    "SGT (UTC+8:00 - Singapore/Asia)": timezone(timedelta(hours=8)),
+}
+
 st.sidebar.markdown("### 🤖 TWT Expert Panel")
 st.sidebar.markdown("---")
-server_time_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
-st.sidebar.text(f"Server time          ———  {server_time_ist.strftime('%H:%M')}")
+
+# Dynamic Timezone & Timeframe Selectors in Sidebar
+selected_tz_label = st.sidebar.selectbox(
+    "Select Display Timezone", options=list(TIMEZONE_MAP.keys()), index=0
+)
+active_tz = TIMEZONE_MAP[selected_tz_label]
+
+selected_tf = st.sidebar.selectbox(
+    "Select Scanning Timeframe", options=["5m", "15m", "30m", "1h"], index=0
+)
+
+server_time_target = datetime.now(active_tz)
+st.sidebar.text(
+    f"Selected Zone Time — {server_time_target.strftime('%H:%M:%S')}"
+)
 st.sidebar.text("Support Ref (6H)   ———  05:30 IST Candle Low")
 st.sidebar.text("Resistance Ref (4H) ———  01:30 IST Candle High")
 st.sidebar.text("No-Trade Zone      ———  01:00 ➔ 06:00 IST")
@@ -197,12 +214,18 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Settings")
+st.sidebar.text(f"Scanning TF      : {selected_tf}")
 st.sidebar.text("Entry method     : Smart Multi-Touch Retest")
 st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss          : ATR Managed")
 
 selected_symbol = st.selectbox(
     "Select Delta Exchange Asset", options=ASSET_LIST, index=5
+)
+
+st.markdown(
+    f"**Live Feed Active (Refresh Count: {count}) | Timeframe: {selected_tf} |"
+    f" Timezone: {selected_tz_label}**"
 )
 
 
@@ -216,7 +239,7 @@ def get_decimals(price):
 
 
 @st.cache_data(ttl=10)
-def fetch_twt_delta_data(symbol):
+def fetch_twt_delta_data(symbol, tf):
   exchanges_to_try = [
       (ccxt.binance, symbol),
       (ccxt.bybit, symbol),
@@ -228,17 +251,19 @@ def fetch_twt_delta_data(symbol):
       exchange = ex_class({"enableRateLimit": True, "timeout": 20000})
       exchange.load_markets()
       if sym in exchange.markets:
-        ohlcv_5m = exchange.fetch_ohlcv(sym, timeframe="5m", limit=100)
+        ohlcv_tf = exchange.fetch_ohlcv(sym, timeframe=tf, limit=100)
         ohlcv_4h = exchange.fetch_ohlcv(sym, timeframe="4h", limit=30)
         ohlcv_6h = exchange.fetch_ohlcv(sym, timeframe="6h", limit=30)
 
-        if ohlcv_5m and ohlcv_4h:
-          df_5 = pd.DataFrame(
-              ohlcv_5m,
+        if ohlcv_tf and ohlcv_4h:
+          df_chart = pd.DataFrame(
+              ohlcv_tf,
               columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
           )
-          df_5["timestamp"] = pd.to_datetime(df_5["timestamp"], unit="ms")
-          df_5 = df_5.set_index("timestamp")
+          df_chart["timestamp"] = pd.to_datetime(
+              df_chart["timestamp"], unit="ms"
+          )
+          df_chart = df_chart.set_index("timestamp")
 
           df_4 = pd.DataFrame(
               ohlcv_4h,
@@ -265,22 +290,25 @@ def fetch_twt_delta_data(symbol):
           df_6["timestamp"] = pd.to_datetime(df_6["timestamp"], unit="ms")
           df_6 = df_6.set_index("timestamp")
 
-          return df_5, df_4, df_6, symbol
+          return df_chart, df_4, df_6, symbol
     except Exception:
       continue
   return None, None, None, None
 
 
-df_5m, df_4h, df_6h, active_symbol = fetch_twt_delta_data(selected_symbol)
+df_chart, df_4h, df_6h, active_symbol = fetch_twt_delta_data(
+    selected_symbol, selected_tf
+)
 
 
 class TWTDeltaEngine:
 
-  def __init__(self, df_5, df_4, df_6, symbol):
-    self.df_5 = df_5 if df_5 is not None else None
+  def __init__(self, df_main, df_4, df_6, symbol, user_tz):
+    self.df_main = df_main if df_main is not None else None
     self.df_4 = df_4 if df_4 is not None else None
     self.df_6 = df_6 if df_6 is not None else None
     self.symbol = symbol
+    self.user_tz = user_tz
     self.candles = []
     self.signals = []
     self.resistance_lvl = 0
@@ -288,7 +316,7 @@ class TWTDeltaEngine:
 
   def calculate_indicators(self):
     IST = timezone(timedelta(hours=5, minutes=30))
-    if self.df_5 is not None and len(self.df_5) >= 30:
+    if self.df_main is not None and len(self.df_main) >= 30:
       if self.df_4 is not None and not self.df_4.empty:
         idx_utc = (
             self.df_4.index.tz_localize("UTC")
@@ -319,27 +347,32 @@ class TWTDeltaEngine:
       elif self.df_4 is not None:
         self.support_lvl = float(self.df_4["Low"].iloc[-1])
 
-      self.df_5["TR"] = np.maximum(
-          self.df_5["High"] - self.df_5["Low"],
+      self.df_main["TR"] = np.maximum(
+          self.df_main["High"] - self.df_main["Low"],
           np.maximum(
-              abs(self.df_5["High"] - self.df_5["Close"].shift(1)),
-              abs(self.df_5["Low"] - self.df_5["Close"].shift(1)),
+              abs(self.df_main["High"] - self.df_main["Close"].shift(1)),
+              abs(self.df_main["Low"] - self.df_main["Close"].shift(1)),
           ),
       )
-      self.df_5["ATR"] = self.df_5["TR"].rolling(14).mean()
+      self.df_main["ATR"] = self.df_main["TR"].rolling(14).mean()
 
   def parse_and_scan(self):
-    if self.df_5 is None or self.df_5.empty:
+    if self.df_main is None or self.df_main.empty:
       return
 
     IST = timezone(timedelta(hours=5, minutes=30))
 
-    for idx, row in enumerate(self.df_5.iterrows()):
+    for idx, row in enumerate(self.df_main.iterrows()):
       dt_utc = row[0]
       if dt_utc.tzinfo is None:
         dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+
+      # Convert timestamp to user-selected timezone for display
+      dt_user_tz = dt_utc.astimezone(self.user_tz)
+      timestamp_str = dt_user_tz.strftime("%H:%M")
+
+      # Dynamic IST check for No-Trade Zone (01:00 to 06:00 IST)
       dt_ist = dt_utc.astimezone(IST)
-      timestamp_str = dt_ist.strftime("%H:%M")
 
       r = row[1]
       o, h, l, c, v = (
@@ -355,6 +388,7 @@ class TWTDeltaEngine:
           "id": idx + 1,
           "time": timestamp_str,
           "dt_ist": dt_ist,
+          "dt_user": dt_user_tz,
           "color": "Green" if c >= o else "Red",
           "open": o,
           "high": h,
@@ -372,8 +406,8 @@ class TWTDeltaEngine:
     for i in range(5, len(self.candles)):
       c = self.candles[i]
 
-      c_time = c["dt_ist"].time()
-      if time(1, 0) <= c_time <= time(6, 0):
+      c_time_ist = c["dt_ist"].time()
+      if time(1, 0) <= c_time_ist <= time(6, 0):
         continue
 
       atr = c["atr"]
@@ -444,16 +478,20 @@ class TWTDeltaEngine:
             })
 
 
-with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
-  if df_5m is not None and not df_5m.empty:
-    bot = TWTDeltaEngine(df_5m, df_4h, df_6h, selected_symbol)
+with st.spinner(
+    f"⚡ Loading TWT Delta Engine for {selected_symbol} ({selected_tf})..."
+):
+  if df_chart is not None and not df_chart.empty:
+    bot = TWTDeltaEngine(df_chart, df_4h, df_6h, selected_symbol, active_tz)
     bot.calculate_indicators()
     bot.parse_and_scan()
 
     curr_p = bot.candles[-1]["close"] if bot.candles else 0.0
 
     st.markdown("---")
-    st.subheader(f"📊 Delta Exchange Live Dashboard ({selected_symbol})")
+    st.subheader(
+        f"📊 Delta Exchange Live Dashboard ({selected_symbol} — {selected_tf})"
+    )
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
@@ -466,9 +504,9 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
       st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
     with col4:
       st.metric(
-          label="Methodology",
-          value="Smart Multi-Touch Retest",
-          delta="Active",
+          label="Selected Timezone",
+          value=selected_tz_label.split()[0],
+          delta=f"TF: {selected_tf}",
       )
 
     st.markdown("---")
@@ -483,8 +521,8 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
       if is_buy:
         st.success(
             f"🟢 **TWT DELTA SETUP: {latest_sig['Action']}**\n\n"
-            f"🕒 **Candle Time (IST):** `{signal_time}` (Candle"
-            f" #{latest_sig['Candle #']})\n"
+            f"🕒 **Candle Time ({selected_tz_label.split()[0]}):** `{signal_time}`"
+            f" (Candle #{latest_sig['Candle #']})\n"
             f"- **Entry Price:** `{entry_p}`\n"
             f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
             f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
@@ -494,8 +532,8 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
       else:
         st.error(
             f"🔴 **TWT DELTA SETUP: {latest_sig['Action']}**\n\n"
-            f"🕒 **Candle Time (IST):** `{signal_time}` (Candle"
-            f" #{latest_sig['Candle #']})\n"
+            f"🕒 **Candle Time ({selected_tz_label.split()[0]}):** `{signal_time}`"
+            f" (Candle #{latest_sig['Candle #']})\n"
             f"- **Entry Price:** `{entry_p}`\n"
             f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
             f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
@@ -511,11 +549,16 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
 
     if bot.signals:
       st.markdown("---")
-      st.subheader("📋 Verified TWT Signal History")
+      st.subheader(
+          f"📋 Verified TWT Signal History ({selected_tz_label.split()[0]} Time)"
+      )
       st.dataframe(pd.DataFrame(bot.signals[-5:]), width="stretch")
 
     st.markdown("---")
-    st.subheader(f"📈 {selected_symbol} 5m Real-Time Chart")
+    st.subheader(
+        f"📈 {selected_symbol} {selected_tf} Real-Time Chart"
+        f" ({selected_tz_label.split()[0]})"
+    )
     fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
 
     for c in bot.candles:
@@ -596,7 +639,8 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
       )
 
     ax.set_title(
-        f"{selected_symbol} 5m — TRADE WITH TUCKYAA (TUCKYAA) Delta Engine",
+        f"{selected_symbol} {selected_tf} — TWT Delta Engine"
+        f" ({selected_tz_label.split()[0]})",
         color="white",
         fontsize=14,
     )
