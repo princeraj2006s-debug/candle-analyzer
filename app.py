@@ -251,6 +251,24 @@ st.sidebar.text("Support Ref (6H)   ———  05:30 IST Candle Low")
 st.sidebar.text("Resistance Ref (4H) ———  01:30 IST Candle High")
 st.sidebar.text("No-Trade Zone      ———  01:00 ➔ 06:00 IST")
 st.sidebar.markdown("---")
+
+# ---------------------------------------------------------
+# SHARE PLATFORM FEATURE IN SIDEBAR
+# ---------------------------------------------------------
+st.sidebar.markdown("### 🔗 Share Platform")
+app_url = "https://twt-delta.streamlit.app"
+st.sidebar.text_input("Copy App Link", value=app_url, key="share_link_box")
+
+whatsapp_url = f"https://api.whatsapp.com/send?text=Check%20out%20this%20VIP%20Trading%20Engine:%20{app_url}"
+telegram_url = f"https://t.me/share/url?url={app_url}&text=Check%20out%20this%20VIP%20Trading%20Engine!"
+
+col_w, col_t = st.sidebar.columns(2)
+with col_w:
+  st.markdown(f"[💬 WhatsApp]({whatsapp_url})")
+with col_t:
+  st.markdown(f"[📢 Telegram]({telegram_url})")
+
+st.sidebar.markdown("---")
 st.sidebar.text("Platform          — Delta (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Settings")
@@ -442,18 +460,16 @@ class TWTDeltaEngine:
       })
 
     # --- STATE-MACHINE STRICT MULTI-TOUCH RETEST ENGINE ---
-    res_state = 0  # 0: Looking for Touch 1, 1: Waiting for Pullback, 2: Waiting for Retest & Rejection
-    sup_state = 0  # 0: Looking for Touch 1, 1: Waiting for Pullback, 2: Waiting for Retest & Rejection
+    res_state = 0
+    sup_state = 0
 
     for i in range(5, len(self.candles)):
       c = self.candles[i]
       c_time_ist = c["dt_ist"].time()
 
-      # No-Trade Zone (01:00 to 06:00 IST)
       if time(1, 0) <= c_time_ist <= time(6, 0):
         continue
 
-      # Session Trap Filter (17:30 to 21:30 IST)
       if self.session_filter_on:
         if time(17, 30) <= c_time_ist <= time(21, 30):
           continue
@@ -470,13 +486,11 @@ class TWTDeltaEngine:
 
       if res_state == 0:
         if is_near_res:
-          res_state = 1  # Found 1st Touch
+          res_state = 1
       elif res_state == 1:
-        # Wait for pullback away from resistance (> 0.8 ATR below level)
         if c["close"] < self.resistance_lvl - (0.8 * atr):
-          res_state = 2  # Pulled back successfully, ready for confirmed retest
+          res_state = 2
       elif res_state == 2:
-        # Retest phase: Must approach resistance AND show rejection candle (Close < Open)
         if is_near_res and c["close"] < c["open"]:
           sl = round(c["high"] + (1.2 * atr), dec)
           tp1 = round(c["close"] - (1.0 * atr), dec)
@@ -502,9 +516,7 @@ class TWTDeltaEngine:
                 "TP 3": tp3,
                 "Expired": c["is_expired"],
             })
-            res_state = (
-                0  # Reset cycle to look for fresh multi-touch retest setup
-            )
+            res_state = 0
 
       # --- 6H SUPPORT VALIDATED RETEST LOGIC ---
       is_near_sup = (
@@ -514,13 +526,11 @@ class TWTDeltaEngine:
 
       if sup_state == 0:
         if is_near_sup:
-          sup_state = 1  # Found 1st Touch
+          sup_state = 1
       elif sup_state == 1:
-        # Wait for pullback away from support (> 0.8 ATR above level)
         if c["close"] > self.support_lvl + (0.8 * atr):
-          sup_state = 2  # Pulled back successfully, ready for confirmed retest
+          sup_state = 2
       elif sup_state == 2:
-        # Retest phase: Must approach support AND show rejection candle (Close > Open)
         if is_near_sup and c["close"] > c["open"]:
           sl = round(c["low"] - (1.2 * atr), dec)
           tp1 = round(c["close"] + (1.0 * atr), dec)
@@ -546,7 +556,7 @@ class TWTDeltaEngine:
                 "TP 3": tp3,
                 "Expired": c["is_expired"],
             })
-            sup_state = 0  # Reset cycle
+            sup_state = 0
 
 
 with st.spinner(
