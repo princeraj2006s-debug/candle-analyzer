@@ -1,3 +1,4 @@
+from datetime import datetime, time, timedelta, timezone
 import ccxt
 import matplotlib.pyplot as plt
 import numpy as np
@@ -6,89 +7,178 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(
-    page_title="TWP ORB Pro by TUCKYAA", page_icon="⚡", layout="wide"
+    page_title="TWT Delta Pro by TUCKYAA", page_icon="⚡", layout="wide"
 )
 
 # Live auto-refresh every 10 seconds
-count = st_autorefresh(interval=10000, key="twp_institutional_refresh")
+count = st_autorefresh(interval=10000, key="twt_delta_refresh")
 
-st.title("⚡ TWP ORB Ultimate Bot by TUCKYAA (Institutional Grade Engine)")
-st.markdown(
-    f"**Live Feed Active (Refresh Count: {count}) | CCXT Engine | Volume Spike +"
-    " Retest + Multi-TF + Trailing SL**"
+st.title(
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Delta Exchange Multi-Retest Level Engine"
 )
+st.markdown(
+    f"**Live Feed Active (Refresh Count: {count}) | 01:30 4H Resistance & 05:30"
+    " 6H Support + Smart Multi-Touch Retest Engine + Multi-TP**"
+)
+
+# Delta Exchange 20 Crypto & Metal Assets
+ASSET_LIST = [
+    "BTC/USDT",
+    "ETH/USDT",
+    "XAUT/USDT",
+    "SOL/USDT",
+    "XRP/USDT",
+    "BNB/USDT",
+    "DOGE/USDT",
+    "MATIC/USDT",
+    "ADA/USDT",
+    "AVAX/USDT",
+    "LINK/USDT",
+    "LTC/USDT",
+    "DOT/USDT",
+    "NEAR/USDT",
+    "APT/USDT",
+    "ARB/USDT",
+    "OP/USDT",
+    "SUI/USDT",
+    "FIL/USDT",
+    "RENDER/USDT",
+]
+
+# Sidebar Session Box Panel
+st.sidebar.markdown("### 🤖 TWT Expert Panel")
+st.sidebar.markdown("---")
+server_time_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+st.sidebar.text(f"Server time          ———  {server_time_ist.strftime('%H:%M')}")
+st.sidebar.text("Support Ref (6H)   ———  05:30 IST Candle Low")
+st.sidebar.text("Resistance Ref (4H) ———  01:30 IST Candle High")
+st.sidebar.text("No-Trade Zone      ———  01:00 ➔ 06:00 IST")
+st.sidebar.markdown("---")
+st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
+st.sidebar.markdown("---")
+st.sidebar.markdown("#### Trading Settings")
+st.sidebar.text("Entry method     : Smart Multi-Touch Retest")
+st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
+st.sidebar.text("Stop loss          : ATR Managed")
 
 # Asset Selection Dropdown
 selected_symbol = st.selectbox(
-    "Select Trading Asset / Market", options=["XAUT/USDT", "BTC/USDT", "ETH/USDT"], index=0
+    "Select Delta Exchange Asset", options=ASSET_LIST, index=5
 )
 
 
+def get_decimals(price):
+  if price < 1:
+    return 4
+  elif price < 10:
+    return 3
+  else:
+    return 2
+
+
 @st.cache_data(ttl=10)
-def fetch_twp_institutional_data(symbol):
+def fetch_twt_delta_data(symbol):
   exchanges_to_try = [
       (ccxt.binance, symbol),
       (ccxt.bybit, symbol),
       (ccxt.kucoin, symbol),
-      (ccxt.mexc, symbol),
   ]
+
   for ex_class, sym in exchanges_to_try:
     try:
       exchange = ex_class({"enableRateLimit": True, "timeout": 20000})
       exchange.load_markets()
       if sym in exchange.markets:
-        # Fetch 5m data
         ohlcv_5m = exchange.fetch_ohlcv(sym, timeframe="5m", limit=100)
-        # Fetch 15m data for Multi-Timeframe Trend filter
-        ohlcv_15m = exchange.fetch_ohlcv(sym, timeframe="15m", limit=50)
+        ohlcv_4h = exchange.fetch_ohlcv(sym, timeframe="4h", limit=30)
+        ohlcv_6h = exchange.fetch_ohlcv(sym, timeframe="6h", limit=30)
 
-        if ohlcv_5m and ohlcv_15m:
+        if ohlcv_5m and ohlcv_4h:
           df_5 = pd.DataFrame(
               ohlcv_5m,
               columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
           )
           df_5["timestamp"] = pd.to_datetime(df_5["timestamp"], unit="ms")
-          df_5.set_index("timestamp", inplace=True)
+          df_5 = df_5.set_index("timestamp")
 
-          df_15 = pd.DataFrame(
-              ohlcv_15m,
+          df_4 = pd.DataFrame(
+              ohlcv_4h,
               columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
           )
-          df_15["timestamp"] = pd.to_datetime(df_15["timestamp"], unit="ms")
-          df_15.set_index("timestamp", inplace=True)
+          df_4["timestamp"] = pd.to_datetime(df_4["timestamp"], unit="ms")
+          df_4 = df_4.set_index("timestamp")
 
-          return df_5, df_15, sym
+          df_6 = (
+              pd.DataFrame(
+                  ohlcv_6h,
+                  columns=[
+                      "timestamp",
+                      "Open",
+                      "High",
+                      "Low",
+                      "Close",
+                      "Volume",
+                  ],
+              )
+              if ohlcv_6h
+              else df_4.copy()
+          )
+          df_6["timestamp"] = pd.to_datetime(df_6["timestamp"], unit="ms")
+          df_6 = df_6.set_index("timestamp")
+
+          return df_5, df_4, df_6, symbol
     except Exception:
       continue
-  return None, None, None
+  return None, None, None, None
 
 
-df_5m, df_15m, active_symbol = fetch_twp_institutional_data(selected_symbol)
+df_5m, df_4h, df_6h, active_symbol = fetch_twt_delta_data(selected_symbol)
 
 
-class TWPInstitutionalEngine:
+class TWTDeltaEngine:
 
-  def __init__(self, df_5, df_15, symbol):
+  def __init__(self, df_5, df_4, df_6, symbol):
     self.df_5 = df_5 if df_5 is not None else None
-    self.df_15 = df_15 if df_15 is not None else None
+    self.df_4 = df_4 if df_4 is not None else None
+    self.df_6 = df_6 if df_6 is not None else None
     self.symbol = symbol
     self.candles = []
     self.signals = []
-    self.or_high = 0
-    self.or_low = 0
+    self.resistance_lvl = 0
+    self.support_lvl = 0
 
   def calculate_indicators(self):
+    IST = timezone(timedelta(hours=5, minutes=30))
     if self.df_5 is not None and len(self.df_5) >= 30:
-      current_date = self.df_5.index[-1].date()
-      day_df = self.df_5[self.df_5.index.date == current_date]
-      monitoring_df = day_df.head(4) if len(day_df) >= 4 else self.df_5.head(4)
+      if self.df_4 is not None and not self.df_4.empty:
+        idx_utc = (
+            self.df_4.index.tz_localize("UTC")
+            if self.df_4.index.tz is None
+            else self.df_4.index
+        )
+        df_4_ist = idx_utc.tz_convert(IST)
+        mask_4h = df_4_ist.hour == 1
+        filtered_4h = self.df_4[mask_4h]
+        if not filtered_4h.empty:
+          self.resistance_lvl = float(filtered_4h["High"].iloc[-1])
+        else:
+          self.resistance_lvl = float(self.df_4["High"].iloc[-1])
 
-      self.or_high = float(monitoring_df["High"].max())
-      self.or_low = float(monitoring_df["Low"].min())
-
-      # 5m Indicators
-      self.df_5["EMA_50"] = self.df_5["Close"].ewm(span=50, adjust=False).mean()
-      self.df_5["Vol_SMA"] = self.df_5["Volume"].rolling(10).mean()
+      if self.df_6 is not None and not self.df_6.empty:
+        idx_utc_6 = (
+            self.df_6.index.tz_localize("UTC")
+            if self.df_6.index.tz is None
+            else self.df_6.index
+        )
+        df_6_ist = idx_utc_6.tz_convert(IST)
+        mask_6h = df_6_ist.hour == 5
+        filtered_6h = self.df_6[mask_6h]
+        if not filtered_6h.empty:
+          self.support_lvl = float(filtered_6h["Low"].iloc[-1])
+        else:
+          self.support_lvl = float(filtered_6h["Low"].iloc[-1])
+      elif self.df_4 is not None:
+        self.support_lvl = float(self.df_4["Low"].iloc[-1])
 
       self.df_5["TR"] = np.maximum(
           self.df_5["High"] - self.df_5["Low"],
@@ -99,18 +189,19 @@ class TWPInstitutionalEngine:
       )
       self.df_5["ATR"] = self.df_5["TR"].rolling(14).mean()
 
-      # 15m Trend Indicator (Multi-TF Filter)
-      if self.df_15 is not None and not self.df_15.empty:
-        self.df_15["EMA_20"] = (
-            self.df_15["Close"].ewm(span=20, adjust=False).mean()
-        )
-
   def parse_and_scan(self):
     if self.df_5 is None or self.df_5.empty:
       return
 
+    IST = timezone(timedelta(hours=5, minutes=30))
+
     for idx, row in enumerate(self.df_5.iterrows()):
-      timestamp_str = row[0].strftime("%H:%M")
+      dt_utc = row[0]
+      if dt_utc.tzinfo is None:
+        dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+      dt_ist = dt_utc.astimezone(IST)
+      timestamp_str = dt_ist.strftime("%H:%M")
+
       r = row[1]
       o, h, l, c, v = (
           float(r["Open"]),
@@ -119,100 +210,107 @@ class TWPInstitutionalEngine:
           float(r["Close"]),
           float(r["Volume"]),
       )
-      ema = float(r["EMA_50"]) if not pd.isna(r["EMA_50"]) else c
-      vol_avg = float(r["Vol_SMA"]) if not pd.isna(r["Vol_SMA"]) else v
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
 
       self.candles.append({
           "id": idx + 1,
           "time": timestamp_str,
+          "dt_ist": dt_ist,
           "color": "Green" if c >= o else "Red",
           "open": o,
           "high": h,
           "low": l,
           "close": c,
           "volume": v,
-          "vol_avg": vol_avg,
-          "ema": ema,
           "atr": atr,
       })
 
-    # Get 15m trend direction
-    trend_15m = "NEUTRAL"
-    if self.df_15 is not None and not self.df_15.empty:
-      last_15m = self.df_15.iloc[-1]
-      if last_15m["Close"] > last_15m["EMA_20"]:
-        trend_15m = "BULLISH"
-      elif last_15m["Close"] < last_15m["EMA_20"]:
-        trend_15m = "BEARISH"
+    res_touch_count = 0
+    sup_touch_count = 0
+    last_res_candle_id = -99
+    last_sup_candle_id = -99
 
-    # Institutional Logic: ORB + Volume Spike + Retest Confirmation + Multi-TF Filter
-    for i in range(6, len(self.candles)):
+    for i in range(5, len(self.candles)):
       c = self.candles[i]
-      prev1 = self.candles[i - 1]
-      prev2 = self.candles[i - 2]
 
-      # 1. Volume Confirmation (Volume must be > 1.3x of average volume)
-      is_volume_strong = c["volume"] >= (c["vol_avg"] * 1.3)
+      c_time = c["dt_ist"].time()
+      if time(1, 0) <= c_time <= time(6, 0):
+        continue
 
-      # 2. Bullish Setup with Retest Confirmation & Multi-TF Check
-      is_retest_buy = prev1["low"] <= self.or_high or prev2["low"] <= self.or_high
-      if (
-          c["close"] > self.or_high
-          and is_retest_buy
-          and is_volume_strong
-          and trend_15m != "BEARISH"
-      ):
-        if c["close"] > c["ema"] and c["close"] > c["open"]:
-          sl = c["close"] - (1.5 * c["atr"])
-          tp = c["close"] + (2.5 * c["atr"])
-          if not any(
-              s["Setup"] == "Institutional Buy"
-              and abs(s["Candle #"] - c["id"]) < 5
-              for s in self.signals
-          ):
-            self.signals.append({
-                "Time": c["time"],
-                "Candle #": c["id"],
-                "Setup": "Institutional Buy",
-                "Action": "Buy / Long (B)",
-                "Entry Price": round(c["close"], 2),
-                "Stop Loss (SL)": round(sl, 2),
-                "Take Profit (TP)": round(tp, 2),
-            })
+      atr = c["atr"]
+      dec = get_decimals(c["close"])
+      candle_body = abs(c["close"] - c["open"])
 
-      # 3. Bearish Setup with Retest Confirmation & Multi-TF Check
-      is_retest_sell = (
-          prev1["high"] >= self.or_low or prev2["high"] >= self.or_low
+      # --- 4H RESISTANCE TOUCH TRACKING ---
+      is_near_res = (
+          c["high"] >= self.resistance_lvl - (0.8 * atr)
+          and c["high"] <= self.resistance_lvl + (0.8 * atr)
       )
-      if (
-          c["close"] < self.or_low
-          and is_retest_sell
-          and is_volume_strong
-          and trend_15m != "BULLISH"
-      ):
-        if c["close"] < c["ema"] and c["close"] < c["open"]:
-          sl = c["close"] + (1.5 * c["atr"])
-          tp = c["close"] - (2.5 * c["atr"])
+      if is_near_res and (i - last_res_candle_id > 5):
+        res_touch_count += 1
+        last_res_candle_id = i
+
+        # 2nd or 3rd Touch Sell Trigger
+        if res_touch_count >= 2:
+          sl = round(c["high"] + (1.2 * atr), dec)
+          tp1 = round(c["close"] - (1.0 * atr), dec)
+          tp2 = round(c["close"] - (2.2 * atr), dec)
+          tp3 = round(c["close"] - (3.8 * atr), dec)
+
           if not any(
-              s["Setup"] == "Institutional Sell"
-              and abs(s["Candle #"] - c["id"]) < 5
+              s["Setup"] == "TWT Multi-Touch Resistance Sell"
+              and abs(s["Candle #"] - c["id"]) < 6
               for s in self.signals
           ):
             self.signals.append({
                 "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": "Institutional Sell",
-                "Action": "Sell / Short (S)",
-                "Entry Price": round(c["close"], 2),
-                "Stop Loss (SL)": round(sl, 2),
-                "Take Profit (TP)": round(tp, 2),
+                "Setup": "TWT Multi-Touch Resistance Sell",
+                "Action": f"Sell / Short (S) [Retest #{res_touch_count}] 🔴",
+                "Entry Price": round(c["close"], dec),
+                "Stop Loss (SL)": sl,
+                "TP 1": tp1,
+                "TP 2": tp2,
+                "TP 3": tp3,
+            })
+
+      # --- 6H SUPPORT TOUCH TRACKING ---
+      is_near_sup = (
+          c["low"] <= self.support_lvl + (0.8 * atr)
+          and c["low"] >= self.support_lvl - (0.8 * atr)
+      )
+      if is_near_sup and (i - last_sup_candle_id > 5):
+        sup_touch_count += 1
+        last_sup_candle_id = i
+
+        # 2nd or 3rd Touch Buy Trigger
+        if sup_touch_count >= 2:
+          sl = round(c["low"] - (1.2 * atr), dec)
+          tp1 = round(c["close"] + (1.0 * atr), dec)
+          tp2 = round(c["close"] + (2.2 * atr), dec)
+          tp3 = round(c["close"] + (3.8 * atr), dec)
+
+          if not any(
+              s["Setup"] == "TWT Multi-Touch Support Buy"
+              and abs(s["Candle #"] - c["id"]) < 6
+              for s in self.signals
+          ):
+            self.signals.append({
+                "Time": c["time"],
+                "Candle #": c["id"],
+                "Setup": "TWT Multi-Touch Support Buy",
+                "Action": f"Buy / Long (B) [Retest #{sup_touch_count}] 🟢",
+                "Entry Price": round(c["close"], dec),
+                "Stop Loss (SL)": sl,
+                "TP 1": tp1,
+                "TP 2": tp2,
+                "TP 3": tp3,
             })
 
 
-with st.spinner(f"⚡ Loading Institutional Engine for {selected_symbol}..."):
+with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
   if df_5m is not None and not df_5m.empty:
-    bot = TWPInstitutionalEngine(df_5m, df_15m, selected_symbol)
+    bot = TWTDeltaEngine(df_5m, df_4h, df_6h, selected_symbol)
     bot.calculate_indicators()
     bot.parse_and_scan()
 
@@ -220,97 +318,81 @@ with st.spinner(f"⚡ Loading Institutional Engine for {selected_symbol}..."):
     curr_atr = bot.candles[-1]["atr"] if bot.candles else (curr_p * 0.002)
 
     st.markdown("---")
-    st.subheader(f"📊 Live Dashboard ({active_symbol or selected_symbol})")
+    st.subheader(f"📊 Delta Exchange Live Dashboard ({selected_symbol})")
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-      st.metric(label="Fixed OR High", value=f"{bot.or_high:.2f}")
+      st.metric(
+          label="4H Resistance (01:30 High)", value=f"{bot.resistance_lvl:.2f}"
+      )
     with col2:
-      st.metric(label="Fixed OR Low", value=f"{bot.or_low:.2f}")
+      st.metric(label="6H Support (05:30 Low)", value=f"{bot.support_lvl:.2f}")
     with col3:
-      st.metric(label="Current Price", value=f"{curr_p:.2f}")
+      st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
     with col4:
-      st.metric(label="AI Filters", value="Volume + Retest", delta="Active")
+      st.metric(
+          label="Methodology",
+          value="Smart Multi-Touch Retest",
+          delta="Active",
+      )
 
-    # Institutional Locked Trade Card
     st.markdown("---")
-    st.subheader("🎯 Institutional High-Accuracy Setup")
+    st.subheader("🎯 Trade With Tuckyaa (TUCKYAA) Multi-Touch Engine")
 
     if bot.signals:
       latest_sig = bot.signals[-1]
       is_buy = "Buy" in latest_sig["Action"]
-
-      # Trailing Stop-Loss simulation logic for active trade
       entry_p = latest_sig["Entry Price"]
-      if is_buy:
-        # Trail SL upward if price moved in profit
-        current_profit_dist = curr_p - entry_p
-        active_sl = latest_sig["Stop Loss (SL)"]
-        if current_profit_dist > (1.0 * curr_atr):
-          active_sl = round(entry_p, 2)  # Break-even trail
-          trail_status = "🔒 Trailed to Break-Even"
-        else:
-          trail_status = "🛡️ Initial ATR SL"
+      signal_time = latest_sig["Time"]
 
+      if is_buy:
         st.success(
-            f"🟢 **INSTITUTIONAL SETUP: {latest_sig['Action']}**\n\n"
-            f"- **Time:** `{latest_sig['Time']}` (Candle #{latest_sig['Candle #']})\n"
-            f"- **Locked Entry:** `{entry_p}`\n"
-            f"- **Managed SL:** `{active_sl}` ({trail_status})\n"
-            f"- **Target TP:** `{latest_sig['Take Profit (TP)']}`\n\n"
-            "👉 *Volume spike & retest confirmed! Zero fake breakout risk.*"
+            f"🟢 **TWT DELTA SETUP: {latest_sig['Action']}**\n\n"
+            f"🕒 **Candle Time (IST):** `{signal_time}` (Candle"
+            f" #{latest_sig['Candle #']})\n"
+            f"- **Entry Price:** `{entry_p}`\n"
+            f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
+            f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
+            f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
+            "📌 *Instructions:* Support multi-touch retest confirmed!"
         )
       else:
-        current_profit_dist = entry_p - curr_p
-        active_sl = latest_sig["Stop Loss (SL)"]
-        if current_profit_dist > (1.0 * curr_atr):
-          active_sl = round(entry_p, 2)
-          trail_status = "🔒 Trailed to Break-Even"
-        else:
-          trail_status = "🛡️ Initial ATR SL"
-
         st.error(
-            f"🔴 **INSTITUTIONAL SETUP: {latest_sig['Action']}**\n\n"
-            f"- **Time:** `{latest_sig['Time']}` (Candle #{latest_sig['Candle #']})\n"
-            f"- **Locked Entry:** `{entry_p}`\n"
-            f"- **Managed SL:** `{active_sl}` ({trail_status})\n"
-            f"- **Target TP:** `{latest_sig['Take Profit (TP)']}`\n\n"
-            "👉 *Volume spike & retest confirmed! Zero fake breakout risk.*"
+            f"🔴 **TWT DELTA SETUP: {latest_sig['Action']}**\n\n"
+            f"🕒 **Candle Time (IST):** `{signal_time}` (Candle"
+            f" #{latest_sig['Candle #']})\n"
+            f"- **Entry Price:** `{entry_p}`\n"
+            f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
+            f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
+            f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
+            "📌 *Instructions:* Resistance multi-touch retest confirmed!"
         )
     else:
       st.warning(
-          "🟡 **HOLD / WAIT (FILTERING FALSE BREAKOUTS)**\n\n"
-          "- Bot volume spike, retest, aur multi-timeframe trend check kar raha hai.\n"
-          "- **Action:** Jab tak institutional confirmation nahi milti, fuzool trade mat lo, wait karo!"
+          "🟡 **STATUS: WAITING FOR 2ND / 3RD TOUCH RETEST**\n\n"
+          "📌 *Instructions:* Monitoring price action near 4H Resistance and 6H"
+          " Support."
       )
 
     if bot.signals:
       st.markdown("---")
-      st.subheader("📋 Verified Institutional Signal History")
-      st.dataframe(pd.DataFrame(bot.signals[-4:]), use_container_width=True)
+      st.subheader("📋 Verified TWT Signal History")
+      st.dataframe(pd.DataFrame(bot.signals[-5:]), width="stretch")
 
     st.markdown("---")
-    st.subheader(
-        f"📈 {active_symbol or selected_symbol} 5m Chart — Institutional View"
-    )
+    st.subheader(f"📈 {selected_symbol} 5m Real-Time Chart")
     fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
 
     for c in bot.candles:
       col = "#26a69a" if c["color"] == "Green" else "#ef5350"
       body_size = abs(c["close"] - c["open"])
-      min_body = (
-          curr_p * 0.0008
-          if "XAUT" in selected_symbol or "ETH" in selected_symbol
-          else curr_p * 0.0003
-      )
+      min_body = curr_p * 0.0003
       plot_height = max(body_size, min_body)
-
-      if body_size < min_body:
-        plot_bottom = min(c["open"], c["close"]) - (
-            (min_body - body_size) / 2
-        )
-      else:
-        plot_bottom = min(c["open"], c["close"])
+      plot_bottom = (
+          min(c["open"], c["close"]) - ((min_body - body_size) / 2)
+          if body_size < min_body
+          else min(c["open"], c["close"])
+      )
 
       ax.bar(
           c["id"],
@@ -322,32 +404,32 @@ with st.spinner(f"⚡ Loading Institutional Engine for {selected_symbol}..."):
       ax.vlines(c["id"], c["low"], c["high"], color="#b2b5be", linewidth=1.3)
 
     ax.axhline(
-        bot.or_high,
-        color="#ff7043",
+        bot.resistance_lvl,
+        color="#ffeb3b",
         linestyle="--",
         linewidth=2,
-        label="OR High",
+        label="4H Resistance",
     )
     ax.text(
         2,
-        bot.or_high,
-        f"  OR High ({bot.or_high:.1f})",
-        color="#ff7043",
+        bot.resistance_lvl,
+        f"  4H Resistance ({bot.resistance_lvl:.1f})",
+        color="#ffeb3b",
         weight="bold",
         fontsize=10,
     )
 
     ax.axhline(
-        bot.or_low,
+        bot.support_lvl,
         color="#26a69a",
         linestyle="--",
         linewidth=2,
-        label="OR Low",
+        label="6H Support",
     )
     ax.text(
         2,
-        bot.or_low,
-        f"  OR Low ({bot.or_low:.1f})",
+        bot.support_lvl,
+        f"  6H Support ({bot.support_lvl:.1f})",
         color="#26a69a",
         weight="bold",
         fontsize=10,
@@ -355,10 +437,10 @@ with st.spinner(f"⚡ Loading Institutional Engine for {selected_symbol}..."):
 
     lows = [c["low"] for c in bot.candles]
     highs = [c["high"] for c in bot.candles]
-    if bot.or_high > 0:
-      highs.append(bot.or_high)
-    if bot.or_low > 0:
-      lows.append(bot.or_low)
+    if bot.resistance_lvl > 0:
+      highs.append(bot.resistance_lvl)
+    if bot.support_lvl > 0:
+      lows.append(bot.support_lvl)
 
     if lows and highs:
       margin = (max(highs) - min(lows)) * 0.09
@@ -379,7 +461,7 @@ with st.spinner(f"⚡ Loading Institutional Engine for {selected_symbol}..."):
       )
 
     ax.set_title(
-        f"{active_symbol or selected_symbol} 5m — Institutional Grade Engine",
+        f"{selected_symbol} 5m — TRADE WITH TUCKYAA (TUCKYAA) Delta Engine",
         color="white",
         fontsize=14,
     )
@@ -396,4 +478,4 @@ with st.spinner(f"⚡ Loading Institutional Engine for {selected_symbol}..."):
 
     st.pyplot(fig)
   else:
-    st.error("Data load nahi ho paya. Please check connection.")
+    st.error("Market data load failed. Please check internet connection.")
