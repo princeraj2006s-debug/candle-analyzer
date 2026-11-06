@@ -195,7 +195,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=10000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Delta Exchange Multi-Retest Level Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Delta Multi-Retest Level Engine"
 )
 
 # TOP SELECTION BAR FOR TRADING CONTROLS
@@ -229,7 +229,7 @@ st.sidebar.text("Support Ref (6H)   ———  05:30 IST Candle Low")
 st.sidebar.text("Resistance Ref (4H) ———  01:30 IST Candle High")
 st.sidebar.text("No-Trade Zone      ———  01:00 ➔ 06:00 IST")
 st.sidebar.markdown("---")
-st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
+st.sidebar.text("Platform          — Delta (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Settings")
 st.sidebar.text(f"Selected Zone    : {tz_short}")
@@ -358,7 +358,7 @@ class TWTDeltaEngine:
         if not filtered_6h.empty:
           self.support_lvl = float(filtered_6h["Low"].iloc[-1])
         else:
-          self.support_lvl = float(self.df_6["Low"].iloc[-1])
+          self.support_lvl = float(filtered_6h["Low"].iloc[-1])
       elif self.df_4 is not None:
         self.support_lvl = float(self.df_4["Low"].iloc[-1])
 
@@ -376,6 +376,7 @@ class TWTDeltaEngine:
       return
 
     IST = timezone(timedelta(hours=5, minutes=30))
+    current_utc_time = datetime.now(timezone.utc)
 
     for idx, row in enumerate(self.df_main.iterrows()):
       dt_utc = row[0]
@@ -398,11 +399,18 @@ class TWTDeltaEngine:
       )
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
 
+      # Check if signal is older than 40 minutes
+      time_diff_minutes = (
+          current_utc_time - dt_utc
+      ).total_seconds() / 60.0
+      is_expired = time_diff_minutes > 40
+
       self.candles.append({
           "id": idx + 1,
           "time": timestamp_str,
           "dt_ist": dt_ist,
           "dt_user": dt_user_tz,
+          "dt_utc": dt_utc,
           "color": "Green" if c >= o else "Red",
           "open": o,
           "high": h,
@@ -410,6 +418,7 @@ class TWTDeltaEngine:
           "close": c,
           "volume": v,
           "atr": atr,
+          "is_expired": is_expired,
       })
 
     res_touch_count = 0
@@ -426,6 +435,7 @@ class TWTDeltaEngine:
 
       atr = c["atr"]
       dec = get_decimals(c["close"])
+      status_suffix = " ⌛ [EXPIRED]" if c["is_expired"] else ""
 
       # --- 4H RESISTANCE TOUCH TRACKING ---
       is_near_res = (
@@ -451,12 +461,16 @@ class TWTDeltaEngine:
                 "Time": c["time"],
                 "Candle #": c["id"],
                 "Setup": "TWT Multi-Touch Resistance Sell",
-                "Action": f"Sell / Short (S) [Retest #{res_touch_count}] 🔴",
+                "Action": (
+                    f"Sell / Short (S) [Retest #{res_touch_count}] 🔴"
+                    f"{status_suffix}"
+                ),
                 "Entry Price": round(c["close"], dec),
                 "Stop Loss (SL)": sl,
                 "TP 1": tp1,
                 "TP 2": tp2,
                 "TP 3": tp3,
+                "Expired": c["is_expired"],
             })
 
       # --- 6H SUPPORT TOUCH TRACKING ---
@@ -483,12 +497,16 @@ class TWTDeltaEngine:
                 "Time": c["time"],
                 "Candle #": c["id"],
                 "Setup": "TWT Multi-Touch Support Buy",
-                "Action": f"Buy / Long (B) [Retest #{sup_touch_count}] 🟢",
+                "Action": (
+                    f"Buy / Long (B) [Retest #{sup_touch_count}] 🟢"
+                    f"{status_suffix}"
+                ),
                 "Entry Price": round(c["close"], dec),
                 "Stop Loss (SL)": sl,
                 "TP 1": tp1,
                 "TP 2": tp2,
                 "TP 3": tp3,
+                "Expired": c["is_expired"],
             })
 
 
@@ -504,7 +522,7 @@ with st.spinner(
 
     st.markdown("---")
     st.subheader(
-        f"📊 Delta Exchange Live Dashboard ({selected_symbol} — {selected_tf})"
+        f"📊 Delta Live Dashboard ({selected_symbol} — {selected_tf})"
     )
 
     col1, col2, col3, col4 = st.columns(4)
@@ -531,8 +549,20 @@ with st.spinner(
       is_buy = "Buy" in latest_sig["Action"]
       entry_p = latest_sig["Entry Price"]
       signal_time = latest_sig["Time"]
+      is_expired_sig = latest_sig["Expired"]
 
-      if is_buy:
+      if is_expired_sig:
+        st.warning(
+            f"⏳ **TWT DELTA SETUP: {latest_sig['Action']}**\n\n"
+            f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
+            f" #{latest_sig['Candle #']})\n"
+            f"- **Entry Price:** `{entry_p}`\n"
+            f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
+            f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
+            f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
+            "📌 *Status:* **SIGNAL EXPIRED (>40 mins old)** — Do not enter!"
+        )
+      elif is_buy:
         st.success(
             f"🟢 **TWT DELTA SETUP: {latest_sig['Action']}**\n\n"
             f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
@@ -541,7 +571,7 @@ with st.spinner(
             f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
             f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
             f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-            "📌 *Instructions:* Support multi-touch retest confirmed!"
+            "📌 *Instructions:* Support multi-touch retest confirmed active!"
         )
       else:
         st.error(
@@ -552,7 +582,7 @@ with st.spinner(
             f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
             f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
             f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-            "📌 *Instructions:* Resistance multi-touch retest confirmed!"
+            "📌 *Instructions:* Resistance multi-touch retest confirmed active!"
         )
     else:
       st.warning(
@@ -638,8 +668,10 @@ with st.spinner(
       ax.set_ylim(min(lows) - margin, max(highs) + margin)
 
     for sig in bot.signals[-3:]:
-      tag = "B" if "Buy" in sig["Action"] else "S"
-      tag_color = "#00e676" if tag == "B" else "#ff1744"
+      tag = "EX" if sig["Expired"] else ("B" if "Buy" in sig["Action"] else "S")
+      tag_color = (
+          "#ffa726" if sig["Expired"] else ("#00e676" if tag == "B" else "#ff1744")
+      )
       ax.text(
           sig["Candle #"],
           sig["Entry Price"],
