@@ -1,4 +1,5 @@
 from datetime import datetime, time, timedelta, timezone
+import sqlite3
 import ccxt
 import matplotlib.pyplot as plt
 import numpy as np
@@ -21,25 +22,137 @@ hide_streamlit_style = """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# PASSWORD PROTECTION GATE (Password: 1984)
+# DATABASE INITIALIZATION (SQLite)
 # ---------------------------------------------------------
-if "authenticated" not in st.session_state:
-  st.session_state.authenticated = False
+conn = sqlite3.connect("twt_users.db", check_same_thread=False)
+c = conn.cursor()
+c.execute("""CREATE TABLE IF NOT EXISTS users 
+             (username TEXT PRIMARY KEY, password TEXT, status TEXT, role TEXT)""")
+# Default Admin Account (Username: tuckyaa, Password: 8002771200)
+c.execute(
+    "INSERT OR IGNORE INTO users VALUES ('tuckyaa', '8002771200', 'approved',"
+    " 'admin')"
+)
+conn.commit()
 
-if not st.session_state.authenticated:
-  st.title("🔒 TRADE WITH TUCKYAA — Secure Access")
-  st.markdown("Please enter your access password to unlock the VIP Trading Engine.")
+# ---------------------------------------------------------
+# AUTHENTICATION & ADMIN APPROVAL GATE
+# ---------------------------------------------------------
+if "user" not in st.session_state:
+  st.session_state.user = None
+if "role" not in st.session_state:
+  st.session_state.role = None
 
-  entered_pass = st.text_input("Enter Password", type="password")
-  if st.button("Login"):
-    if entered_pass == "1984":
-      st.session_state.authenticated = True
-      st.rerun()
+
+def login_register_page():
+  st.title("🔒 TRADE WITH TUCKYAA — VIP Portal")
+  st.markdown("Login or Request Access to the Delta Trading Engine.")
+
+  tab1, tab2 = st.tabs(["🔑 Login", "📝 Request Access"])
+
+  with tab1:
+    st.subheader("User Login")
+    l_user = st.text_input("Username / Mobile Number", key="l_user")
+    l_pass = st.text_input("Password", type="password", key="l_pass")
+    if st.button("Login to Dashboard"):
+      c.execute(
+          "SELECT password, status, role FROM users WHERE username=?", (l_user,)
+      )
+      row = c.fetchone()
+      if row:
+        db_pass, db_status, db_role = row
+        if db_pass == l_pass:
+          if db_status == "approved":
+            st.session_state.user = l_user
+            st.session_state.role = db_role
+            st.success("Login successful!")
+            st.rerun()
+          else:
+            st.warning(
+                "⏳ Your account is pending Admin approval. Please wait for"
+                " Tuckyaa to approve."
+            )
+        else:
+          st.error("❌ Incorrect Password!")
+      else:
+        st.error("❌ Username not found! Please register first.")
+
+  with tab2:
+    st.subheader("New User Registration")
+    r_user = st.text_input(
+        "Choose Username / Mobile Number", key="r_user"
+    )
+    r_pass = st.text_input("Choose Password", type="password", key="r_pass")
+    if st.button("Submit Access Request"):
+      if r_user and r_pass:
+        try:
+          c.execute(
+              "INSERT INTO users VALUES (?, ?, 'pending', 'user')",
+              (r_user, r_pass),
+          )
+          conn.commit()
+          st.success(
+              "✅ Request submitted successfully! Admin (Tuckyaa) will approve"
+              " your account soon."
+          )
+        except sqlite3.IntegrityError:
+          st.error(
+              "❌ Username already exists! Try logging in or use another name."
+          )
+      else:
+        st.warning("Please fill in all fields.")
+
+
+if st.session_state.user is None:
+  login_register_page()
+  st.stop()
+
+# ---------------------------------------------------------
+# ADMIN PANEL (Visible ONLY to Admin 'tuckyaa')
+# ---------------------------------------------------------
+if st.session_state.role == "admin":
+  st.sidebar.markdown("---")
+  st.sidebar.markdown("### 👑 Admin Control Panel")
+  if st.sidebar.button("Logout Admin"):
+    st.session_state.user = None
+    st.session_state.role = None
+    st.rerun()
+
+  with st.expander("🛠️ Manage User Approvals (Admin Only)"):
+    st.subheader("Pending User Requests")
+    c.execute("SELECT username FROM users WHERE status='pending'")
+    pending_users = c.fetchall()
+
+    if pending_users:
+      for p_user in pending_users:
+        u_name = p_user[0]
+        col_a, col_b = st.columns([2, 1])
+        col_a.write(f"User: **{u_name}**")
+        if col_b.button("Approve", key=f"app_{u_name}"):
+          c.execute(
+              "UPDATE users SET status='approved' WHERE username=?", (u_name,)
+          )
+          conn.commit()
+          st.success(f"Approved {u_name}!")
+          st.rerun()
     else:
-      st.error("❌ Incorrect Password! Please try again.")
-  st.stop()  # Stop execution here until authenticated
+      st.info("No pending user requests.")
 
-# Live auto-refresh every 10 seconds (only runs after login)
+    st.markdown("---")
+    st.subheader("Approved VIP Users")
+    c.execute("SELECT username FROM users WHERE status='approved'")
+    approved_users = c.fetchall()
+    for a_user in approved_users:
+      st.text(f"✅ {a_user[0]}")
+else:
+  if st.sidebar.button("Logout"):
+    st.session_state.user = None
+    st.session_state.role = None
+    st.rerun()
+
+# ---------------------------------------------------------
+# MAIN TRADING ENGINE (Loads only after approval & login)
+# ---------------------------------------------------------
 count = st_autorefresh(interval=10000, key="twt_delta_refresh")
 
 st.title(
@@ -50,7 +163,6 @@ st.markdown(
     " 6H Support + Smart Multi-Touch Retest Engine + Multi-TP**"
 )
 
-# Delta Exchange 20 Crypto & Metal Assets
 ASSET_LIST = [
     "BTC/USDT",
     "ETH/USDT",
@@ -74,7 +186,6 @@ ASSET_LIST = [
     "RENDER/USDT",
 ]
 
-# Sidebar Session Box Panel
 st.sidebar.markdown("### 🤖 TWT Expert Panel")
 st.sidebar.markdown("---")
 server_time_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
@@ -90,7 +201,6 @@ st.sidebar.text("Entry method     : Smart Multi-Touch Retest")
 st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss          : ATR Managed")
 
-# Asset Selection Dropdown
 selected_symbol = st.selectbox(
     "Select Delta Exchange Asset", options=ASSET_LIST, index=5
 )
@@ -341,7 +451,6 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
     bot.parse_and_scan()
 
     curr_p = bot.candles[-1]["close"] if bot.candles else 0.0
-    curr_atr = bot.candles[-1]["atr"] if bot.candles else (curr_p * 0.002)
 
     st.markdown("---")
     st.subheader(f"📊 Delta Exchange Live Dashboard ({selected_symbol})")
