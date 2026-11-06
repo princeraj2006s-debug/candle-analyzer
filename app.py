@@ -10,7 +10,36 @@ st.set_page_config(
     page_title="TWT Delta Pro by TUCKYAA", page_icon="⚡", layout="wide"
 )
 
-# Live auto-refresh every 10 seconds
+# Hide Streamlit Header, Footer, Menu & GitHub Icon via CSS
+hide_streamlit_style = """
+    <style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    </style>
+    """
+st.markdown(hide_streamlit_style, unsafe_allow_html=True)
+
+# ---------------------------------------------------------
+# PASSWORD PROTECTION GATE (Password: 1984)
+# ---------------------------------------------------------
+if "authenticated" not in st.session_state:
+  st.session_state.authenticated = False
+
+if not st.session_state.authenticated:
+  st.title("🔒 TRADE WITH TUCKYAA — Secure Access")
+  st.markdown("Please enter your access password to unlock the VIP Trading Engine.")
+
+  entered_pass = st.text_input("Enter Password", type="password")
+  if st.button("Login"):
+    if entered_pass == "1984":
+      st.session_state.authenticated = True
+      st.rerun()
+    else:
+      st.error("❌ Incorrect Password! Please try again.")
+  st.stop()  # Stop execution here until authenticated
+
+# Live auto-refresh every 10 seconds (only runs after login)
 count = st_autorefresh(interval=10000, key="twt_delta_refresh")
 
 st.title(
@@ -239,7 +268,6 @@ class TWTDeltaEngine:
 
       atr = c["atr"]
       dec = get_decimals(c["close"])
-      candle_body = abs(c["close"] - c["open"])
 
       # --- 4H RESISTANCE TOUCH TRACKING ---
       is_near_res = (
@@ -250,7 +278,6 @@ class TWTDeltaEngine:
         res_touch_count += 1
         last_res_candle_id = i
 
-        # 2nd or 3rd Touch Sell Trigger
         if res_touch_count >= 2:
           sl = round(c["high"] + (1.2 * atr), dec)
           tp1 = round(c["close"] - (1.0 * atr), dec)
@@ -283,7 +310,6 @@ class TWTDeltaEngine:
         sup_touch_count += 1
         last_sup_candle_id = i
 
-        # 2nd or 3rd Touch Buy Trigger
         if sup_touch_count >= 2:
           sl = round(c["low"] - (1.2 * atr), dec)
           tp1 = round(c["close"] + (1.0 * atr), dec)
