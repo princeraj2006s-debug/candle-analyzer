@@ -217,14 +217,36 @@ with col_tz:
   )
   active_tz = TRADING_TIMEZONES[selected_tz_name]
 
-# Sidebar Panel Info
+# Sidebar Panel Info & Session Filter Toggle
 st.sidebar.markdown("### 🤖 TWT Expert Panel")
 st.sidebar.markdown("---")
+
+enable_session_filter = st.sidebar.checkbox(
+    "🛡️ Enable Session Trap Filter",
+    value=True,
+    help="Avoids fake breakouts during London/NY Overlap (17:30 - 21:30 IST)",
+)
+
 tz_short = selected_tz_name.split(")")[0] + ")"
 server_time_target = datetime.now(active_tz)
+server_time_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+
+ist_hour = server_time_ist.hour
+ist_minute = server_time_ist.minute
+current_ist_time_val = ist_hour * 60 + ist_minute
+
+active_session_str = "Asia Session"
+if 1050 <= current_ist_time_val <= 1290:
+  active_session_str = "🔥 London + NY Overlap (High Volatility)"
+elif 750 <= current_ist_time_val < 1050:
+  active_session_str = "📊 London Session"
+elif current_ist_time_val >= 1050 or current_ist_time_val <= 150:
+  active_session_str = "🗽 New York Session"
+
 st.sidebar.text(
     f"Selected Zone Time — {server_time_target.strftime('%H:%M:%S')}"
 )
+st.sidebar.text(f"Active Market      — {active_session_str}")
 st.sidebar.text("Support Ref (6H)   ———  05:30 IST Candle Low")
 st.sidebar.text("Resistance Ref (4H) ———  01:30 IST Candle High")
 st.sidebar.text("No-Trade Zone      ———  01:00 ➔ 06:00 IST")
@@ -234,7 +256,7 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Settings")
 st.sidebar.text(f"Selected Zone    : {tz_short}")
 st.sidebar.text(f"Scanning TF      : {selected_tf}")
-st.sidebar.text("Entry method     : Smart Multi-Touch Retest")
+st.sidebar.text("Entry method     : Strict Validated Multi-Touch Retest")
 st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss          : ATR Managed")
 
@@ -318,12 +340,13 @@ df_chart, df_4h, df_6h, active_symbol = fetch_twt_delta_data(
 
 class TWTDeltaEngine:
 
-  def __init__(self, df_main, df_4, df_6, symbol, user_tz):
+  def __init__(self, df_main, df_4, df_6, symbol, user_tz, session_filter_on):
     self.df_main = df_main if df_main is not None else None
     self.df_4 = df_4 if df_4 is not None else None
     self.df_6 = df_6 if df_6 is not None else None
     self.symbol = symbol
     self.user_tz = user_tz
+    self.session_filter_on = session_filter_on
     self.candles = []
     self.signals = []
     self.resistance_lvl = 0
@@ -383,10 +406,8 @@ class TWTDeltaEngine:
       if dt_utc.tzinfo is None:
         dt_utc = dt_utc.replace(tzinfo=timezone.utc)
 
-      # Convert timestamp to selected trading timezone
       dt_user_tz = dt_utc.astimezone(self.user_tz)
       timestamp_str = dt_user_tz.strftime("%H:%M")
-
       dt_ist = dt_utc.astimezone(IST)
 
       r = row[1]
@@ -399,7 +420,6 @@ class TWTDeltaEngine:
       )
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
 
-      # Check if signal is older than 40 minutes
       time_diff_minutes = (
           current_utc_time - dt_utc
       ).total_seconds() / 60.0
@@ -421,49 +441,59 @@ class TWTDeltaEngine:
           "is_expired": is_expired,
       })
 
-    res_touch_count = 0
-    sup_touch_count = 0
-    last_res_candle_id = -99
-    last_sup_candle_id = -99
+    # --- STATE-MACHINE STRICT MULTI-TOUCH RETEST ENGINE ---
+    res_state = 0  # 0: Looking for Touch 1, 1: Waiting for Pullback, 2: Waiting for Retest & Rejection
+    sup_state = 0  # 0: Looking for Touch 1, 1: Waiting for Pullback, 2: Waiting for Retest & Rejection
 
     for i in range(5, len(self.candles)):
       c = self.candles[i]
-
       c_time_ist = c["dt_ist"].time()
+
+      # No-Trade Zone (01:00 to 06:00 IST)
       if time(1, 0) <= c_time_ist <= time(6, 0):
         continue
+
+      # Session Trap Filter (17:30 to 21:30 IST)
+      if self.session_filter_on:
+        if time(17, 30) <= c_time_ist <= time(21, 30):
+          continue
 
       atr = c["atr"]
       dec = get_decimals(c["close"])
       status_suffix = " ⌛ [EXPIRED]" if c["is_expired"] else ""
 
-      # --- 4H RESISTANCE TOUCH TRACKING ---
+      # --- 4H RESISTANCE VALIDATED RETEST LOGIC ---
       is_near_res = (
           c["high"] >= self.resistance_lvl - (0.8 * atr)
           and c["high"] <= self.resistance_lvl + (0.8 * atr)
       )
-      if is_near_res and (i - last_res_candle_id > 5):
-        res_touch_count += 1
-        last_res_candle_id = i
 
-        if res_touch_count >= 2:
+      if res_state == 0:
+        if is_near_res:
+          res_state = 1  # Found 1st Touch
+      elif res_state == 1:
+        # Wait for pullback away from resistance (> 0.8 ATR below level)
+        if c["close"] < self.resistance_lvl - (0.8 * atr):
+          res_state = 2  # Pulled back successfully, ready for confirmed retest
+      elif res_state == 2:
+        # Retest phase: Must approach resistance AND show rejection candle (Close < Open)
+        if is_near_res and c["close"] < c["open"]:
           sl = round(c["high"] + (1.2 * atr), dec)
           tp1 = round(c["close"] - (1.0 * atr), dec)
           tp2 = round(c["close"] - (2.2 * atr), dec)
           tp3 = round(c["close"] - (3.8 * atr), dec)
 
           if not any(
-              s["Setup"] == "TWT Multi-Touch Resistance Sell"
-              and abs(s["Candle #"] - c["id"]) < 6
+              s["Setup"] == "TWT Validated Multi-Touch Resistance Sell"
+              and abs(s["Candle #"] - c["id"]) < 8
               for s in self.signals
           ):
             self.signals.append({
                 "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": "TWT Multi-Touch Resistance Sell",
+                "Setup": "TWT Validated Multi-Touch Resistance Sell",
                 "Action": (
-                    f"Sell / Short (S) [Retest #{res_touch_count}] 🔴"
-                    f"{status_suffix}"
+                    f"Sell / Short (S) [Validated Retest] 🔴{status_suffix}"
                 ),
                 "Entry Price": round(c["close"], dec),
                 "Stop Loss (SL)": sl,
@@ -472,34 +502,42 @@ class TWTDeltaEngine:
                 "TP 3": tp3,
                 "Expired": c["is_expired"],
             })
+            res_state = (
+                0  # Reset cycle to look for fresh multi-touch retest setup
+            )
 
-      # --- 6H SUPPORT TOUCH TRACKING ---
+      # --- 6H SUPPORT VALIDATED RETEST LOGIC ---
       is_near_sup = (
           c["low"] <= self.support_lvl + (0.8 * atr)
           and c["low"] >= self.support_lvl - (0.8 * atr)
       )
-      if is_near_sup and (i - last_sup_candle_id > 5):
-        sup_touch_count += 1
-        last_sup_candle_id = i
 
-        if sup_touch_count >= 2:
+      if sup_state == 0:
+        if is_near_sup:
+          sup_state = 1  # Found 1st Touch
+      elif sup_state == 1:
+        # Wait for pullback away from support (> 0.8 ATR above level)
+        if c["close"] > self.support_lvl + (0.8 * atr):
+          sup_state = 2  # Pulled back successfully, ready for confirmed retest
+      elif sup_state == 2:
+        # Retest phase: Must approach support AND show rejection candle (Close > Open)
+        if is_near_sup and c["close"] > c["open"]:
           sl = round(c["low"] - (1.2 * atr), dec)
           tp1 = round(c["close"] + (1.0 * atr), dec)
           tp2 = round(c["close"] + (2.2 * atr), dec)
           tp3 = round(c["close"] + (3.8 * atr), dec)
 
           if not any(
-              s["Setup"] == "TWT Multi-Touch Support Buy"
-              and abs(s["Candle #"] - c["id"]) < 6
+              s["Setup"] == "TWT Validated Multi-Touch Support Buy"
+              and abs(s["Candle #"] - c["id"]) < 8
               for s in self.signals
           ):
             self.signals.append({
                 "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": "TWT Multi-Touch Support Buy",
+                "Setup": "TWT Validated Multi-Touch Support Buy",
                 "Action": (
-                    f"Buy / Long (B) [Retest #{sup_touch_count}] 🟢"
-                    f"{status_suffix}"
+                    f"Buy / Long (B) [Validated Retest] 🟢{status_suffix}"
                 ),
                 "Entry Price": round(c["close"], dec),
                 "Stop Loss (SL)": sl,
@@ -508,13 +546,16 @@ class TWTDeltaEngine:
                 "TP 3": tp3,
                 "Expired": c["is_expired"],
             })
+            sup_state = 0  # Reset cycle
 
 
 with st.spinner(
     f"⚡ Loading TWT Delta Engine for {selected_symbol} ({selected_tf})..."
 ):
   if df_chart is not None and not df_chart.empty:
-    bot = TWTDeltaEngine(df_chart, df_4h, df_6h, selected_symbol, active_tz)
+    bot = TWTDeltaEngine(
+        df_chart, df_4h, df_6h, selected_symbol, active_tz, enable_session_filter
+    )
     bot.calculate_indicators()
     bot.parse_and_scan()
 
@@ -538,7 +579,7 @@ with st.spinner(
       st.metric(
           label="Trading Zone",
           value=tz_short,
-          delta=f"Timeframe: {selected_tf}",
+          delta=f"TF: {selected_tf}",
       )
 
     st.markdown("---")
@@ -571,7 +612,8 @@ with st.spinner(
             f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
             f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
             f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-            "📌 *Instructions:* Support multi-touch retest confirmed active!"
+            "📌 *Instructions:* Validated Support multi-touch retest confirmed"
+            " active!"
         )
       else:
         st.error(
@@ -582,13 +624,14 @@ with st.spinner(
             f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
             f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
             f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-            "📌 *Instructions:* Resistance multi-touch retest confirmed active!"
+            "📌 *Instructions:* Validated Resistance multi-touch retest"
+            " confirmed active!"
         )
     else:
       st.warning(
-          "🟡 **STATUS: WAITING FOR 2ND / 3RD TOUCH RETEST**\n\n"
-          "📌 *Instructions:* Monitoring price action near 4H Resistance and 6H"
-          " Support."
+          "🟡 **STATUS: WAITING FOR VALIDATED RETEST SETUP**\n\n"
+          "📌 *Instructions:* Monitoring strict pullback and rejection near 4H"
+          " Resistance & 6H Support."
       )
 
     if bot.signals:
