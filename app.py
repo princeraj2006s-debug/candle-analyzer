@@ -18,7 +18,7 @@ st.title(
 )
 st.markdown(
     f"**Live Feed Active (Refresh Count: {count}) | 01:30 4H Resistance & 05:30"
-    " 6H Support + Strict Retest Count Engine + Multi-TP**"
+    " 6H Support + Smart Multi-Touch Retest Engine + Multi-TP**"
 )
 
 # Delta Exchange 20 Crypto & Metal Assets
@@ -57,13 +57,13 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Settings")
-st.sidebar.text("Entry method     : Multi-Retest Touch Logic")
+st.sidebar.text("Entry method     : Smart Multi-Touch Retest")
 st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss          : ATR Managed")
 
 # Asset Selection Dropdown
 selected_symbol = st.selectbox(
-    "Select Delta Exchange Asset", options=ASSET_LIST, index=0
+    "Select Delta Exchange Asset", options=ASSET_LIST, index=5
 )
 
 
@@ -150,7 +150,6 @@ class TWTDeltaEngine:
   def calculate_indicators(self):
     IST = timezone(timedelta(hours=5, minutes=30))
     if self.df_5 is not None and len(self.df_5) >= 30:
-      # Exact 4H Resistance from 01:30 IST candle high
       if self.df_4 is not None and not self.df_4.empty:
         idx_utc = (
             self.df_4.index.tz_localize("UTC")
@@ -165,7 +164,6 @@ class TWTDeltaEngine:
         else:
           self.resistance_lvl = float(self.df_4["High"].iloc[-1])
 
-      # Exact 6H Support from 05:30 IST candle low
       if self.df_6 is not None and not self.df_6.empty:
         idx_utc_6 = (
             self.df_6.index.tz_localize("UTC")
@@ -181,21 +179,6 @@ class TWTDeltaEngine:
           self.support_lvl = float(filtered_6h["Low"].iloc[-1])
       elif self.df_4 is not None:
         self.support_lvl = float(self.df_4["Low"].iloc[-1])
-
-      typical_price = (
-          self.df_5["High"] + self.df_5["Low"] + self.df_5["Close"]
-      ) / 3
-      self.df_5["VWAP"] = (
-          (typical_price * self.df_5["Volume"]).cumsum()
-          / self.df_5["Volume"].cumsum()
-      )
-      self.df_5["Vol_SMA"] = self.df_5["Volume"].rolling(10).mean()
-
-      delta = self.df_5["Close"].diff()
-      gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-      loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-      rs = gain / loss
-      self.df_5["RSI_14"] = 100 - (100 / (1 + rs))
 
       self.df_5["TR"] = np.maximum(
           self.df_5["High"] - self.df_5["Low"],
@@ -227,9 +210,6 @@ class TWTDeltaEngine:
           float(r["Close"]),
           float(r["Volume"]),
       )
-      vwap = float(r["VWAP"]) if not pd.isna(r["VWAP"]) else c
-      vol_avg = float(r["Vol_SMA"]) if not pd.isna(r["Vol_SMA"]) else v
-      rsi = float(r["RSI_14"]) if not pd.isna(r["RSI_14"]) else 50.0
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
 
       self.candles.append({
@@ -242,76 +222,51 @@ class TWTDeltaEngine:
           "low": l,
           "close": c,
           "volume": v,
-          "vol_avg": vol_avg,
-          "vwap": vwap,
-          "rsi": rsi,
           "atr": atr,
       })
 
-    # Retest Counter Trackers
-    resistance_touch_count = 0
-    support_touch_count = 0
+    res_touch_count = 0
+    sup_touch_count = 0
+    last_res_candle_id = -99
+    last_sup_candle_id = -99
 
-    for i in range(7, len(self.candles)):
+    for i in range(5, len(self.candles)):
       c = self.candles[i]
 
-      # No-Trade Zone: 01:00 AM se 06:00 AM IST ke beech trade mat lo
       c_time = c["dt_ist"].time()
       if time(1, 0) <= c_time <= time(6, 0):
         continue
 
-      is_volume_strong = c["volume"] >= (c["vol_avg"] * 1.1)
-      candle_body = abs(c["close"] - c["open"])
-      total_range = c["high"] - c["low"]
-      is_body_strong = (
-          candle_body >= (total_range * 0.4) if total_range > 0 else True
-      )
       atr = c["atr"]
       dec = get_decimals(c["close"])
+      candle_body = abs(c["close"] - c["open"])
 
-      # Volatility / News Filter
-      avg_atr = np.mean([x["atr"] for x in self.candles[-20:]])
-      if atr > (2.5 * avg_atr):
-        continue
-
-      # --- 4H RESISTANCE TOUCH & REJECTION (SELL LOGIC) ---
-      is_near_resistance = (
-          c["high"] >= self.resistance_lvl - (0.6 * atr)
-          and c["high"] <= self.resistance_lvl + (0.6 * atr)
+      # --- 4H RESISTANCE TOUCH TRACKING ---
+      is_near_res = (
+          c["high"] >= self.resistance_lvl - (0.8 * atr)
+          and c["high"] <= self.resistance_lvl + (0.8 * atr)
       )
-      upper_wick_rejection = (
-          c["high"] - max(c["open"], c["close"])
-      ) >= candle_body * 1.2
+      if is_near_res and (i - last_res_candle_id > 5):
+        res_touch_count += 1
+        last_res_candle_id = i
 
-      if is_near_resistance:
-        resistance_touch_count += 1
-        # 2nd or 3rd Touch with strict confirmation for Sell Entry
-        if (
-            resistance_touch_count >= 2
-            and (upper_wick_rejection or c["close"] < c["open"])
-            and c["close"] <= self.resistance_lvl
-            and c["close"] < c["vwap"]
-            and rsi < 55.0
-            and is_volume_strong
-            and is_body_strong
-        ):
+        # 2nd or 3rd Touch Sell Trigger
+        if res_touch_count >= 2:
           sl = round(c["high"] + (1.2 * atr), dec)
           tp1 = round(c["close"] - (1.0 * atr), dec)
           tp2 = round(c["close"] - (2.2 * atr), dec)
           tp3 = round(c["close"] - (3.8 * atr), dec)
 
           if not any(
-              s["Setup"] == "TWT Multi-Retest Resistance Sell"
-              and abs(s["Candle #"] - c["id"]) < 8
+              s["Setup"] == "TWT Multi-Touch Resistance Sell"
+              and abs(s["Candle #"] - c["id"]) < 6
               for s in self.signals
           ):
             self.signals.append({
                 "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": "TWT Multi-Retest Resistance Sell",
-                "Action": (
-                    f"Sell / Short (S) [Retest #{resistance_touch_count}] 🔴"
-                ),
+                "Setup": "TWT Multi-Touch Resistance Sell",
+                "Action": f"Sell / Short (S) [Retest #{res_touch_count}] 🔴",
                 "Entry Price": round(c["close"], dec),
                 "Stop Loss (SL)": sl,
                 "TP 1": tp1,
@@ -319,44 +274,32 @@ class TWTDeltaEngine:
                 "TP 3": tp3,
             })
 
-      # --- 6H SUPPORT TOUCH & BOUNCE (BUY LOGIC) ---
-      is_near_support = (
-          c["low"] <= self.support_lvl + (0.6 * atr)
-          and c["low"] >= self.support_lvl - (0.6 * atr)
+      # --- 6H SUPPORT TOUCH TRACKING ---
+      is_near_sup = (
+          c["low"] <= self.support_lvl + (0.8 * atr)
+          and c["low"] >= self.support_lvl - (0.8 * atr)
       )
-      lower_wick_rejection = (
-          min(c["open"], c["close"]) - c["low"]
-      ) >= candle_body * 1.2
+      if is_near_sup and (i - last_sup_candle_id > 5):
+        sup_touch_count += 1
+        last_sup_candle_id = i
 
-      if is_near_support:
-        support_touch_count += 1
-        # 2nd or 3rd Touch with strict confirmation for Buy Entry
-        if (
-            support_touch_count >= 2
-            and (lower_wick_rejection or c["close"] > c["open"])
-            and c["close"] >= self.support_lvl
-            and c["close"] > c["vwap"]
-            and rsi > 45.0
-            and is_volume_strong
-            and is_body_strong
-        ):
+        # 2nd or 3rd Touch Buy Trigger
+        if sup_touch_count >= 2:
           sl = round(c["low"] - (1.2 * atr), dec)
           tp1 = round(c["close"] + (1.0 * atr), dec)
           tp2 = round(c["close"] + (2.2 * atr), dec)
           tp3 = round(c["close"] + (3.8 * atr), dec)
 
           if not any(
-              s["Setup"] == "TWT Multi-Retest Support Buy"
-              and abs(s["Candle #"] - c["id"]) < 8
+              s["Setup"] == "TWT Multi-Touch Support Buy"
+              and abs(s["Candle #"] - c["id"]) < 6
               for s in self.signals
           ):
             self.signals.append({
                 "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": "TWT Multi-Retest Support Buy",
-                "Action": (
-                    f"Buy / Long (B) [Retest #{support_touch_count}] 🟢"
-                ),
+                "Setup": "TWT Multi-Touch Support Buy",
+                "Action": f"Buy / Long (B) [Retest #{sup_touch_count}] 🟢",
                 "Entry Price": round(c["close"], dec),
                 "Stop Loss (SL)": sl,
                 "TP 1": tp1,
@@ -389,12 +332,12 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
     with col4:
       st.metric(
           label="Methodology",
-          value="Multi-Retest Touch Logic",
+          value="Smart Multi-Touch Retest",
           delta="Active",
       )
 
     st.markdown("---")
-    st.subheader("🎯 Trade With Tuckyaa (TUCKYAA) Multi-Retest Engine")
+    st.subheader("🎯 Trade With Tuckyaa (TUCKYAA) Multi-Touch Engine")
 
     if bot.signals:
       latest_sig = bot.signals[-1]
@@ -403,57 +346,37 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
       signal_time = latest_sig["Time"]
 
       if is_buy:
-        current_profit_dist = curr_p - entry_p
-        active_sl = latest_sig["Stop Loss (SL)"]
-        if current_profit_dist > (0.5 * curr_atr):
-          active_sl = round(entry_p, get_decimals(entry_p))
-          trail_status = "🔒 Zero Loss (Break-Even Locked)"
-        else:
-          trail_status = "🛡️ Initial Strict SL"
-
         st.success(
             f"🟢 **TWT DELTA SETUP: {latest_sig['Action']}**\n\n"
-            f"🕒 **Candle Formation Time (IST):** `{signal_time}` (Candle"
+            f"🕒 **Candle Time (IST):** `{signal_time}` (Candle"
             f" #{latest_sig['Candle #']})\n"
-            f"- **Locked Entry Price:** `{entry_p}`\n"
-            f"- **Managed Stop Loss (SL):** `{active_sl}` ({trail_status})\n"
-            f"- **Target Profit 1 (TP1):** `{latest_sig['TP 1']}`\n"
-            f"- **Target Profit 2 (TP2):** `{latest_sig['TP 2']}`\n"
-            f"- **Target Profit 3 (TP3):** `{latest_sig['TP 3']}`\n\n"
-            "📌 *Instructions:* Support level multi-retest confirmed. Execute"
-            " trade safely!"
+            f"- **Entry Price:** `{entry_p}`\n"
+            f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
+            f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
+            f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
+            "📌 *Instructions:* Support multi-touch retest confirmed!"
         )
       else:
-        current_profit_dist = entry_p - curr_p
-        active_sl = latest_sig["Stop Loss (SL)"]
-        if current_profit_dist > (0.5 * curr_atr):
-          active_sl = round(entry_p, get_decimals(entry_p))
-          trail_status = "🔒 Zero Loss (Break-Even Locked)"
-        else:
-          trail_status = "🛡️ Initial Strict SL"
-
         st.error(
             f"🔴 **TWT DELTA SETUP: {latest_sig['Action']}**\n\n"
-            f"🕒 **Candle Formation Time (IST):** `{signal_time}` (Candle"
+            f"🕒 **Candle Time (IST):** `{signal_time}` (Candle"
             f" #{latest_sig['Candle #']})\n"
-            f"- **Locked Entry Price:** `{entry_p}`\n"
-            f"- **Managed Stop Loss (SL):** `{active_sl}` ({trail_status})\n"
-            f"- **Target Profit 1 (TP1):** `{latest_sig['TP 1']}`\n"
-            f"- **Target Profit 2 (TP2):** `{latest_sig['TP 2']}`\n"
-            f"- **Target Profit 3 (TP3):** `{latest_sig['TP 3']}`\n\n"
-            "📌 *Instructions:* Resistance level multi-retest confirmed. Execute"
-            " short trade safely!"
+            f"- **Entry Price:** `{entry_p}`\n"
+            f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
+            f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
+            f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
+            "📌 *Instructions:* Resistance multi-touch retest confirmed!"
         )
     else:
       st.warning(
-          "🟡 **STATUS: HOLD / WAITING FOR 2ND/3RD RETEST TOUCH**\n\n"
-          "📌 *Instructions:* Waiting for clean price retest touch near 4H"
-          " Resistance or 6H Support after 06:00 IST."
+          "🟡 **STATUS: WAITING FOR 2ND / 3RD TOUCH RETEST**\n\n"
+          "📌 *Instructions:* Monitoring price action near 4H Resistance and 6H"
+          " Support."
       )
 
     if bot.signals:
       st.markdown("---")
-      st.subheader("📋 Verified TWT Signal Execution History")
+      st.subheader("📋 Verified TWT Signal History")
       st.dataframe(pd.DataFrame(bot.signals[-5:]), width="stretch")
 
     st.markdown("---")
