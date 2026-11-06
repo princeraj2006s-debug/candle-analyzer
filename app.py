@@ -274,7 +274,7 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Settings")
 st.sidebar.text(f"Selected Zone    : {tz_short}")
 st.sidebar.text(f"Scanning TF      : {selected_tf}")
-st.sidebar.text("Entry method     : Strict Validated Multi-Touch Retest")
+st.sidebar.text("Entry method     : Strict 3-4 Touch Retest Engine")
 st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss          : ATR Managed")
 
@@ -459,9 +459,12 @@ class TWTDeltaEngine:
           "is_expired": is_expired,
       })
 
-    # --- STATE-MACHINE STRICT MULTI-TOUCH RETEST ENGINE ---
-    res_state = 0
-    sup_state = 0
+    # --- STRICT 3-4 TOUCHES STATE-MACHINE ENGINE ---
+    res_touches = 0
+    res_waiting_for_pullback = False
+
+    sup_touches = 0
+    sup_waiting_for_pullback = False
 
     for i in range(5, len(self.candles)):
       c = self.candles[i]
@@ -478,85 +481,97 @@ class TWTDeltaEngine:
       dec = get_decimals(c["close"])
       status_suffix = " ⌛ [EXPIRED]" if c["is_expired"] else ""
 
-      # --- 4H RESISTANCE VALIDATED RETEST LOGIC ---
+      # --- 4H RESISTANCE 3-4 TOUCH RETEST LOGIC ---
       is_near_res = (
           c["high"] >= self.resistance_lvl - (0.8 * atr)
           and c["high"] <= self.resistance_lvl + (0.8 * atr)
       )
 
-      if res_state == 0:
-        if is_near_res:
-          res_state = 1
-      elif res_state == 1:
-        if c["close"] < self.resistance_lvl - (0.8 * atr):
-          res_state = 2
-      elif res_state == 2:
-        if is_near_res and c["close"] < c["open"]:
-          sl = round(c["high"] + (1.2 * atr), dec)
-          tp1 = round(c["close"] - (1.0 * atr), dec)
-          tp2 = round(c["close"] - (2.2 * atr), dec)
-          tp3 = round(c["close"] - (3.8 * atr), dec)
+      if is_near_res:
+        if not res_waiting_for_pullback:
+          res_touches += 1
+          res_waiting_for_pullback = (
+              True  # Must pull back before counting next touch
+          )
 
-          if not any(
-              s["Setup"] == "TWT Validated Multi-Touch Resistance Sell"
-              and abs(s["Candle #"] - c["id"]) < 8
-              for s in self.signals
-          ):
-            self.signals.append({
-                "Time": c["time"],
-                "Candle #": c["id"],
-                "Setup": "TWT Validated Multi-Touch Resistance Sell",
-                "Action": (
-                    f"Sell / Short (S) [Validated Retest] 🔴{status_suffix}"
-                ),
-                "Entry Price": round(c["close"], dec),
-                "Stop Loss (SL)": sl,
-                "TP 1": tp1,
-                "TP 2": tp2,
-                "TP 3": tp3,
-                "Expired": c["is_expired"],
-            })
-            res_state = 0
+          # Trigger signal only if we have at least 3 touches and current candle shows bearish rejection
+          if res_touches >= 3 and c["close"] < c["open"]:
+            sl = round(c["high"] + (1.2 * atr), dec)
+            tp1 = round(c["close"] - (1.0 * atr), dec)
+            tp2 = round(c["close"] - (2.2 * atr), dec)
+            tp3 = round(c["close"] - (3.8 * atr), dec)
 
-      # --- 6H SUPPORT VALIDATED RETEST LOGIC ---
+            if not any(
+                s["Setup"] == "TWT 3+ Touch Validated Resistance Sell"
+                and abs(s["Candle #"] - c["id"]) < 8
+                for s in self.signals
+            ):
+              self.signals.append({
+                  "Time": c["time"],
+                  "Candle #": c["id"],
+                  "Setup": "TWT 3+ Touch Validated Resistance Sell",
+                  "Action": (
+                      f"Sell / Short (S) [{res_touches}nd/rd Touch Retest]"
+                      f" 🔴{status_suffix}"
+                  ),
+                  "Entry Price": round(c["close"], dec),
+                  "Stop Loss (SL)": sl,
+                  "TP 1": tp1,
+                  "TP 2": tp2,
+                  "TP 3": tp3,
+                  "Expired": c["is_expired"],
+              })
+              res_touches = 0
+              res_waiting_for_pullback = False
+      else:
+        if c["close"] < self.resistance_lvl - (1.0 * atr):
+          res_waiting_for_pullback = False
+
+      # --- 6H SUPPORT 3-4 TOUCH RETEST LOGIC ---
       is_near_sup = (
           c["low"] <= self.support_lvl + (0.8 * atr)
           and c["low"] >= self.support_lvl - (0.8 * atr)
       )
 
-      if sup_state == 0:
-        if is_near_sup:
-          sup_state = 1
-      elif sup_state == 1:
-        if c["close"] > self.support_lvl + (0.8 * atr):
-          sup_state = 2
-      elif sup_state == 2:
-        if is_near_sup and c["close"] > c["open"]:
-          sl = round(c["low"] - (1.2 * atr), dec)
-          tp1 = round(c["close"] + (1.0 * atr), dec)
-          tp2 = round(c["close"] + (2.2 * atr), dec)
-          tp3 = round(c["close"] + (3.8 * atr), dec)
+      if is_near_sup:
+        if not sup_waiting_for_pullback:
+          sup_touches += 1
+          sup_waiting_for_pullback = (
+              True  # Must bounce/pull back before next touch
+          )
 
-          if not any(
-              s["Setup"] == "TWT Validated Multi-Touch Support Buy"
-              and abs(s["Candle #"] - c["id"]) < 8
-              for s in self.signals
-          ):
-            self.signals.append({
-                "Time": c["time"],
-                "Candle #": c["id"],
-                "Setup": "TWT Validated Multi-Touch Support Buy",
-                "Action": (
-                    f"Buy / Long (B) [Validated Retest] 🟢{status_suffix}"
-                ),
-                "Entry Price": round(c["close"], dec),
-                "Stop Loss (SL)": sl,
-                "TP 1": tp1,
-                "TP 2": tp2,
-                "TP 3": tp3,
-                "Expired": c["is_expired"],
-            })
-            sup_state = 0
+          # Trigger signal only if we have at least 3 touches and current candle shows bullish rejection
+          if sup_touches >= 3 and c["close"] > c["open"]:
+            sl = round(c["low"] - (1.2 * atr), dec)
+            tp1 = round(c["close"] + (1.0 * atr), dec)
+            tp2 = round(c["close"] + (2.2 * atr), dec)
+            tp3 = round(c["close"] + (3.8 * atr), dec)
+
+            if not any(
+                s["Setup"] == "TWT 3+ Touch Validated Support Buy"
+                and abs(s["Candle #"] - c["id"]) < 8
+                for s in self.signals
+            ):
+              self.signals.append({
+                  "Time": c["time"],
+                  "Candle #": c["id"],
+                  "Setup": "TWT 3+ Touch Validated Support Buy",
+                  "Action": (
+                      f"Buy / Long (B) [{sup_touches}nd/rd Touch Retest]"
+                      f" 🟢{status_suffix}"
+                  ),
+                  "Entry Price": round(c["close"], dec),
+                  "Stop Loss (SL)": sl,
+                  "TP 1": tp1,
+                  "TP 2": tp2,
+                  "TP 3": tp3,
+                  "Expired": c["is_expired"],
+              })
+              sup_touches = 0
+              sup_waiting_for_pullback = False
+      else:
+        if c["close"] > self.support_lvl + (1.0 * atr):
+          sup_waiting_for_pullback = False
 
 
 with st.spinner(
@@ -622,7 +637,7 @@ with st.spinner(
             f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
             f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
             f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-            "📌 *Instructions:* Validated Support multi-touch retest confirmed"
+            "📌 *Instructions:* Validated 3+ Touch Support retest confirmed"
             " active!"
         )
       else:
@@ -634,14 +649,14 @@ with st.spinner(
             f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
             f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
             f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-            "📌 *Instructions:* Validated Resistance multi-touch retest"
+            "📌 *Instructions:* Validated 3+ Touch Resistance retest"
             " confirmed active!"
         )
     else:
       st.warning(
-          "🟡 **STATUS: WAITING FOR VALIDATED RETEST SETUP**\n\n"
-          "📌 *Instructions:* Monitoring strict pullback and rejection near 4H"
-          " Resistance & 6H Support."
+          "🟡 **STATUS: WAITING FOR 3+ TOUCH RETEST SETUP**\n\n"
+          "📌 *Instructions:* Monitoring multi-touch confirmations (3-4 touches"
+          " required) near levels."
       )
 
     if bot.signals:
