@@ -217,43 +217,14 @@ with col_tz:
   )
   active_tz = TRADING_TIMEZONES[selected_tz_name]
 
-# Sidebar Panel Info & Session Filter Toggle
+# Sidebar Panel Info
 st.sidebar.markdown("### 🤖 TWT Expert Panel")
 st.sidebar.markdown("---")
-
-enable_session_filter = st.sidebar.checkbox(
-    "🛡️ Enable Session Trap Filter",
-    value=True,
-    help="Avoids fake breakouts during London/NY Overlap (17:30 - 21:30 IST)",
-)
-
 tz_short = selected_tz_name.split(")")[0] + ")"
 server_time_target = datetime.now(active_tz)
-server_time_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
-
-# Detect Active Market Session based on IST
-ist_hour = server_time_ist.hour
-ist_minute = server_time_ist.minute
-current_ist_time_val = ist_hour * 60 + ist_minute
-
-# Session windows in minutes from midnight IST
-# Asia: 05:30 (330) -> 14:30 (870)
-# London: 12:30 (750) -> 21:30 (1290)
-# New York: 17:30 (1050) -> 02:30 (150)
-# Overlap (London + NY): 17:30 (1050) -> 21:30 (1290)
-
-active_session_str = "Asia Session"
-if 1050 <= current_ist_time_val <= 1290:
-  active_session_str = "🔥 London + NY Overlap (High Volatility)"
-elif 750 <= current_ist_time_val < 1050:
-  active_session_str = "📊 London Session"
-elif current_ist_time_val >= 1050 or current_ist_time_val <= 150:
-  active_session_str = "🗽 New York Session"
-
 st.sidebar.text(
     f"Selected Zone Time — {server_time_target.strftime('%H:%M:%S')}"
 )
-st.sidebar.text(f"Active Market      — {active_session_str}")
 st.sidebar.text("Support Ref (6H)   ———  05:30 IST Candle Low")
 st.sidebar.text("Resistance Ref (4H) ———  01:30 IST Candle High")
 st.sidebar.text("No-Trade Zone      ———  01:00 ➔ 06:00 IST")
@@ -347,13 +318,12 @@ df_chart, df_4h, df_6h, active_symbol = fetch_twt_delta_data(
 
 class TWTDeltaEngine:
 
-  def __init__(self, df_main, df_4, df_6, symbol, user_tz, session_filter_on):
+  def __init__(self, df_main, df_4, df_6, symbol, user_tz):
     self.df_main = df_main if df_main is not None else None
     self.df_4 = df_4 if df_4 is not None else None
     self.df_6 = df_6 if df_6 is not None else None
     self.symbol = symbol
     self.user_tz = user_tz
-    self.session_filter_on = session_filter_on
     self.candles = []
     self.signals = []
     self.resistance_lvl = 0
@@ -460,14 +430,8 @@ class TWTDeltaEngine:
       c = self.candles[i]
 
       c_time_ist = c["dt_ist"].time()
-      # No-Trade Zone (01:00 to 06:00 IST)
       if time(1, 0) <= c_time_ist <= time(6, 0):
         continue
-
-      # Session Trap Filter: Skip signals during London+NY Overlap (17:30 to 21:30 IST) if filter is enabled
-      if self.session_filter_on:
-        if time(17, 30) <= c_time_ist <= time(21, 30):
-          continue
 
       atr = c["atr"]
       dec = get_decimals(c["close"])
@@ -550,9 +514,7 @@ with st.spinner(
     f"⚡ Loading TWT Delta Engine for {selected_symbol} ({selected_tf})..."
 ):
   if df_chart is not None and not df_chart.empty:
-    bot = TWTDeltaEngine(
-        df_chart, df_4h, df_6h, selected_symbol, active_tz, enable_session_filter
-    )
+    bot = TWTDeltaEngine(df_chart, df_4h, df_6h, selected_symbol, active_tz)
     bot.calculate_indicators()
     bot.parse_and_scan()
 
@@ -576,7 +538,7 @@ with st.spinner(
       st.metric(
           label="Trading Zone",
           value=tz_short,
-          delta=f"TF: {selected_tf}",
+          delta=f"Timeframe: {selected_tf}",
       )
 
     st.markdown("---")
@@ -626,7 +588,7 @@ with st.spinner(
       st.warning(
           "🟡 **STATUS: WAITING FOR 2ND / 3RD TOUCH RETEST**\n\n"
           "📌 *Instructions:* Monitoring price action near 4H Resistance and 6H"
-          " Support (High-risk session traps filtered)."
+          " Support."
       )
 
     if bot.signals:
