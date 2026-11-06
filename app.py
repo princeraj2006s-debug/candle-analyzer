@@ -150,13 +150,21 @@ else:
     st.rerun()
 
 # ---------------------------------------------------------
-# MAIN TRADING ENGINE (Loads only after approval & login)
+# TRADING TIMEZONES DICTIONARY (TradingView Standard)
 # ---------------------------------------------------------
-count = st_autorefresh(interval=10000, key="twt_delta_refresh")
-
-st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Delta Exchange Multi-Retest Level Engine"
-)
+TRADING_TIMEZONES = {
+    "(UTC+5:30) Kolkata / India (IST)": timezone(
+        timedelta(hours=5, minutes=30)
+    ),
+    "(UTC+0:00) London / UTC / GMT": timezone.utc,
+    "(UTC-5:00) New York / US East (EST)": timezone(timedelta(hours=-5)),
+    "(UTC-8:00) Los Angeles / US West (PST)": timezone(timedelta(hours=-8)),
+    "(UTC+8:00) Singapore / Hong Kong (SGT)": timezone(timedelta(hours=8)),
+    "(UTC+9:00) Tokyo / Japan (JST)": timezone(timedelta(hours=9)),
+    "(UTC+4:00) Dubai / Gulf (GST)": timezone(timedelta(hours=4)),
+    "(UTC+11:00) Sydney / Australia (AEDT)": timezone(timedelta(hours=11)),
+    "(UTC+1:00) Frankfurt / Europe (CET)": timezone(timedelta(hours=1)),
+}
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -181,28 +189,38 @@ ASSET_LIST = [
     "RENDER/USDT",
 ]
 
-# Timezone Mapping Dictionary
-TIMEZONE_MAP = {
-    "IST (UTC+5:30)": timezone(timedelta(hours=5, minutes=30)),
-    "UTC (Coordinated Universal Time)": timezone.utc,
-    "EST (UTC-5:00 - US East)": timezone(timedelta(hours=-5)),
-    "GMT (UTC+0:00 - London)": timezone(timedelta(hours=0)),
-    "SGT (UTC+8:00 - Singapore/Asia)": timezone(timedelta(hours=8)),
-}
+# ---------------------------------------------------------
+# MAIN TRADING ENGINE & DASHBOARD CONTROL
+# ---------------------------------------------------------
+count = st_autorefresh(interval=10000, key="twt_delta_refresh")
 
+st.title(
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Delta Exchange Multi-Retest Level Engine"
+)
+
+# TOP SELECTION BAR FOR TRADING CONTROLS
+col_sym, col_tf, col_tz = st.columns([2, 1, 2])
+
+with col_sym:
+  selected_symbol = st.selectbox(
+      "💎 Select Asset", options=ASSET_LIST, index=5
+  )
+
+with col_tf:
+  selected_tf = st.selectbox(
+      "⏱️ Timeframe", options=["5m", "15m", "30m", "1h"], index=0
+  )
+
+with col_tz:
+  selected_tz_name = st.selectbox(
+      "🌍 Trading Timezone", options=list(TRADING_TIMEZONES.keys()), index=0
+  )
+  active_tz = TRADING_TIMEZONES[selected_tz_name]
+
+# Sidebar Panel Info
 st.sidebar.markdown("### 🤖 TWT Expert Panel")
 st.sidebar.markdown("---")
-
-# Dynamic Timezone & Timeframe Selectors in Sidebar
-selected_tz_label = st.sidebar.selectbox(
-    "Select Display Timezone", options=list(TIMEZONE_MAP.keys()), index=0
-)
-active_tz = TIMEZONE_MAP[selected_tz_label]
-
-selected_tf = st.sidebar.selectbox(
-    "Select Scanning Timeframe", options=["5m", "15m", "30m", "1h"], index=0
-)
-
+tz_short = selected_tz_name.split(")")[0] + ")"
 server_time_target = datetime.now(active_tz)
 st.sidebar.text(
     f"Selected Zone Time — {server_time_target.strftime('%H:%M:%S')}"
@@ -214,18 +232,15 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Settings")
+st.sidebar.text(f"Selected Zone    : {tz_short}")
 st.sidebar.text(f"Scanning TF      : {selected_tf}")
 st.sidebar.text("Entry method     : Smart Multi-Touch Retest")
 st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss          : ATR Managed")
 
-selected_symbol = st.selectbox(
-    "Select Delta Exchange Asset", options=ASSET_LIST, index=5
-)
-
 st.markdown(
-    f"**Live Feed Active (Refresh Count: {count}) | Timeframe: {selected_tf} |"
-    f" Timezone: {selected_tz_label}**"
+    f"**Live Feed Active (Refresh Count: {count}) | Asset: {selected_symbol} |"
+    f" TF: {selected_tf} | Zone: {tz_short}**"
 )
 
 
@@ -343,7 +358,7 @@ class TWTDeltaEngine:
         if not filtered_6h.empty:
           self.support_lvl = float(filtered_6h["Low"].iloc[-1])
         else:
-          self.support_lvl = float(filtered_6h["Low"].iloc[-1])
+          self.support_lvl = float(self.df_6["Low"].iloc[-1])
       elif self.df_4 is not None:
         self.support_lvl = float(self.df_4["Low"].iloc[-1])
 
@@ -367,11 +382,10 @@ class TWTDeltaEngine:
       if dt_utc.tzinfo is None:
         dt_utc = dt_utc.replace(tzinfo=timezone.utc)
 
-      # Convert timestamp to user-selected timezone for display
+      # Convert timestamp to selected trading timezone
       dt_user_tz = dt_utc.astimezone(self.user_tz)
       timestamp_str = dt_user_tz.strftime("%H:%M")
 
-      # Dynamic IST check for No-Trade Zone (01:00 to 06:00 IST)
       dt_ist = dt_utc.astimezone(IST)
 
       r = row[1]
@@ -504,9 +518,9 @@ with st.spinner(
       st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
     with col4:
       st.metric(
-          label="Selected Timezone",
-          value=selected_tz_label.split()[0],
-          delta=f"TF: {selected_tf}",
+          label="Trading Zone",
+          value=tz_short,
+          delta=f"Timeframe: {selected_tf}",
       )
 
     st.markdown("---")
@@ -521,8 +535,8 @@ with st.spinner(
       if is_buy:
         st.success(
             f"🟢 **TWT DELTA SETUP: {latest_sig['Action']}**\n\n"
-            f"🕒 **Candle Time ({selected_tz_label.split()[0]}):** `{signal_time}`"
-            f" (Candle #{latest_sig['Candle #']})\n"
+            f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
+            f" #{latest_sig['Candle #']})\n"
             f"- **Entry Price:** `{entry_p}`\n"
             f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
             f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
@@ -532,8 +546,8 @@ with st.spinner(
       else:
         st.error(
             f"🔴 **TWT DELTA SETUP: {latest_sig['Action']}**\n\n"
-            f"🕒 **Candle Time ({selected_tz_label.split()[0]}):** `{signal_time}`"
-            f" (Candle #{latest_sig['Candle #']})\n"
+            f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
+            f" #{latest_sig['Candle #']})\n"
             f"- **Entry Price:** `{entry_p}`\n"
             f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
             f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
@@ -549,15 +563,12 @@ with st.spinner(
 
     if bot.signals:
       st.markdown("---")
-      st.subheader(
-          f"📋 Verified TWT Signal History ({selected_tz_label.split()[0]} Time)"
-      )
+      st.subheader(f"📋 Verified TWT Signal History ({tz_short} Time)")
       st.dataframe(pd.DataFrame(bot.signals[-5:]), width="stretch")
 
     st.markdown("---")
     st.subheader(
-        f"📈 {selected_symbol} {selected_tf} Real-Time Chart"
-        f" ({selected_tz_label.split()[0]})"
+        f"📈 {selected_symbol} {selected_tf} Real-Time Chart ({tz_short})"
     )
     fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
 
@@ -639,8 +650,7 @@ with st.spinner(
       )
 
     ax.set_title(
-        f"{selected_symbol} {selected_tf} — TWT Delta Engine"
-        f" ({selected_tz_label.split()[0]})",
+        f"{selected_symbol} {selected_tf} — TWT Delta Engine ({tz_short})",
         color="white",
         fontsize=14,
     )
