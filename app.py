@@ -1,4 +1,5 @@
 from datetime import datetime, time, timedelta, timezone
+import sqlite3
 import ccxt
 import matplotlib.pyplot as plt
 import numpy as np
@@ -10,16 +11,159 @@ st.set_page_config(
     page_title="TWT Delta Pro by TUCKYAA", page_icon="⚡", layout="wide"
 )
 
-# Live auto-refresh every 10 seconds
-count = st_autorefresh(interval=10000, key="twt_delta_refresh")
+# Hide Streamlit Header, Footer, Menu & GitHub Icon via CSS
+hide_streamlit_style = """
+    <style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    </style>
+    """
+st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Delta Exchange Multi-Retest Level Engine"
+# ---------------------------------------------------------
+# DATABASE INITIALIZATION (SQLite Authentication & Admin)
+# ---------------------------------------------------------
+conn = sqlite3.connect("twt_users.db", check_same_thread=False)
+c = conn.cursor()
+c.execute("""CREATE TABLE IF NOT EXISTS users 
+             (username TEXT PRIMARY KEY, password TEXT, status TEXT, role TEXT)""")
+# Default Admin Account (Username: tuckyaa, Password: 8002771200)
+c.execute(
+    "INSERT OR IGNORE INTO users VALUES ('tuckyaa', '8002771200', 'approved',"
+    " 'admin')"
 )
-st.markdown(
-    f"**Live Feed Active (Refresh Count: {count}) | 01:30 4H Resistance & 05:30"
-    " 6H Support + Smart Multi-Touch Retest Engine + Multi-TP**"
-)
+conn.commit()
+
+# ---------------------------------------------------------
+# AUTHENTICATION & ADMIN APPROVAL GATE
+# ---------------------------------------------------------
+if "user" not in st.session_state:
+  st.session_state.user = None
+if "role" not in st.session_state:
+  st.session_state.role = None
+
+
+def login_register_page():
+  st.title("🔒 TRADE WITH TUCKYAA — VIP Portal")
+  st.markdown("Login or Request Access to the Delta Trading Engine.")
+
+  tab1, tab2 = st.tabs(["🔑 Login", "📝 Request Access"])
+
+  with tab1:
+    st.subheader("User Login")
+    l_user = st.text_input("Username / Mobile Number", key="l_user")
+    l_pass = st.text_input("Password", type="password", key="l_pass")
+    if st.button("Login to Dashboard"):
+      c.execute(
+          "SELECT password, status, role FROM users WHERE username=?", (l_user,)
+      )
+      row = c.fetchone()
+      if row:
+        db_pass, db_status, db_role = row
+        if db_pass == l_pass:
+          if db_status == "approved":
+            st.session_state.user = l_user
+            st.session_state.role = db_role
+            st.success("Login successful!")
+            st.rerun()
+          else:
+            st.warning(
+                "⏳ Your account is pending Admin approval. Please wait for"
+                " Tuckyaa to approve."
+            )
+        else:
+          st.error("❌ Incorrect Password!")
+      else:
+        st.error("❌ Username not found! Please register first.")
+
+  with tab2:
+    st.subheader("New User Registration")
+    r_user = st.text_input("Choose Username / Mobile Number", key="r_user")
+    r_pass = st.text_input("Choose Password", type="password", key="r_pass")
+    if st.button("Submit Access Request"):
+      if r_user and r_pass:
+        try:
+          c.execute(
+              "INSERT INTO users VALUES (?, ?, 'pending', 'user')",
+              (r_user, r_pass),
+          )
+          conn.commit()
+          st.success(
+              "✅ Request submitted successfully! Admin (Tuckyaa) will approve"
+              " your account soon."
+          )
+        except sqlite3.IntegrityError:
+          st.error(
+              "❌ Username already exists! Try logging in or use another name."
+          )
+      else:
+        st.warning("Please fill in all fields.")
+
+
+if st.session_state.user is None:
+  login_register_page()
+  st.stop()
+
+# ---------------------------------------------------------
+# ADMIN PANEL (Visible ONLY to Admin 'tuckyaa')
+# ---------------------------------------------------------
+if st.session_state.role == "admin":
+  st.sidebar.markdown("---")
+  st.sidebar.markdown("### 👑 Admin Control Panel")
+  if st.sidebar.button("Logout Admin"):
+    st.session_state.user = None
+    st.session_state.role = None
+    st.rerun()
+
+  with st.expander("🛠️ Manage User Approvals (Admin Only)"):
+    st.subheader("Pending User Requests")
+    c.execute("SELECT username FROM users WHERE status='pending'")
+    pending_users = c.fetchall()
+
+    if pending_users:
+      for p_user in pending_users:
+        u_name = p_user[0]
+        col_a, col_b = st.columns([2, 1])
+        col_a.write(f"User: **{u_name}**")
+        if col_b.button("Approve", key=f"app_{u_name}"):
+          c.execute(
+              "UPDATE users SET status='approved' WHERE username=?", (u_name,)
+          )
+          conn.commit()
+          st.success(f"Approved {u_name}!")
+          st.rerun()
+    else:
+      st.info("No pending user requests.")
+
+    st.markdown("---")
+    st.subheader("Approved VIP Users")
+    c.execute("SELECT username FROM users WHERE status='approved'")
+    approved_users = c.fetchall()
+    for a_user in approved_users:
+      st.text(f"✅ {a_user[0]}")
+else:
+  if st.sidebar.button("Logout"):
+    st.session_state.user = None
+    st.session_state.role = None
+    st.rerun()
+
+# ---------------------------------------------------------
+# TRADING TIMEZONES DICTIONARY (TradingView Standard)
+# ---------------------------------------------------------
+TRADING_TIMEZONES = {
+    "(UTC+5:30) Kolkata / India (IST)": timezone(
+        timedelta(hours=5, minutes=30)
+    ),
+    "(UTC+0:00) London / UTC / GMT": timezone.utc,
+    "(UTC-5:00) New York / US East (EST)": timezone(timedelta(hours=-5)),
+    "(UTC-8:00) Los Angeles / US West (PST)": timezone(timedelta(hours=-8)),
+    "(UTC+8:00) Singapore / Hong Kong (SGT)": timezone(timedelta(hours=8)),
+    "(UTC+9:00) Tokyo / Japan (JST)": timezone(timedelta(hours=9)),
+    "(UTC+4:00) Dubai / Gulf (GST)": timezone(timedelta(hours=4)),
+    "(UTC+11:00) Sydney / Australia (AEDT)": timezone(timedelta(hours=11)),
+    "(UTC+1:00) Frankfurt / Europe (CET)": timezone(timedelta(hours=1)),
+}
 
 # Delta Exchange 20 Crypto & Metal Assets
 ASSET_LIST = [
@@ -45,11 +189,43 @@ ASSET_LIST = [
     "RENDER/USDT",
 ]
 
+# ---------------------------------------------------------
+# MAIN TRADING ENGINE & DASHBOARD CONTROL
+# ---------------------------------------------------------
+count = st_autorefresh(interval=10000, key="twt_delta_refresh")
+
+st.title(
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Delta Exchange Multi-Retest Level Engine"
+)
+
+# TOP SELECTION BAR FOR TRADING CONTROLS & TIMEZONE
+col_sym, col_tf, col_tz = st.columns([2, 1, 2])
+
+with col_sym:
+  selected_symbol = st.selectbox(
+      "💎 Select Delta Exchange Asset", options=ASSET_LIST, index=5
+  )
+
+with col_tf:
+  selected_tf = st.selectbox(
+      "⏱️ Timeframe", options=["5m", "15m", "30m", "1h"], index=0
+  )
+
+with col_tz:
+  selected_tz_name = st.selectbox(
+      "🌍 Trading Timezone", options=list(TRADING_TIMEZONES.keys()), index=0
+  )
+  active_tz = TRADING_TIMEZONES[selected_tz_name]
+
+tz_short = selected_tz_name.split(")")[0] + ")"
+
 # Sidebar Session Box Panel
 st.sidebar.markdown("### 🤖 TWT Expert Panel")
 st.sidebar.markdown("---")
-server_time_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
-st.sidebar.text(f"Server time          ———  {server_time_ist.strftime('%H:%M')}")
+server_time_target = datetime.now(active_tz)
+st.sidebar.text(
+    f"Selected Zone Time — {server_time_target.strftime('%H:%M:%S')}"
+)
 st.sidebar.text("Support Ref (6H)   ———  05:30 IST Candle Low")
 st.sidebar.text("Resistance Ref (4H) ———  01:30 IST Candle High")
 st.sidebar.text("No-Trade Zone      ———  01:00 ➔ 06:00 IST")
@@ -57,13 +233,14 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Settings")
+st.sidebar.text(f"Selected Zone    : {tz_short}")
 st.sidebar.text("Entry method     : Smart Multi-Touch Retest + Dump Protection")
 st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss          : ATR Managed")
 
-# Asset Selection Dropdown
-selected_symbol = st.selectbox(
-    "Select Delta Exchange Asset", options=ASSET_LIST, index=5
+st.markdown(
+    f"**Live Feed Active (Refresh Count: {count}) | Asset: {selected_symbol} |"
+    f" TF: {selected_tf} | Zone: {tz_short}**"
 )
 
 
@@ -77,7 +254,7 @@ def get_decimals(price):
 
 
 @st.cache_data(ttl=10)
-def fetch_twt_delta_data(symbol):
+def fetch_twt_delta_data(symbol, tf):
   exchanges_to_try = [
       (ccxt.binance, symbol),
       (ccxt.bybit, symbol),
@@ -89,17 +266,19 @@ def fetch_twt_delta_data(symbol):
       exchange = ex_class({"enableRateLimit": True, "timeout": 20000})
       exchange.load_markets()
       if sym in exchange.markets:
-        ohlcv_5m = exchange.fetch_ohlcv(sym, timeframe="5m", limit=100)
+        ohlcv_tf = exchange.fetch_ohlcv(sym, timeframe=tf, limit=100)
         ohlcv_4h = exchange.fetch_ohlcv(sym, timeframe="4h", limit=30)
         ohlcv_6h = exchange.fetch_ohlcv(sym, timeframe="6h", limit=30)
 
-        if ohlcv_5m and ohlcv_4h:
-          df_5 = pd.DataFrame(
-              ohlcv_5m,
+        if ohlcv_tf and ohlcv_4h:
+          df_chart = pd.DataFrame(
+              ohlcv_tf,
               columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
           )
-          df_5["timestamp"] = pd.to_datetime(df_5["timestamp"], unit="ms")
-          df_5 = df_5.set_index("timestamp")
+          df_chart["timestamp"] = pd.to_datetime(
+              df_chart["timestamp"], unit="ms"
+          )
+          df_chart = df_chart.set_index("timestamp")
 
           df_4 = pd.DataFrame(
               ohlcv_4h,
@@ -126,22 +305,25 @@ def fetch_twt_delta_data(symbol):
           df_6["timestamp"] = pd.to_datetime(df_6["timestamp"], unit="ms")
           df_6 = df_6.set_index("timestamp")
 
-          return df_5, df_4, df_6, symbol
+          return df_chart, df_4, df_6, symbol
     except Exception:
       continue
   return None, None, None, None
 
 
-df_5m, df_4h, df_6h, active_symbol = fetch_twt_delta_data(selected_symbol)
+df_chart, df_4h, df_6h, active_symbol = fetch_twt_delta_data(
+    selected_symbol, selected_tf
+)
 
 
 class TWTDeltaEngine:
 
-  def __init__(self, df_5, df_4, df_6, symbol):
-    self.df_5 = df_5 if df_5 is not None else None
+  def __init__(self, df_main, df_4, df_6, symbol, user_tz):
+    self.df_main = df_main if df_main is not None else None
     self.df_4 = df_4 if df_4 is not None else None
     self.df_6 = df_6 if df_6 is not None else None
     self.symbol = symbol
+    self.user_tz = user_tz
     self.candles = []
     self.signals = []
     self.resistance_lvl = 0
@@ -149,7 +331,7 @@ class TWTDeltaEngine:
 
   def calculate_indicators(self):
     IST = timezone(timedelta(hours=5, minutes=30))
-    if self.df_5 is not None and len(self.df_5) >= 30:
+    if self.df_main is not None and len(self.df_main) >= 30:
       if self.df_4 is not None and not self.df_4.empty:
         idx_utc = (
             self.df_4.index.tz_localize("UTC")
@@ -181,42 +363,48 @@ class TWTDeltaEngine:
         self.support_lvl = float(self.df_4["Low"].iloc[-1])
 
       # EMAs
-      self.df_5["EMA20"] = self.df_5["Close"].ewm(span=20, adjust=False).mean()
-      self.df_5["EMA50"] = self.df_5["Close"].ewm(span=50, adjust=False).mean()
-      self.df_5["EMA200"] = self.df_5["Close"].ewm(span=200, adjust=False).mean()
+      self.df_main["EMA20"] = (
+          self.df_main["Close"].ewm(span=20, adjust=False).mean()
+      )
+      self.df_main["EMA50"] = (
+          self.df_main["Close"].ewm(span=50, adjust=False).mean()
+      )
+      self.df_main["EMA200"] = (
+          self.df_main["Close"].ewm(span=200, adjust=False).mean()
+      )
 
       # ATR 14 & Volume SMA
-      self.df_5["TR"] = np.maximum(
-          self.df_5["High"] - self.df_5["Low"],
+      self.df_main["TR"] = np.maximum(
+          self.df_main["High"] - self.df_main["Low"],
           np.maximum(
-              abs(self.df_5["High"] - self.df_5["Close"].shift(1)),
-              abs(self.df_5["Low"] - self.df_5["Close"].shift(1)),
+              abs(self.df_main["High"] - self.df_main["Close"].shift(1)),
+              abs(self.df_main["Low"] - self.df_main["Close"].shift(1)),
           ),
       )
-      self.df_5["ATR"] = self.df_5["TR"].rolling(14).mean()
-      self.df_5["Vol_SMA"] = self.df_5["Volume"].rolling(14).mean()
+      self.df_main["ATR"] = self.df_main["TR"].rolling(14).mean()
+      self.df_main["Vol_SMA"] = self.df_main["Volume"].rolling(14).mean()
 
       # RSI 14
-      delta = self.df_5["Close"].diff()
+      delta = self.df_main["Close"].diff()
       gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
       loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
       rs = gain / (loss + 1e-9)
-      self.df_5["RSI"] = 100 - (100 / (1 + rs))
+      self.df_main["RSI"] = 100 - (100 / (1 + rs))
 
       # ADX 14 approximation
-      plus_dm = self.df_5["High"].diff()
-      minus_dm = self.df_5["Low"].diff()
+      plus_dm = self.df_main["High"].diff()
+      minus_dm = self.df_main["Low"].diff()
       plus_dm = np.where((plus_dm > minus_dm) & (plus_dm > 0), plus_dm, 0.0)
       minus_dm = np.where((minus_dm > plus_dm) & (minus_dm > 0), minus_dm, 0.0)
-      tr14 = self.df_5["TR"].rolling(14).sum()
+      tr14 = self.df_main["TR"].rolling(14).sum()
       plus_di = (
           100
-          * pd.Series(plus_dm, index=self.df_5.index).rolling(14).sum()
+          * pd.Series(plus_dm, index=self.df_main.index).rolling(14).sum()
           / (tr14 + 1e-9)
       )
       minus_di = (
           100
-          * pd.Series(minus_dm, index=self.df_5.index).rolling(14).sum()
+          * pd.Series(minus_dm, index=self.df_main.index).rolling(14).sum()
           / (tr14 + 1e-9)
       )
       dx = (
@@ -224,20 +412,23 @@ class TWTDeltaEngine:
           * abs(plus_di - minus_di)
           / (plus_di + minus_di + 1e-9)
       )
-      self.df_5["ADX"] = dx.rolling(14).mean()
+      self.df_main["ADX"] = dx.rolling(14).mean()
 
   def parse_and_scan(self):
-    if self.df_5 is None or self.df_5.empty:
+    if self.df_main is None or self.df_main.empty:
       return
 
     IST = timezone(timedelta(hours=5, minutes=30))
+    current_utc_time = datetime.now(timezone.utc)
 
-    for idx, row in enumerate(self.df_5.iterrows()):
+    for idx, row in enumerate(self.df_main.iterrows()):
       dt_utc = row[0]
       if dt_utc.tzinfo is None:
         dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+
+      dt_user_tz = dt_utc.astimezone(self.user_tz)
+      timestamp_str = dt_user_tz.strftime("%H:%M")
       dt_ist = dt_utc.astimezone(IST)
-      timestamp_str = dt_ist.strftime("%H:%M")
 
       r = row[1]
       o, h, l, c, v = (
@@ -255,10 +446,18 @@ class TWTDeltaEngine:
       rsi = float(r["RSI"]) if not pd.isna(r["RSI"]) else 50.0
       adx = float(r["ADX"]) if not pd.isna(r["ADX"]) else 20.0
 
+      # Signal expiry check (> 40 minutes old)
+      time_diff_minutes = (
+          current_utc_time - dt_utc
+      ).total_seconds() / 60.0
+      is_expired = time_diff_minutes > 40
+
       self.candles.append({
           "id": idx + 1,
           "time": timestamp_str,
           "dt_ist": dt_ist,
+          "dt_user": dt_user_tz,
+          "dt_utc": dt_utc,
           "color": "Green" if c >= o else "Red",
           "open": o,
           "high": h,
@@ -272,6 +471,7 @@ class TWTDeltaEngine:
           "ema200": ema200,
           "rsi": rsi,
           "adx": adx,
+          "is_expired": is_expired,
       })
 
     res_touch_count = 0
@@ -288,9 +488,9 @@ class TWTDeltaEngine:
 
       atr = c["atr"]
       dec = get_decimals(c["close"])
+      status_suffix = " ⌛ [EXPIRED]" if c["is_expired"] else ""
 
       # --- PANIC DUMP & SUPPORT BREAKDOWN FILTER ---
-      # Blocks buy signals if price crashes below support with high volume (> 1.5x average volume)
       is_support_breakdown = (
           c["close"] < self.support_lvl
           and c["close"] < c["open"]
@@ -298,7 +498,6 @@ class TWTDeltaEngine:
       )
 
       # --- RESISTANCE BREAKOUT TRAP FILTER ---
-      # Blocks sell signals if price pumps above resistance with high volume
       is_resistance_breakout = (
           c["close"] > self.resistance_lvl
           and c["close"] > c["open"]
@@ -319,7 +518,6 @@ class TWTDeltaEngine:
         res_touch_count += 1
         last_res_candle_id = i
 
-        # 2nd or 3rd Touch Sell Trigger with bearish rejection candle check
         if res_touch_count >= 2 and c["close"] < c["open"]:
           sl = round(c["high"] + (1.2 * atr), dec)
           tp1 = round(c["close"] - (1.0 * atr), dec)
@@ -335,12 +533,16 @@ class TWTDeltaEngine:
                 "Time": c["time"],
                 "Candle #": c["id"],
                 "Setup": "TWT Protected Resistance Sell",
-                "Action": f"Sell / Short (S) [Retest #{res_touch_count}] 🔴",
+                "Action": (
+                    f"Sell / Short (S) [Retest #{res_touch_count}] 🔴"
+                    f"{status_suffix}"
+                ),
                 "Entry Price": round(c["close"], dec),
                 "Stop Loss (SL)": sl,
                 "TP 1": tp1,
                 "TP 2": tp2,
                 "TP 3": tp3,
+                "Expired": c["is_expired"],
             })
 
       # --- 6H SUPPORT TOUCH TRACKING WITH STRICT REJECTION ---
@@ -352,7 +554,6 @@ class TWTDeltaEngine:
         sup_touch_count += 1
         last_sup_candle_id = i
 
-        # 2nd or 3rd Touch Buy Trigger with bullish rejection candle check
         if sup_touch_count >= 2 and c["close"] > c["open"]:
           sl = round(c["low"] - (1.2 * atr), dec)
           tp1 = round(c["close"] + (1.0 * atr), dec)
@@ -368,25 +569,33 @@ class TWTDeltaEngine:
                 "Time": c["time"],
                 "Candle #": c["id"],
                 "Setup": "TWT Protected Support Buy",
-                "Action": f"Buy / Long (B) [Retest #{sup_touch_count}] 🟢",
+                "Action": (
+                    f"Buy / Long (B) [Retest #{sup_touch_count}] 🟢"
+                    f"{status_suffix}"
+                ),
                 "Entry Price": round(c["close"], dec),
                 "Stop Loss (SL)": sl,
                 "TP 1": tp1,
                 "TP 2": tp2,
                 "TP 3": tp3,
+                "Expired": c["is_expired"],
             })
 
 
-with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
-  if df_5m is not None and not df_5m.empty:
-    bot = TWTDeltaEngine(df_5m, df_4h, df_6h, selected_symbol)
+with st.spinner(
+    f"⚡ Loading TWT Delta Engine for {selected_symbol} ({selected_tf})..."
+):
+  if df_chart is not None and not df_chart.empty:
+    bot = TWTDeltaEngine(df_chart, df_4h, df_6h, selected_symbol, active_tz)
     bot.calculate_indicators()
     bot.parse_and_scan()
 
     curr_p = bot.candles[-1]["close"] if bot.candles else 0.0
 
     st.markdown("---")
-    st.subheader(f"📊 Delta Exchange Live Dashboard ({selected_symbol})")
+    st.subheader(
+        f"📊 Delta Exchange Live Dashboard ({selected_symbol} — {selected_tf})"
+    )
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
@@ -399,9 +608,9 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
       st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
     with col4:
       st.metric(
-          label="Methodology",
-          value="Smart Multi-Touch Retest + Dump Protection",
-          delta="Active",
+          label="Trading Zone",
+          value=tz_short,
+          delta=f"TF: {selected_tf}",
       )
 
     st.markdown("---")
@@ -412,11 +621,23 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
       is_buy = "Buy" in latest_sig["Action"]
       entry_p = latest_sig["Entry Price"]
       signal_time = latest_sig["Time"]
+      is_expired_sig = latest_sig["Expired"]
 
-      if is_buy:
+      if is_expired_sig:
+        st.warning(
+            f"⏳ **TWT DELTA SETUP: {latest_sig['Action']}**\n\n"
+            f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
+            f" #{latest_sig['Candle #']})\n"
+            f"- **Entry Price:** `{entry_p}`\n"
+            f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
+            f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
+            f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
+            "📌 *Status:* **SIGNAL EXPIRED (>40 mins old)** — Do not enter!"
+        )
+      elif is_buy:
         st.success(
             f"🟢 **TWT DELTA SETUP: {latest_sig['Action']}**\n\n"
-            f"🕒 **Candle Time (IST):** `{signal_time}` (Candle"
+            f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
             f" #{latest_sig['Candle #']})\n"
             f"- **Entry Price:** `{entry_p}`\n"
             f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
@@ -427,27 +648,31 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
       else:
         st.error(
             f"🔴 **TWT DELTA SETUP: {latest_sig['Action']}**\n\n"
-            f"🕒 **Candle Time (IST):** `{signal_time}` (Candle"
+            f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
             f" #{latest_sig['Candle #']})\n"
             f"- **Entry Price:** `{entry_p}`\n"
             f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
             f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
             f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-            "📌 *Instructions:* Protected Resistance multi-touch retest confirmed!"
+            "📌 *Instructions:* Protected Resistance multi-touch retest"
+            " confirmed!"
         )
     else:
       st.warning(
           "🟡 **STATUS: SCANNING WITH PANIC DUMP PROTECTION**\n\n"
-          "📌 *Instructions:* Monitoring price action near 4H Resistance and 6H Support while filtering high-volume breakdown traps."
+          "📌 *Instructions:* Monitoring price action near 4H Resistance and 6H"
+          " Support while filtering high-volume breakdown traps."
       )
 
     if bot.signals:
       st.markdown("---")
-      st.subheader("📋 Verified TWT Signal History")
+      st.subheader(f"📋 Verified TWT Signal History ({tz_short} Time)")
       st.dataframe(pd.DataFrame(bot.signals[-5:]), width="stretch")
 
     st.markdown("---")
-    st.subheader(f"📈 {selected_symbol} 5m Real-Time Chart")
+    st.subheader(
+        f"📈 {selected_symbol} {selected_tf} Real-Time Chart ({tz_short})"
+    )
     fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
 
     for c in bot.candles:
@@ -516,8 +741,10 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
       ax.set_ylim(min(lows) - margin, max(highs) + margin)
 
     for sig in bot.signals[-3:]:
-      tag = "B" if "Buy" in sig["Action"] else "S"
-      tag_color = "#00e676" if tag == "B" else "#ff1744"
+      tag = "EX" if sig["Expired"] else ("B" if "Buy" in sig["Action"] else "S")
+      tag_color = (
+          "#ffa726" if sig["Expired"] else ("#00e676" if tag == "B" else "#ff1744")
+      )
       ax.text(
           sig["Candle #"],
           sig["Entry Price"],
@@ -528,7 +755,7 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
       )
 
     ax.set_title(
-        f"{selected_symbol} 5m — TRADE WITH TUCKYAA (TUCKYAA) Delta Engine",
+        f"{selected_symbol} {selected_tf} — TRADE WITH TUCKYAA (TUCKYAA) Delta Engine ({tz_short})",
         color="white",
         fontsize=14,
     )
