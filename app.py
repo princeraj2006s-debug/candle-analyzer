@@ -231,6 +231,24 @@ with col_tz:
 
 tz_short = selected_tz_name.split(")")[0] + ")"
 
+# Sidebar Session Box Panel
+st.sidebar.markdown("### 🤖 TWT Expert Panel")
+st.sidebar.markdown("---")
+server_time_target = datetime.now(active_tz)
+st.sidebar.text(
+    f"Server time          ———  {server_time_target.strftime('%H:%M')}"
+)
+st.sidebar.text("Support Ref (6H)   ———  05:30 IST Candle Low")
+st.sidebar.text("Resistance Ref (4H) ———  01:30 IST Candle High")
+st.sidebar.text("No-Trade Zone      ———  01:00 ➔ 06:00 IST")
+st.sidebar.markdown("---")
+st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
+st.sidebar.markdown("---")
+st.sidebar.markdown("#### Trading Settings")
+st.sidebar.text("Entry method     : Smart Multi-Touch Retest")
+st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
+st.sidebar.text("Stop loss          : ATR Managed")
+
 
 def get_decimals(price):
   if price < 1:
@@ -314,7 +332,6 @@ class TWTDeltaEngine:
       return
 
     IST = timezone(timedelta(hours=5, minutes=30))
-    current_utc_time = datetime.now(timezone.utc)
 
     if self.df_4 is not None and not self.df_4.empty:
       idx_utc = (
@@ -372,7 +389,6 @@ class TWTDeltaEngine:
           float(r["Volume"]),
       )
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
-      is_expired = (current_utc_time - dt_utc).total_seconds() / 60.0 > 30
 
       self.candles.append({
           "id": idx + 1,
@@ -386,7 +402,6 @@ class TWTDeltaEngine:
           "close": c,
           "volume": v,
           "atr": atr,
-          "is_expired": is_expired,
       })
 
     res_touch_count = 0
@@ -401,7 +416,6 @@ class TWTDeltaEngine:
 
       atr = c["atr"]
       dec = get_decimals(c["close"])
-      status_suffix = " ⌛ [Don't use after 30 minutes]" if c["is_expired"] else ""
 
       is_near_res = (
           c["high"] >= self.resistance_lvl - (0.8 * atr)
@@ -420,15 +434,12 @@ class TWTDeltaEngine:
               "Time": c["time"],
               "Candle #": c["id"],
               "Setup": "Resistance Sell",
-              "Action": (
-                  f"🔴 Sell (Retest #{res_touch_count}){status_suffix}"
-              ),
+              "Action": f"Sell / Short (S) [Retest #{res_touch_count}] 🔴",
               "Entry Price": round(c["close"], dec),
               "Stop Loss (SL)": sl,
               "TP 1": tp1,
               "TP 2": tp2,
               "TP 3": tp3,
-              "Expired": c["is_expired"],
           })
 
       is_near_sup = (
@@ -448,13 +459,12 @@ class TWTDeltaEngine:
               "Time": c["time"],
               "Candle #": c["id"],
               "Setup": "Support Buy",
-              "Action": f"🟢 Buy (Retest #{sup_touch_count}]{status_suffix}",
+              "Action": f"Buy / Long (B) [Retest #{sup_touch_count}] 🟢",
               "Entry Price": round(c["close"], dec),
               "Stop Loss (SL)": sl,
               "TP 1": tp1,
               "TP 2": tp2,
               "TP 3": tp3,
-              "Expired": c["is_expired"],
           })
 
 
@@ -521,27 +531,34 @@ if bot.df_5 is not None and not bot.df_5.empty:
 
   if bot.signals:
     latest_sig = bot.signals[-1]
-    is_exp = latest_sig["Expired"]
-    if is_exp:
-      st.warning(
-          f"⚠️ **{selected_symbol} SETUP EXPIRED:** `{latest_sig['Action']}`\n\n"
-          f"- **Entry:** `{latest_sig['Entry Price']}` | **SL:**"
-          f" `{latest_sig['Stop Loss (SL)']}`\n- **Warning:** Don't use after"
-          " 30 minutes!"
-      )
-    elif "Buy" in latest_sig["Action"]:
+    is_buy = "Buy" in latest_sig["Action"]
+    entry_p = latest_sig["Entry Price"]
+    signal_time = latest_sig["Time"]
+
+    # 40 Minutes Warning Message Displayed At The Top Of Signal
+    st.warning("⚠️ **Don't use after 40 minutes!**")
+
+    if is_buy:
       st.success(
-          f"🟢 **{selected_symbol} ACTIVE SETUP:** `{latest_sig['Action']}`\n\n"
-          f"- **Entry:** `{latest_sig['Entry Price']}` | **SL:**"
-          f" `{latest_sig['Stop Loss (SL)']}`\n- **TPs:** `{latest_sig['TP 1']}`"
-          f" | `{latest_sig['TP 2']}` | `{latest_sig['TP 3']}`"
+          f"🟢 **TWT DELTA SETUP: {latest_sig['Action']}**\n\n"
+          f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
+          f" #{latest_sig['Candle #']})\n"
+          f"- **Entry Price:** `{entry_p}`\n"
+          f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
+          f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
+          f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
+          "📌 *Instructions:* Support multi-touch retest confirmed!"
       )
     else:
       st.error(
-          f"🔴 **{selected_symbol} ACTIVE SETUP:** `{latest_sig['Action']}`\n\n"
-          f"- **Entry:** `{latest_sig['Entry Price']}` | **SL:**"
-          f" `{latest_sig['Stop Loss (SL)']}`\n- **TPs:** `{latest_sig['TP 1']}`"
-          f" | `{latest_sig['TP 2']}` | `{latest_sig['TP 3']}`"
+          f"🔴 **TWT DELTA SETUP: {latest_sig['Action']}**\n\n"
+          f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
+          f" #{latest_sig['Candle #']})\n"
+          f"- **Entry Price:** `{entry_p}`\n"
+          f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
+          f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
+          f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
+          "📌 *Instructions:* Resistance multi-touch retest confirmed!"
       )
   else:
     st.warning("🟡 Monitoring price action near support and resistance levels...")
@@ -590,10 +607,8 @@ if bot.df_5 is not None and not bot.df_5.empty:
     ax.set_ylim(min(lows) - margin, max(highs) + margin)
 
   for sig in bot.signals[-3:]:
-    tag = "EX" if sig["Expired"] else ("B" if "Buy" in sig["Action"] else "S")
-    tag_color = (
-        "#ffa726" if sig["Expired"] else ("#00e676" if tag == "B" else "#ff1744")
-    )
+    tag = "B" if "Buy" in sig["Action"] else "S"
+    tag_color = "#00e676" if tag == "B" else "#ff1744"
     ax.text(
         sig["Candle #"],
         sig["Entry Price"],
