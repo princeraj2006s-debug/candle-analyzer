@@ -373,6 +373,8 @@ class TWTDeltaEngine:
     )
     self.df_5["ATR"] = self.df_5["TR"].rolling(14).mean()
 
+    total_candles_len = len(self.df_5)
+
     for idx, row in enumerate(self.df_5.iterrows()):
       dt_utc = row[0]
       if dt_utc.tzinfo is None:
@@ -430,6 +432,10 @@ class TWTDeltaEngine:
           tp1 = round(c["close"] - (1.0 * atr), dec)
           tp2 = round(c["close"] - (2.2 * atr), dec)
           tp3 = round(c["close"] - (3.8 * atr), dec)
+          
+          # Check how fresh the signal is (Only keep if within last 5 candles)
+          is_recent = (total_candles_len - c["id"]) <= 5
+
           self.signals.append({
               "Asset": self.symbol,
               "Time": c["time"],
@@ -441,6 +447,7 @@ class TWTDeltaEngine:
               "TP 1": tp1,
               "TP 2": tp2,
               "TP 3": tp3,
+              "Is_Recent": is_recent,
           })
 
       is_near_sup = (
@@ -455,6 +462,9 @@ class TWTDeltaEngine:
           tp1 = round(c["close"] + (1.0 * atr), dec)
           tp2 = round(c["close"] + (2.2 * atr), dec)
           tp3 = round(c["close"] + (3.8 * atr), dec)
+          
+          is_recent = (total_candles_len - c["id"]) <= 5
+
           self.signals.append({
               "Asset": self.symbol,
               "Time": c["time"],
@@ -466,36 +476,41 @@ class TWTDeltaEngine:
               "TP 1": tp1,
               "TP 2": tp2,
               "TP 3": tp3,
+              "Is_Recent": is_recent,
           })
 
 
 # ---------------------------------------------------------
-# MASTER LIVE SIGNAL SCANNER
+# MASTER LIVE SIGNAL SCANNER (ONLY RECENT SIGNALS)
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("🔥 TWT Live Master Signal Scanner")
+st.subheader("🔥 TWT Live Master Signal Scanner (Recent Active Entries Only)")
 
 master_signals = []
 asset_engines = {}
-quick_assets = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT"]
 
-with st.spinner("⚡ Scanning key active assets in real-time..."):
-  for sym in quick_assets:
+with st.spinner("⚡ Scanning all assets for fresh live signals..."):
+  for sym in ASSET_LIST:
     df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
     if df_5 is not None and not df_5.empty:
       engine = TWTDeltaEngine(df_5, df_4, df_6, sym, active_tz)
       engine.calculate_and_scan()
       asset_engines[sym] = engine
-      if engine.signals:
-        master_signals.append(engine.signals[-1])
+      
+      # Filter to grab ONLY recent active signals
+      recent_sigs = [s for s in engine.signals if s["Is_Recent"]]
+      if recent_sigs:
+        master_signals.append(recent_sigs[-1])
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} Active Signal Setup(s)!")
-  st.dataframe(pd.DataFrame(master_signals), width="stretch")
+  st.success(f"✅ Found {len(master_signals)} Fresh Active Setup(s)!")
+  # Clean dataframe display without internal flags
+  df_display = pd.DataFrame(master_signals).drop(columns=["Is_Recent"], errors="ignore")
+  st.dataframe(df_display, width="stretch")
 else:
   st.info(
-      "ℹ️ No active retest signals on high-volume coins right now. Select any"
-      " asset below to view its live chart and levels!"
+      "ℹ️ No fresh retest signals right now across assets. Select any coin"
+      " below to inspect its chart."
   )
 
 # ---------------------------------------------------------
