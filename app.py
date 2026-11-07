@@ -212,7 +212,7 @@ ASSET_LIST = [
     "RENDER/USDT",
 ]
 
-count = st_autorefresh(interval=15000, key="twt_delta_refresh")
+count = st_autorefresh(interval=12000, key="twt_delta_refresh")
 
 st.title(
     "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Delta Exchange Multi-Retest Level Engine"
@@ -241,43 +241,58 @@ def get_decimals(price):
     return 2
 
 
-@st.cache_data(ttl=15)
+@st.cache_data(ttl=10)
 def fetch_twt_delta_data(symbol, tf):
-  try:
-    exchange = ccxt.binance({"enableRateLimit": True, "timeout": 10000})
-    exchange.load_markets()
-    if symbol in exchange.markets:
-      ohlcv_tf = exchange.fetch_ohlcv(symbol, timeframe=tf, limit=80)
-      ohlcv_4h = exchange.fetch_ohlcv(symbol, timeframe="4h", limit=20)
-      ohlcv_6h = exchange.fetch_ohlcv(symbol, timeframe="6h", limit=20)
-      if ohlcv_tf and ohlcv_4h:
-        df_5 = pd.DataFrame(
-            ohlcv_tf,
-            columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
-        )
-        df_5["timestamp"] = pd.to_datetime(df_5["timestamp"], unit="ms")
-        df_5 = df_5.set_index("timestamp")
+  exchanges_to_try = [
+      (ccxt.binance, symbol),
+      (ccxt.bybit, symbol),
+      (ccxt.kucoin, symbol),
+  ]
 
-        df_4 = pd.DataFrame(
-            ohlcv_4h,
-            columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
-        )
-        df_4["timestamp"] = pd.to_datetime(df_4["timestamp"], unit="ms")
-        df_4 = df_4.set_index("timestamp")
+  for ex_class, sym in exchanges_to_try:
+    try:
+      exchange = ex_class({"enableRateLimit": True, "timeout": 12000})
+      exchange.load_markets()
+      if sym in exchange.markets:
+        ohlcv_tf = exchange.fetch_ohlcv(sym, timeframe=tf, limit=80)
+        ohlcv_4h = exchange.fetch_ohlcv(sym, timeframe="4h", limit=25)
+        ohlcv_6h = exchange.fetch_ohlcv(sym, timeframe="6h", limit=25)
 
-        df_6 = (
-            pd.DataFrame(
-                ohlcv_6h,
-                columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
-            )
-            if ohlcv_6h
-            else df_4.copy()
-        )
-        df_6["timestamp"] = pd.to_datetime(df_6["timestamp"], unit="ms")
-        df_6 = df_6.set_index("timestamp")
-        return df_5, df_4, df_6
-  except Exception:
-    pass
+        if ohlcv_tf and ohlcv_4h:
+          df_5 = pd.DataFrame(
+              ohlcv_tf,
+              columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
+          )
+          df_5["timestamp"] = pd.to_datetime(df_5["timestamp"], unit="ms")
+          df_5 = df_5.set_index("timestamp")
+
+          df_4 = pd.DataFrame(
+              ohlcv_4h,
+              columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
+          )
+          df_4["timestamp"] = pd.to_datetime(df_4["timestamp"], unit="ms")
+          df_4 = df_4.set_index("timestamp")
+
+          df_6 = (
+              pd.DataFrame(
+                  ohlcv_6h,
+                  columns=[
+                      "timestamp",
+                      "Open",
+                      "High",
+                      "Low",
+                      "Close",
+                      "Volume",
+                  ],
+              )
+              if ohlcv_6h
+              else df_4.copy()
+          )
+          df_6["timestamp"] = pd.to_datetime(df_6["timestamp"], unit="ms")
+          df_6 = df_6.set_index("timestamp")
+          return df_5, df_4, df_6
+    except Exception:
+      continue
   return None, None, None
 
 
@@ -433,7 +448,7 @@ class TWTDeltaEngine:
               "Time": c["time"],
               "Candle #": c["id"],
               "Setup": "Support Buy",
-              "Action": f"🟢 Buy (Retest #{sup_touch_count}){status_suffix}",
+              "Action": f"🟢 Buy (Retest #{sup_touch_count}]{status_suffix}",
               "Entry Price": round(c["close"], dec),
               "Stop Loss (SL)": sl,
               "TP 1": tp1,
@@ -444,18 +459,16 @@ class TWTDeltaEngine:
 
 
 # ---------------------------------------------------------
-# LIGHTNING FAST MASTER SCANNER (MAIN PAGE ALERTS)
+# MASTER LIVE SIGNAL SCANNER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("🔥 TWT Live Master Signal Scanner (All Assets)")
+st.subheader("🔥 TWT Live Master Signal Scanner")
 
 master_signals = []
 asset_engines = {}
+quick_assets = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT"]
 
-# Quick scan loop for top volatile assets first to avoid loading delay
-quick_assets = ASSET_LIST[:10]
-
-with st.spinner("⚡ Fast-scanning active assets..."):
+with st.spinner("⚡ Scanning key active assets in real-time..."):
   for sym in quick_assets:
     df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
     if df_5 is not None and not df_5.empty:
@@ -466,14 +479,12 @@ with st.spinner("⚡ Fast-scanning active assets..."):
         master_signals.append(engine.signals[-1])
 
 if master_signals:
-  st.success(
-      f"✅ Active Signals Found ({len(master_signals)}) — Check details below!"
-  )
+  st.success(f"✅ Found {len(master_signals)} Active Signal Setup(s)!")
   st.dataframe(pd.DataFrame(master_signals), width="stretch")
 else:
   st.info(
-      "ℹ️ No immediate retest signals right now. Use the selector below to view"
-      " any coin's chart."
+      "ℹ️ No active retest signals on high-volume coins right now. Select any"
+      " asset below to view its live chart and levels!"
   )
 
 # ---------------------------------------------------------
@@ -483,7 +494,7 @@ st.markdown("---")
 st.subheader("📊 Manual Asset Inspector & Chart")
 
 selected_symbol = st.selectbox(
-    "🔍 Choose any Asset to View Chart & Levels", options=ASSET_LIST, index=0
+    "🔍 Select Asset to Load Chart & Levels", options=ASSET_LIST, index=0
 )
 
 if selected_symbol in asset_engines:
@@ -504,7 +515,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col2:
     st.metric(label="6H Support (05:30 Low)", value=f"{bot.support_lvl:.2f}")
   with col3:
-    st.metric(label="Current Price", value=f"{curr_p:.2f}")
+    st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
     st.metric(label="Timezone", value=tz_short, delta=f"TF: {selected_tf}")
 
@@ -533,7 +544,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
           f" | `{latest_sig['TP 2']}` | `{latest_sig['TP 3']}`"
       )
   else:
-    st.warning("🟡 Scanning asset for 2nd/3rd touch retest setup...")
+    st.warning("🟡 Monitoring price action near support and resistance levels...")
 
   # Chart Rendering
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
@@ -609,4 +620,4 @@ if bot.df_5 is not None and not bot.df_5.empty:
 
   st.pyplot(fig)
 else:
-  st.error("Failed to fetch market data for selected asset.")
+  st.error("Market data load failed. Please retry after a few seconds.")
