@@ -213,7 +213,7 @@ ASSET_LIST = [
     "RENDER/USDT",
 ]
 
-count = st_autorefresh(interval=12000, key="twt_delta_refresh")
+count = st_autorefresh(interval=15000, key="twt_delta_refresh")
 
 st.title(
     "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Delta Exchange Multi-Retest Level Engine"
@@ -260,7 +260,7 @@ def get_decimals(price):
     return 2
 
 
-@st.cache_data(ttl=10)
+@st.cache_data(ttl=20)
 def fetch_twt_delta_data(symbol, tf):
   exchanges_to_try = [
       (ccxt.binance, symbol),
@@ -270,7 +270,7 @@ def fetch_twt_delta_data(symbol, tf):
 
   for ex_class, sym in exchanges_to_try:
     try:
-      exchange = ex_class({"enableRateLimit": True, "timeout": 12000})
+      exchange = ex_class({"enableRateLimit": True, "timeout": 8000})
       exchange.load_markets()
       if sym in exchange.markets:
         ohlcv_tf = exchange.fetch_ohlcv(sym, timeframe=tf, limit=80)
@@ -333,6 +333,7 @@ class TWTDeltaEngine:
       return
 
     IST = timezone(timedelta(hours=5, minutes=30))
+    current_utc_time = datetime.now(timezone.utc)
 
     if self.df_4 is not None and not self.df_4.empty:
       idx_utc = (
@@ -391,6 +392,10 @@ class TWTDeltaEngine:
       )
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
 
+      # Check if signal occurred within the last 60 minutes (1 hour)
+      age_minutes = (current_utc_time - dt_utc).total_seconds() / 60.0
+      is_within_1hr = age_minutes <= 60.0
+
       self.candles.append({
           "id": idx + 1,
           "time": timestamp_str,
@@ -403,6 +408,7 @@ class TWTDeltaEngine:
           "close": c,
           "volume": v,
           "atr": atr,
+          "is_within_1hr": is_within_1hr,
       })
 
     res_touch_count = 0
@@ -430,6 +436,7 @@ class TWTDeltaEngine:
           tp1 = round(c["close"] - (1.0 * atr), dec)
           tp2 = round(c["close"] - (2.2 * atr), dec)
           tp3 = round(c["close"] - (3.8 * atr), dec)
+
           self.signals.append({
               "Asset": self.symbol,
               "Time": c["time"],
@@ -441,6 +448,7 @@ class TWTDeltaEngine:
               "TP 1": tp1,
               "TP 2": tp2,
               "TP 3": tp3,
+              "Is_Within_1hr": c["is_within_1hr"],
           })
 
       is_near_sup = (
@@ -455,6 +463,7 @@ class TWTDeltaEngine:
           tp1 = round(c["close"] + (1.0 * atr), dec)
           tp2 = round(c["close"] + (2.2 * atr), dec)
           tp3 = round(c["close"] + (3.8 * atr), dec)
+
           self.signals.append({
               "Asset": self.symbol,
               "Time": c["time"],
@@ -466,36 +475,46 @@ class TWTDeltaEngine:
               "TP 1": tp1,
               "TP 2": tp2,
               "TP 3": tp3,
+              "Is_Within_1hr": c["is_within_1hr"],
           })
 
 
 # ---------------------------------------------------------
-# MASTER LIVE SIGNAL SCANNER
+# SMOOTH MASTER LIVE SCANNER (ALL 20+ ASSETS CACHED)
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("🔥 TWT Live Master Signal Scanner")
+st.subheader("🔥 TWT Live Master Signal Scanner (All 20+ Assets)")
 
 master_signals = []
 asset_engines = {}
-quick_assets = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT"]
 
-with st.spinner("⚡ Scanning key active assets in real-time..."):
-  for sym in quick_assets:
+with st.spinner(
+    "⚡ Scanning all 20+ assets smoothly (Cached for speed)... Please wait."
+):
+  for sym in ASSET_LIST:
     df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
     if df_5 is not None and not df_5.empty:
       engine = TWTDeltaEngine(df_5, df_4, df_6, sym, active_tz)
       engine.calculate_and_scan()
       asset_engines[sym] = engine
-      if engine.signals:
-        master_signals.append(engine.signals[-1])
+
+      # Grab signals that occurred within the last 1 hour
+      recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
+      if recent_sigs:
+        master_signals.append(recent_sigs[-1])
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} Active Signal Setup(s)!")
-  st.dataframe(pd.DataFrame(master_signals), width="stretch")
+  st.success(
+      f"✅ Found {len(master_signals)} Active Setup(s) in the last 1 hour!"
+  )
+  df_display = pd.DataFrame(master_signals).drop(
+      columns=["Is_Within_1hr"], errors="ignore"
+  )
+  st.dataframe(df_display, width="stretch")
 else:
   st.info(
-      "ℹ️ No active retest signals on high-volume coins right now. Select any"
-      " asset below to view its live chart and levels!"
+      "ℹ️ No retest signals found in the last 1 hour across 20+ assets. Select"
+      " any coin below to view its live chart."
   )
 
 # ---------------------------------------------------------
