@@ -22,23 +22,21 @@ hide_streamlit_style = """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# DATABASE INITIALIZATION (SQLite with Join Date & Status)
+# DATABASE INITIALIZATION (SQLite Authentication & Admin)
 # ---------------------------------------------------------
 conn = sqlite3.connect("twt_users.db", check_same_thread=False)
 c = conn.cursor()
 c.execute("""CREATE TABLE IF NOT EXISTS users 
-             (username TEXT PRIMARY KEY, password TEXT, status TEXT, role TEXT, join_date TEXT)""")
-
+             (username TEXT PRIMARY KEY, password TEXT, status TEXT, role TEXT)""")
 # Default Admin Account (Username: tuckyaa, Password: 8002771200)
-current_date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 c.execute(
     "INSERT OR IGNORE INTO users VALUES ('tuckyaa', '8002771200', 'approved',"
-    f" 'admin', '{current_date_str}')"
+    " 'admin')"
 )
 conn.commit()
 
 # ---------------------------------------------------------
-# AUTHENTICATION & ACCESS GATE
+# AUTHENTICATION & ADMIN APPROVAL GATE
 # ---------------------------------------------------------
 if "user" not in st.session_state:
   st.session_state.user = None
@@ -48,9 +46,7 @@ if "role" not in st.session_state:
 
 def login_register_page():
   st.title("🔒 TRADE WITH TUCKYAA — VIP Portal")
-  st.markdown(
-      "Login or Request Access to the Delta Trading Engine (30-Day Trial)."
-  )
+  st.markdown("Login or Request Access to the Delta Trading Engine.")
 
   tab1, tab2 = st.tabs(["🔑 Login", "📝 Request Access"])
 
@@ -60,36 +56,12 @@ def login_register_page():
     l_pass = st.text_input("Password", type="password", key="l_pass")
     if st.button("Login to Dashboard"):
       c.execute(
-          "SELECT password, status, role, join_date FROM users WHERE"
-          " username=?",
-          (l_user,),
+          "SELECT password, status, role FROM users WHERE username=?", (l_user,)
       )
       row = c.fetchone()
       if row:
-        db_pass, db_status, db_role, db_join_date = row
+        db_pass, db_status, db_role = row
         if db_pass == l_pass:
-          # Check if Admin blocked the user manually
-          if db_status == "blocked":
-            st.error(
-                "❌ Your service has been blocked by Admin (Tuckyaa). Contact"
-                " support."
-            )
-            return
-
-          # Check 30-Day Expiry (for regular users)
-          if db_role != "admin" and db_join_date:
-            try:
-              join_dt = datetime.strptime(db_join_date, "%Y-%m-%d %H:%M:%S")
-              days_passed = (datetime.now() - join_dt).days
-              if days_passed > 30:
-                st.error(
-                    "⏳ Your 30-day access period has expired! Please renew"
-                    " your subscription with Tuckyaa."
-                )
-                return
-            except Exception:
-              pass
-
           if db_status == "approved":
             st.session_state.user = l_user
             st.session_state.role = db_role
@@ -106,16 +78,15 @@ def login_register_page():
         st.error("❌ Username not found! Please register first.")
 
   with tab2:
-    st.subheader("New User Registration (30-Day Access)")
+    st.subheader("New User Registration")
     r_user = st.text_input("Choose Username / Mobile Number", key="r_user")
     r_pass = st.text_input("Choose Password", type="password", key="r_pass")
     if st.button("Submit Access Request"):
       if r_user and r_pass:
         try:
-          reg_date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
           c.execute(
-              "INSERT INTO users VALUES (?, ?, 'pending', 'user', ?)",
-              (r_user, r_pass, reg_date_str),
+              "INSERT INTO users VALUES (?, ?, 'pending', 'user')",
+              (r_user, r_pass),
           )
           conn.commit()
           st.success(
@@ -145,7 +116,7 @@ if st.session_state.role == "admin":
     st.session_state.role = None
     st.rerun()
 
-  with st.expander("🛠️ Manage User Approvals & Services (Admin Only)"):
+  with st.expander("🛠️ Manage User Approvals (Admin Only)"):
     st.subheader("Pending User Requests")
     c.execute("SELECT username FROM users WHERE status='pending'")
     pending_users = c.fetchall()
@@ -166,47 +137,11 @@ if st.session_state.role == "admin":
       st.info("No pending user requests.")
 
     st.markdown("---")
-    st.subheader("Manage Active VIP Users (Block/Unblock Service)")
-    c.execute(
-        "SELECT username, status, join_date FROM users WHERE role!='admin'"
-    )
-    all_vips = c.fetchall()
-
-    if all_vips:
-      for v_user, v_status, v_join in all_vips:
-        col1, col2, col3 = st.columns([2, 1, 1])
-        col1.write(f"**{v_user}** (Status: `{v_status}`)")
-
-        # Calculate remaining days
-        try:
-          join_dt = datetime.strptime(v_join, "%Y-%m-%d %H:%M:%S")
-          days_left = 30 - (datetime.now() - join_dt).days
-          col2.text(
-              f"📅 {max(0, days_left)} days left"
-              if days_left >= 0
-              else "Expired"
-          )
-        except Exception:
-          col2.text("N/A")
-
-        if v_status == "approved":
-          if col3.button("Block Service", key=f"block_{v_user}"):
-            c.execute(
-                "UPDATE users SET status='blocked' WHERE username=?", (v_user,)
-            )
-            conn.commit()
-            st.warning(f"Blocked {v_user}!")
-            st.rerun()
-        else:
-          if col3.button("Unblock", key=f"unblock_{v_user}"):
-            c.execute(
-                "UPDATE users SET status='approved' WHERE username=?", (v_user,)
-            )
-            conn.commit()
-            st.success(f"Unblocked {v_user}!")
-            st.rerun()
-    else:
-      st.info("No regular users registered yet.")
+    st.subheader("Approved VIP Users")
+    c.execute("SELECT username FROM users WHERE status='approved'")
+    approved_users = c.fetchall()
+    for a_user in approved_users:
+      st.text(f"✅ {a_user[0]}")
 else:
   if st.sidebar.button("Logout"):
     st.session_state.user = None
@@ -427,6 +362,7 @@ class TWTDeltaEngine:
       elif self.df_4 is not None:
         self.support_lvl = float(self.df_4["Low"].iloc[-1])
 
+      # EMAs
       self.df_main["EMA20"] = (
           self.df_main["Close"].ewm(span=20, adjust=False).mean()
       )
@@ -437,6 +373,7 @@ class TWTDeltaEngine:
           self.df_main["Close"].ewm(span=200, adjust=False).mean()
       )
 
+      # ATR 14 & Volume SMA
       self.df_main["TR"] = np.maximum(
           self.df_main["High"] - self.df_main["Low"],
           np.maximum(
@@ -447,12 +384,14 @@ class TWTDeltaEngine:
       self.df_main["ATR"] = self.df_main["TR"].rolling(14).mean()
       self.df_main["Vol_SMA"] = self.df_main["Volume"].rolling(14).mean()
 
+      # RSI 14
       delta = self.df_main["Close"].diff()
       gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
       loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
       rs = gain / (loss + 1e-9)
       self.df_main["RSI"] = 100 - (100 / (1 + rs))
 
+      # ADX 14 approximation
       plus_dm = self.df_main["High"].diff()
       minus_dm = self.df_main["Low"].diff()
       plus_dm = np.where((plus_dm > minus_dm) & (plus_dm > 0), plus_dm, 0.0)
@@ -507,6 +446,7 @@ class TWTDeltaEngine:
       rsi = float(r["RSI"]) if not pd.isna(r["RSI"]) else 50.0
       adx = float(r["ADX"]) if not pd.isna(r["ADX"]) else 20.0
 
+      # Signal expiry check (> 40 minutes old)
       time_diff_minutes = (
           current_utc_time - dt_utc
       ).total_seconds() / 60.0
@@ -550,12 +490,14 @@ class TWTDeltaEngine:
       dec = get_decimals(c["close"])
       status_suffix = " ⌛ [EXPIRED]" if c["is_expired"] else ""
 
+      # --- PANIC DUMP & SUPPORT BREAKDOWN FILTER ---
       is_support_breakdown = (
           c["close"] < self.support_lvl
           and c["close"] < c["open"]
           and c["volume"] > (c["vol_sma"] * 1.5)
       )
 
+      # --- RESISTANCE BREAKOUT TRAP FILTER ---
       is_resistance_breakout = (
           c["close"] > self.resistance_lvl
           and c["close"] > c["open"]
@@ -567,6 +509,7 @@ class TWTDeltaEngine:
       if is_resistance_breakout:
         res_touch_count = 0
 
+      # --- 4H RESISTANCE TOUCH TRACKING WITH STRICT REJECTION ---
       is_near_res = (
           c["high"] >= self.resistance_lvl - (0.8 * atr)
           and c["high"] <= self.resistance_lvl + (0.8 * atr)
@@ -602,6 +545,7 @@ class TWTDeltaEngine:
                 "Expired": c["is_expired"],
             })
 
+      # --- 6H SUPPORT TOUCH TRACKING WITH STRICT REJECTION ---
       is_near_sup = (
           c["low"] <= self.support_lvl + (0.8 * atr)
           and c["low"] >= self.support_lvl - (0.8 * atr)
