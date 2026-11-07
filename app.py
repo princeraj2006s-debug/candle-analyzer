@@ -179,7 +179,7 @@ else:
     st.rerun()
 
 # ---------------------------------------------------------
-# GLOBAL TRADING TIMEZONES & ASSETS
+# GLOBAL TRADING TIMEZONES & COMPLETE 20+ ASSETS LIST
 # ---------------------------------------------------------
 TRADING_TIMEZONES = {
     "(UTC+5:30) Kolkata / India (IST)": timezone(
@@ -530,7 +530,7 @@ else:
   )
 
 # ---------------------------------------------------------
-# MANUAL ASSET SELECTOR & CHART VIEWER
+# MANUAL ASSET SELECTOR & CHART VIEWER (WITH COMPLETE 20+ ASSETS)
 # ---------------------------------------------------------
 st.markdown("---")
 st.subheader("📊 Manual Asset Inspector & Chart")
