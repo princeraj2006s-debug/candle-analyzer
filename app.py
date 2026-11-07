@@ -214,7 +214,7 @@ ASSET_LIST = [
     "RENDER/USDT",
 ]
 
-count = st_autorefresh(interval=15000, key="twt_delta_refresh")
+count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
     "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Delta Exchange Multi-Retest Level Engine"
@@ -261,7 +261,7 @@ def get_decimals(price):
     return 2
 
 
-@st.cache_data(ttl=15)
+@st.cache_data(ttl=30)
 def fetch_twt_delta_data(symbol, tf):
   exchanges_to_try = [
       (ccxt.binance, symbol),
@@ -271,7 +271,7 @@ def fetch_twt_delta_data(symbol, tf):
 
   for ex_class, sym in exchanges_to_try:
     try:
-      exchange = ex_class({"enableRateLimit": True, "timeout": 6000})
+      exchange = ex_class({"enableRateLimit": True, "timeout": 5000})
       exchange.load_markets()
       if sym in exchange.markets:
         ohlcv_tf = exchange.fetch_ohlcv(sym, timeframe=tf, limit=80)
@@ -366,7 +366,6 @@ class TWTDeltaEngine:
     elif self.df_4 is not None:
       self.support_lvl = float(self.df_4["Low"].iloc[-1])
 
-    # Calculate ATR and EMA 50 Trend Filter
     self.df_5["TR"] = np.maximum(
         self.df_5["High"] - self.df_5["Low"],
         np.maximum(
@@ -428,15 +427,11 @@ class TWTDeltaEngine:
       atr = c["atr"]
       dec = get_decimals(c["close"])
 
-      # --- ANTI-FAKEOUT REJECTION FILTER ---
-      # 1. Resistance Sell Setup: Price wicks near resistance AND candle must be RED (rejection confirmation)
       is_near_res = (
           c["high"] >= self.resistance_lvl - (0.8 * atr)
           and c["high"] <= self.resistance_lvl + (0.8 * atr)
       )
-      is_rejection_res = (
-          c["color"] == "Red"
-      )  # Must close lower than open (Bearish confirmation)
+      is_rejection_res = c["color"] == "Red"
 
       if is_near_res and is_rejection_res and (i - last_res_id > 5):
         res_touch_count += 1
@@ -461,14 +456,11 @@ class TWTDeltaEngine:
               "Is_Within_1hr": c["is_within_1hr"],
           })
 
-      # 2. Support Buy Setup: Price wicks near support AND candle must be GREEN (Bullish bounce confirmation - No falling knives!)
       is_near_sup = (
           c["low"] <= self.support_lvl + (0.8 * atr)
           and c["low"] >= self.support_lvl - (0.8 * atr)
       )
-      is_rejection_sup = (
-          c["color"] == "Green"
-      )  # Must close higher than open (Bullish confirmation)
+      is_rejection_sup = c["color"] == "Green"
 
       if is_near_sup and is_rejection_sup and (i - last_sup_id > 5):
         sup_touch_count += 1
@@ -495,7 +487,7 @@ class TWTDeltaEngine:
 
 
 # ---------------------------------------------------------
-# LIGHTNING-FAST PARALLEL MASTER SCANNER (ALL 20+ ASSETS)
+# STABLE PARALLEL SCANNER (OPTIMIZED THREADS FOR STREAMLIT)
 # ---------------------------------------------------------
 st.markdown("---")
 st.subheader("🔥 TWT Live Master Signal Scanner (Last 1 Hour Active Entries)")
@@ -515,10 +507,9 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner(
-    "⚡ Lightning scanning all 20+ assets with Rejection Filter..."
-):
-  with ThreadPoolExecutor(max_workers=10) as executor:
+with st.spinner("⚡ Scanning assets safely... Please wait."):
+  # Using max_workers=5 to avoid Memory Crash (502 Bad Gateway)
+  with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
     }
@@ -538,13 +529,10 @@ if master_signals:
   )
   st.dataframe(df_display, width="stretch")
 else:
-  st.info(
-      "ℹ️ No confirmed rejection signals in the last 1 hour. Safe from"
-      " fakeouts!"
-  )
+  st.info("ℹ️ No confirmed rejection signals in the last 1 hour.")
 
 # ---------------------------------------------------------
-# MANUAL ASSET SELECTOR & CHART VIEWER (WITH COMPLETE 20+ ASSETS)
+# MANUAL ASSET SELECTOR & CHART VIEWER
 # ---------------------------------------------------------
 st.markdown("---")
 st.subheader("📊 Manual Asset Inspector & Chart")
@@ -606,10 +594,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
           "📌 *Instructions:* Resistance bearish rejection confirmed!"
       )
   else:
-    st.warning(
-        "🟡 Monitoring price action for confirmed rejection candles near"
-        " levels..."
-    )
+    st.warning("🟡 Monitoring price action near support and resistance levels...")
 
   # Chart Rendering
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
