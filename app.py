@@ -57,7 +57,7 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Settings")
-st.sidebar.text("Entry method     : Smart Multi-Touch Retest + Dump Protection")
+st.sidebar.text("Entry method     : Smart Multi-Touch Retest")
 st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss          : ATR Managed")
 
@@ -180,12 +180,6 @@ class TWTDeltaEngine:
       elif self.df_4 is not None:
         self.support_lvl = float(self.df_4["Low"].iloc[-1])
 
-      # EMAs
-      self.df_5["EMA20"] = self.df_5["Close"].ewm(span=20, adjust=False).mean()
-      self.df_5["EMA50"] = self.df_5["Close"].ewm(span=50, adjust=False).mean()
-      self.df_5["EMA200"] = self.df_5["Close"].ewm(span=200, adjust=False).mean()
-
-      # ATR 14 & Volume SMA
       self.df_5["TR"] = np.maximum(
           self.df_5["High"] - self.df_5["Low"],
           np.maximum(
@@ -194,37 +188,6 @@ class TWTDeltaEngine:
           ),
       )
       self.df_5["ATR"] = self.df_5["TR"].rolling(14).mean()
-      self.df_5["Vol_SMA"] = self.df_5["Volume"].rolling(14).mean()
-
-      # RSI 14
-      delta = self.df_5["Close"].diff()
-      gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-      loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-      rs = gain / (loss + 1e-9)
-      self.df_5["RSI"] = 100 - (100 / (1 + rs))
-
-      # ADX 14 approximation
-      plus_dm = self.df_5["High"].diff()
-      minus_dm = self.df_5["Low"].diff()
-      plus_dm = np.where((plus_dm > minus_dm) & (plus_dm > 0), plus_dm, 0.0)
-      minus_dm = np.where((minus_dm > plus_dm) & (minus_dm > 0), minus_dm, 0.0)
-      tr14 = self.df_5["TR"].rolling(14).sum()
-      plus_di = (
-          100
-          * pd.Series(plus_dm, index=self.df_5.index).rolling(14).sum()
-          / (tr14 + 1e-9)
-      )
-      minus_di = (
-          100
-          * pd.Series(minus_dm, index=self.df_5.index).rolling(14).sum()
-          / (tr14 + 1e-9)
-      )
-      dx = (
-          100
-          * abs(plus_di - minus_di)
-          / (plus_di + minus_di + 1e-9)
-      )
-      self.df_5["ADX"] = dx.rolling(14).mean()
 
   def parse_and_scan(self):
     if self.df_5 is None or self.df_5.empty:
@@ -248,12 +211,6 @@ class TWTDeltaEngine:
           float(r["Volume"]),
       )
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
-      vol_sma = float(r["Vol_SMA"]) if not pd.isna(r["Vol_SMA"]) else v
-      ema20 = float(r["EMA20"]) if not pd.isna(r["EMA20"]) else c
-      ema50 = float(r["EMA50"]) if not pd.isna(r["EMA50"]) else c
-      ema200 = float(r["EMA200"]) if not pd.isna(r["EMA200"]) else c
-      rsi = float(r["RSI"]) if not pd.isna(r["RSI"]) else 50.0
-      adx = float(r["ADX"]) if not pd.isna(r["ADX"]) else 20.0
 
       self.candles.append({
           "id": idx + 1,
@@ -265,13 +222,7 @@ class TWTDeltaEngine:
           "low": l,
           "close": c,
           "volume": v,
-          "vol_sma": vol_sma,
           "atr": atr,
-          "ema20": ema20,
-          "ema50": ema50,
-          "ema200": ema200,
-          "rsi": rsi,
-          "adx": adx,
       })
 
     res_touch_count = 0
@@ -288,53 +239,33 @@ class TWTDeltaEngine:
 
       atr = c["atr"]
       dec = get_decimals(c["close"])
+      candle_body = abs(c["close"] - c["open"])
 
-      # --- PANIC DUMP & SUPPORT BREAKDOWN FILTER ---
-      # Blocks buy signals if price crashes below support with high volume (> 1.5x average volume)
-      is_support_breakdown = (
-          c["close"] < self.support_lvl
-          and c["close"] < c["open"]
-          and c["volume"] > (c["vol_sma"] * 1.5)
-      )
-
-      # --- RESISTANCE BREAKOUT TRAP FILTER ---
-      # Blocks sell signals if price pumps above resistance with high volume
-      is_resistance_breakout = (
-          c["close"] > self.resistance_lvl
-          and c["close"] > c["open"]
-          and c["volume"] > (c["vol_sma"] * 1.5)
-      )
-
-      if is_support_breakdown:
-        sup_touch_count = 0
-      if is_resistance_breakout:
-        res_touch_count = 0
-
-      # --- 4H RESISTANCE TOUCH TRACKING WITH STRICT REJECTION ---
+      # --- 4H RESISTANCE TOUCH TRACKING ---
       is_near_res = (
           c["high"] >= self.resistance_lvl - (0.8 * atr)
           and c["high"] <= self.resistance_lvl + (0.8 * atr)
       )
-      if is_near_res and not is_resistance_breakout and (i - last_res_candle_id > 5):
+      if is_near_res and (i - last_res_candle_id > 5):
         res_touch_count += 1
         last_res_candle_id = i
 
-        # 2nd or 3rd Touch Sell Trigger with bearish rejection candle check
-        if res_touch_count >= 2 and c["close"] < c["open"]:
+        # 2nd or 3rd Touch Sell Trigger
+        if res_touch_count >= 2:
           sl = round(c["high"] + (1.2 * atr), dec)
           tp1 = round(c["close"] - (1.0 * atr), dec)
           tp2 = round(c["close"] - (2.2 * atr), dec)
           tp3 = round(c["close"] - (3.8 * atr), dec)
 
           if not any(
-              s["Setup"] == "TWT Protected Resistance Sell"
+              s["Setup"] == "TWT Multi-Touch Resistance Sell"
               and abs(s["Candle #"] - c["id"]) < 6
               for s in self.signals
           ):
             self.signals.append({
                 "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": "TWT Protected Resistance Sell",
+                "Setup": "TWT Multi-Touch Resistance Sell",
                 "Action": f"Sell / Short (S) [Retest #{res_touch_count}] 🔴",
                 "Entry Price": round(c["close"], dec),
                 "Stop Loss (SL)": sl,
@@ -343,31 +274,31 @@ class TWTDeltaEngine:
                 "TP 3": tp3,
             })
 
-      # --- 6H SUPPORT TOUCH TRACKING WITH STRICT REJECTION ---
+      # --- 6H SUPPORT TOUCH TRACKING ---
       is_near_sup = (
           c["low"] <= self.support_lvl + (0.8 * atr)
           and c["low"] >= self.support_lvl - (0.8 * atr)
       )
-      if is_near_sup and not is_support_breakdown and (i - last_sup_candle_id > 5):
+      if is_near_sup and (i - last_sup_candle_id > 5):
         sup_touch_count += 1
         last_sup_candle_id = i
 
-        # 2nd or 3rd Touch Buy Trigger with bullish rejection candle check
-        if sup_touch_count >= 2 and c["close"] > c["open"]:
+        # 2nd or 3rd Touch Buy Trigger
+        if sup_touch_count >= 2:
           sl = round(c["low"] - (1.2 * atr), dec)
           tp1 = round(c["close"] + (1.0 * atr), dec)
           tp2 = round(c["close"] + (2.2 * atr), dec)
           tp3 = round(c["close"] + (3.8 * atr), dec)
 
           if not any(
-              s["Setup"] == "TWT Protected Support Buy"
+              s["Setup"] == "TWT Multi-Touch Support Buy"
               and abs(s["Candle #"] - c["id"]) < 6
               for s in self.signals
           ):
             self.signals.append({
                 "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": "TWT Protected Support Buy",
+                "Setup": "TWT Multi-Touch Support Buy",
                 "Action": f"Buy / Long (B) [Retest #{sup_touch_count}] 🟢",
                 "Entry Price": round(c["close"], dec),
                 "Stop Loss (SL)": sl,
@@ -384,6 +315,7 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
     bot.parse_and_scan()
 
     curr_p = bot.candles[-1]["close"] if bot.candles else 0.0
+    curr_atr = bot.candles[-1]["atr"] if bot.candles else (curr_p * 0.002)
 
     st.markdown("---")
     st.subheader(f"📊 Delta Exchange Live Dashboard ({selected_symbol})")
@@ -400,7 +332,7 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
     with col4:
       st.metric(
           label="Methodology",
-          value="Smart Multi-Touch Retest + Dump Protection",
+          value="Smart Multi-Touch Retest",
           delta="Active",
       )
 
@@ -422,7 +354,7 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
             f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
             f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
             f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-            "📌 *Instructions:* Protected Support multi-touch retest confirmed!"
+            "📌 *Instructions:* Support multi-touch retest confirmed!"
         )
       else:
         st.error(
@@ -433,12 +365,13 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
             f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
             f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
             f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-            "📌 *Instructions:* Protected Resistance multi-touch retest confirmed!"
+            "📌 *Instructions:* Resistance multi-touch retest confirmed!"
         )
     else:
       st.warning(
-          "🟡 **STATUS: SCANNING WITH PANIC DUMP PROTECTION**\n\n"
-          "📌 *Instructions:* Monitoring price action near 4H Resistance and 6H Support while filtering high-volume breakdown traps."
+          "🟡 **STATUS: WAITING FOR 2ND / 3RD TOUCH RETEST**\n\n"
+          "📌 *Instructions:* Monitoring price action near 4H Resistance and 6H"
+          " Support."
       )
 
     if bot.signals:
