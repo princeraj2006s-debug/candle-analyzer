@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, time, timedelta, timezone
 import sqlite3
 import ccxt
@@ -260,7 +261,7 @@ def get_decimals(price):
     return 2
 
 
-@st.cache_data(ttl=20)
+@st.cache_data(ttl=15)
 def fetch_twt_delta_data(symbol, tf):
   exchanges_to_try = [
       (ccxt.binance, symbol),
@@ -270,7 +271,7 @@ def fetch_twt_delta_data(symbol, tf):
 
   for ex_class, sym in exchanges_to_try:
     try:
-      exchange = ex_class({"enableRateLimit": True, "timeout": 8000})
+      exchange = ex_class({"enableRateLimit": True, "timeout": 6000})
       exchange.load_markets()
       if sym in exchange.markets:
         ohlcv_tf = exchange.fetch_ohlcv(sym, timeframe=tf, limit=80)
@@ -480,28 +481,39 @@ class TWTDeltaEngine:
 
 
 # ---------------------------------------------------------
-# SMOOTH MASTER LIVE SCANNER (ALL 20+ ASSETS CACHED)
+# LIGHTNING-FAST PARALLEL MASTER SCANNER (ALL 20+ ASSETS)
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("🔥 TWT Live Master Signal Scanner (All 20+ Assets)")
+st.subheader("🔥 TWT Live Master Signal Scanner (Last 1 Hour Active Entries)")
 
 master_signals = []
 asset_engines = {}
 
-with st.spinner(
-    "⚡ Scanning all 20+ assets smoothly (Cached for speed)... Please wait."
-):
-  for sym in ASSET_LIST:
-    df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
-    if df_5 is not None and not df_5.empty:
-      engine = TWTDeltaEngine(df_5, df_4, df_6, sym, active_tz)
-      engine.calculate_and_scan()
-      asset_engines[sym] = engine
 
-      # Grab signals that occurred within the last 1 hour
-      recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
-      if recent_sigs:
-        master_signals.append(recent_sigs[-1])
+def scan_single_asset(sym):
+  df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
+  if df_5 is not None and not df_5.empty:
+    engine = TWTDeltaEngine(df_5, df_4, df_6, sym, active_tz)
+    engine.calculate_and_scan()
+    recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
+    latest = recent_sigs[-1] if recent_sigs else None
+    return sym, engine, latest
+  return sym, None, None
+
+
+with st.spinner(
+    "⚡ Lightning scanning all 20+ assets in parallel... Please wait."
+):
+  with ThreadPoolExecutor(max_workers=10) as executor:
+    futures = {
+        executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
+    }
+    for future in as_completed(futures):
+      sym, engine, latest = future.result()
+      if engine:
+        asset_engines[sym] = engine
+      if latest:
+        master_signals.append(latest)
 
 if master_signals:
   st.success(
