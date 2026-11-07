@@ -270,7 +270,7 @@ def fetch_twt_delta_data(symbol, tf):
 
   for ex_class, sym in exchanges_to_try:
     try:
-      exchange = ex_class({"enableRateLimit": True, "timeout": 8000})
+      exchange = ex_class({"enableRateLimit": True, "timeout": 12000})
       exchange.load_markets()
       if sym in exchange.markets:
         ohlcv_tf = exchange.fetch_ohlcv(sym, timeframe=tf, limit=80)
@@ -373,8 +373,6 @@ class TWTDeltaEngine:
     )
     self.df_5["ATR"] = self.df_5["TR"].rolling(14).mean()
 
-    total_candles_len = len(self.df_5)
-
     for idx, row in enumerate(self.df_5.iterrows()):
       dt_utc = row[0]
       if dt_utc.tzinfo is None:
@@ -432,10 +430,6 @@ class TWTDeltaEngine:
           tp1 = round(c["close"] - (1.0 * atr), dec)
           tp2 = round(c["close"] - (2.2 * atr), dec)
           tp3 = round(c["close"] - (3.8 * atr), dec)
-
-          # Only keep signals that happened within the last 5 candles (Most Recent)
-          is_recent = (total_candles_len - c["id"]) <= 5
-
           self.signals.append({
               "Asset": self.symbol,
               "Time": c["time"],
@@ -447,7 +441,6 @@ class TWTDeltaEngine:
               "TP 1": tp1,
               "TP 2": tp2,
               "TP 3": tp3,
-              "Is_Recent": is_recent,
           })
 
       is_near_sup = (
@@ -462,9 +455,6 @@ class TWTDeltaEngine:
           tp1 = round(c["close"] + (1.0 * atr), dec)
           tp2 = round(c["close"] + (2.2 * atr), dec)
           tp3 = round(c["close"] + (3.8 * atr), dec)
-
-          is_recent = (total_candles_len - c["id"]) <= 5
-
           self.signals.append({
               "Asset": self.symbol,
               "Time": c["time"],
@@ -472,48 +462,40 @@ class TWTDeltaEngine:
               "Setup": "Support Buy",
               "Action": f"Buy / Long (B) [Retest #{sup_touch_count}] 🟢",
               "Entry Price": round(c["close"], dec),
-              "Stop Loss_SL": sl,
+              "Stop Loss (SL)": sl,
               "TP 1": tp1,
               "TP 2": tp2,
               "TP 3": tp3,
-              "Is_Recent": is_recent,
           })
 
 
 # ---------------------------------------------------------
-# LIGHTNING FAST MASTER SCANNER (TOP ACTIVE ASSETS ONLY)
+# MASTER LIVE SIGNAL SCANNER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("🔥 TWT Live Master Signal Scanner (Recent Active Entries Only)")
+st.subheader("🔥 TWT Live Master Signal Scanner")
 
 master_signals = []
 asset_engines = {}
-# Top volatile coins scan for instant dashboard loading without lag
-top_scan_assets = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT"]
+quick_assets = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT"]
 
-with st.spinner("⚡ Scanning top active assets for recent signals..."):
-  for sym in top_scan_assets:
+with st.spinner("⚡ Scanning key active assets in real-time..."):
+  for sym in quick_assets:
     df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
     if df_5 is not None and not df_5.empty:
       engine = TWTDeltaEngine(df_5, df_4, df_6, sym, active_tz)
       engine.calculate_and_scan()
       asset_engines[sym] = engine
-
-      # Filter to grab ONLY recent active signals (last 5 candles)
-      recent_sigs = [s for s in engine.signals if s.get("Is_Recent", False)]
-      if recent_sigs:
-        master_signals.append(recent_sigs[-1])
+      if engine.signals:
+        master_signals.append(engine.signals[-1])
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} Recent Active Setup(s)!")
-  df_display = pd.DataFrame(master_signals).drop(
-      columns=["Is_Recent"], errors="ignore"
-  )
-  st.dataframe(df_display, width="stretch")
+  st.success(f"✅ Found {len(master_signals)} Active Signal Setup(s)!")
+  st.dataframe(pd.DataFrame(master_signals), width="stretch")
 else:
   st.info(
-      "ℹ️ No fresh retest signals right now on top assets. Select any coin"
-      " below to inspect its chart."
+      "ℹ️ No active retest signals on high-volume coins right now. Select any"
+      " asset below to view its live chart and levels!"
   )
 
 # ---------------------------------------------------------
@@ -563,7 +545,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
-          f"- **Stop Loss (SL):** `{latest_sig.get('Stop Loss (SL)', latest_sig.get('Stop Loss_SL'))}`\n"
+          f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
           "📌 *Instructions:* Support multi-touch retest confirmed!"
@@ -574,7 +556,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
-          f"- **Stop Loss (SL):** `{latest_sig.get('Stop Loss (SL)', latest_sig.get('Stop Loss_SL'))}`\n"
+          f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
           "📌 *Instructions:* Resistance multi-touch retest confirmed!"
