@@ -1,4 +1,5 @@
 from datetime import datetime, time, timedelta, timezone
+import sqlite3
 import ccxt
 import matplotlib.pyplot as plt
 import numpy as np
@@ -10,16 +11,185 @@ st.set_page_config(
     page_title="TWT Delta Pro by TUCKYAA", page_icon="⚡", layout="wide"
 )
 
-# Live auto-refresh every 10 seconds
-count = st_autorefresh(interval=10000, key="twt_delta_refresh")
+# Hide Streamlit Header, Footer, Menu & GitHub Icon via CSS
+hide_streamlit_style = """
+    <style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    </style>
+    """
+st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Delta Exchange Multi-Retest Level Engine"
+# ---------------------------------------------------------
+# DATABASE INITIALIZATION (SQLite Authentication)
+# ---------------------------------------------------------
+conn = sqlite3.connect("twt_users.db", check_same_thread=False)
+c = conn.cursor()
+c.execute("""CREATE TABLE IF NOT EXISTS users 
+             (username TEXT PRIMARY KEY, password TEXT, status TEXT, role TEXT)""")
+
+# Default Admin Account (Username: tuckyaa, Password: 8002771200)
+c.execute(
+    "INSERT OR IGNORE INTO users VALUES ('tuckyaa', '8002771200', 'approved',"
+    " 'admin')"
 )
-st.markdown(
-    f"**Live Feed Active (Refresh Count: {count}) | 01:30 4H Resistance & 05:30"
-    " 6H Support + Smart Multi-Touch Retest Engine + Multi-TP**"
-)
+conn.commit()
+
+# ---------------------------------------------------------
+# AUTHENTICATION & ACCESS GATE
+# ---------------------------------------------------------
+if "user" not in st.session_state:
+  st.session_state.user = None
+if "role" not in st.session_state:
+  st.session_state.role = None
+
+
+def login_register_page():
+  st.title("🔒 TRADE WITH TUCKYAA — VIP Portal")
+  st.markdown("Login or Request Access to the Delta Trading Engine.")
+
+  tab1, tab2 = st.tabs(["🔑 Login", "📝 Request Access"])
+
+  with tab1:
+    st.subheader("User Login")
+    l_user = st.text_input("Username / Mobile Number", key="l_user")
+    l_pass = st.text_input("Password", type="password", key="l_pass")
+    if st.button("Login to Dashboard"):
+      c.execute(
+          "SELECT password, status, role FROM users WHERE username=?", (l_user,)
+      )
+      row = c.fetchone()
+      if row:
+        db_pass, db_status, db_role = row
+        if db_pass == l_pass:
+          if db_status == "blocked":
+            st.error(
+                "❌ Your service has been blocked by Admin (Tuckyaa). Contact"
+                " support."
+            )
+            return
+
+          if db_status == "approved":
+            st.session_state.user = l_user
+            st.session_state.role = db_role
+            st.success("Login successful!")
+            st.rerun()
+          else:
+            st.warning(
+                "⏳ Your account is pending Admin approval. Please wait for"
+                " Tuckyaa to approve."
+            )
+        else:
+          st.error("❌ Incorrect Password!")
+      else:
+        st.error("❌ Username not found! Please register first.")
+
+  with tab2:
+    st.subheader("New User Registration")
+    r_user = st.text_input("Choose Username / Mobile Number", key="r_user")
+    r_pass = st.text_input("Choose Password", type="password", key="r_pass")
+    if st.button("Submit Access Request"):
+      if r_user and r_pass:
+        try:
+          c.execute(
+              "INSERT INTO users VALUES (?, ?, 'pending', 'user')",
+              (r_user, r_pass),
+          )
+          conn.commit()
+          st.success(
+              "✅ Request submitted successfully! Admin (Tuckyaa) will approve"
+              " your account soon."
+          )
+        except sqlite3.IntegrityError:
+          st.error(
+              "❌ Username already exists! Try logging in or use another name."
+          )
+      else:
+        st.warning("Please fill in all fields.")
+
+
+if st.session_state.user is None:
+  login_register_page()
+  st.stop()
+
+# ---------------------------------------------------------
+# ADMIN PANEL (Visible ONLY to Admin 'tuckyaa')
+# ---------------------------------------------------------
+if st.session_state.role == "admin":
+  st.sidebar.markdown("---")
+  st.sidebar.markdown("### 👑 Admin Control Panel")
+  if st.sidebar.button("Logout Admin"):
+    st.session_state.user = None
+    st.session_state.role = None
+    st.rerun()
+
+  with st.expander("🛠️ Manage User Approvals & Services (Admin Only)"):
+    st.subheader("Pending User Requests")
+    c.execute("SELECT username FROM users WHERE status='pending'")
+    pending_users = c.fetchall()
+
+    if pending_users:
+      for p_user in pending_users:
+        u_name = p_user[0]
+        col_a, col_b = st.columns([2, 1])
+        col_a.write(f"User: **{u_name}**")
+        if col_b.button("Approve", key=f"app_{u_name}"):
+          c.execute(
+              "UPDATE users SET status='approved' WHERE username=?", (u_name,)
+          )
+          conn.commit()
+          st.success(f"Approved {u_name}!")
+          st.rerun()
+    else:
+      st.info("No pending user requests.")
+
+    st.markdown("---")
+    st.subheader("Manage Active Users (Block/Unblock Service)")
+    c.execute(
+        "SELECT username, status FROM users WHERE role!='admin'"
+    )
+    all_users = c.fetchall()
+
+    if all_users:
+      for u_name, u_status in all_users:
+        col1, col2 = st.columns([2, 1])
+        col1.write(f"**{u_name}** (Status: `{u_status}`)")
+        if u_status == "approved":
+          if col2.button("Block Service", key=f"block_{u_name}"):
+            c.execute(
+                "UPDATE users SET status='blocked' WHERE username=?", (u_name,)
+            )
+            conn.commit()
+            st.warning(f"Blocked {u_name}!")
+            st.rerun()
+        else:
+          if col2.button("Unblock", key=f"unblock_{u_name}"):
+            c.execute(
+                "UPDATE users SET status='approved' WHERE username=?", (u_name,)
+            )
+            conn.commit()
+            st.success(f"Unblocked {u_name}!")
+            st.rerun()
+    else:
+      st.info("No regular users registered yet.")
+else:
+  if st.sidebar.button("Logout"):
+    st.session_state.user = None
+    st.session_state.role = None
+    st.rerun()
+
+# ---------------------------------------------------------
+# TRADING TIMEZONES DICTIONARY
+# ---------------------------------------------------------
+TRADING_TIMEZONES = {
+    "(UTC+5:30) Kolkata / India (IST)": timezone(
+        timedelta(hours=5, minutes=30)
+    ),
+    "(UTC+0:00) London / UTC / GMT": timezone.utc,
+    "(UTC-5:00) New York / US East (EST)": timezone(timedelta(hours=-5)),
+    "(UTC+8:00) Singapore / Hong Kong (SGT)": timezone(timedelta(hours=8)),
+}
 
 # Delta Exchange 20 Crypto & Metal Assets
 ASSET_LIST = [
@@ -45,11 +215,38 @@ ASSET_LIST = [
     "RENDER/USDT",
 ]
 
+# Live auto-refresh every 10 seconds
+count = st_autorefresh(interval=10000, key="twt_delta_refresh")
+
+st.title(
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Delta Exchange Multi-Retest Level Engine"
+)
+
+col_tf, col_tz = st.columns([1, 2])
+with col_tf:
+  selected_tf = st.selectbox(
+      "⏱️ Timeframe", options=["5m", "15m", "30m", "1h"], index=0
+  )
+with col_tz:
+  selected_tz_name = st.selectbox(
+      "🌍 Trading Timezone", options=list(TRADING_TIMEZONES.keys()), index=0
+  )
+  active_tz = TRADING_TIMEZONES[selected_tz_name]
+
+tz_short = selected_tz_name.split(")")[0] + ")"
+
+st.markdown(
+    f"**Live Feed Active (Refresh Count: {count}) | 01:30 4H Resistance & 05:30"
+    f" 6H Support + Smart Multi-Touch Engine | Zone: {tz_short}**"
+)
+
 # Sidebar Session Box Panel
 st.sidebar.markdown("### 🤖 TWT Expert Panel")
 st.sidebar.markdown("---")
-server_time_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
-st.sidebar.text(f"Server time          ———  {server_time_ist.strftime('%H:%M')}")
+server_time_target = datetime.now(active_tz)
+st.sidebar.text(
+    f"Server time          ———  {server_time_target.strftime('%H:%M')}"
+)
 st.sidebar.text("Support Ref (6H)   ———  05:30 IST Candle Low")
 st.sidebar.text("Resistance Ref (4H) ———  01:30 IST Candle High")
 st.sidebar.text("No-Trade Zone      ———  01:00 ➔ 06:00 IST")
@@ -60,11 +257,6 @@ st.sidebar.markdown("#### Trading Settings")
 st.sidebar.text("Entry method     : Smart Multi-Touch Retest")
 st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss          : ATR Managed")
-
-# Asset Selection Dropdown
-selected_symbol = st.selectbox(
-    "Select Delta Exchange Asset", options=ASSET_LIST, index=5
-)
 
 
 def get_decimals(price):
@@ -77,7 +269,7 @@ def get_decimals(price):
 
 
 @st.cache_data(ttl=10)
-def fetch_twt_delta_data(symbol):
+def fetch_twt_delta_data(symbol, tf):
   exchanges_to_try = [
       (ccxt.binance, symbol),
       (ccxt.bybit, symbol),
@@ -89,13 +281,13 @@ def fetch_twt_delta_data(symbol):
       exchange = ex_class({"enableRateLimit": True, "timeout": 20000})
       exchange.load_markets()
       if sym in exchange.markets:
-        ohlcv_5m = exchange.fetch_ohlcv(sym, timeframe="5m", limit=100)
+        ohlcv_tf = exchange.fetch_ohlcv(sym, timeframe=tf, limit=100)
         ohlcv_4h = exchange.fetch_ohlcv(sym, timeframe="4h", limit=30)
         ohlcv_6h = exchange.fetch_ohlcv(sym, timeframe="6h", limit=30)
 
-        if ohlcv_5m and ohlcv_4h:
+        if ohlcv_tf and ohlcv_4h:
           df_5 = pd.DataFrame(
-              ohlcv_5m,
+              ohlcv_tf,
               columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
           )
           df_5["timestamp"] = pd.to_datetime(df_5["timestamp"], unit="ms")
@@ -132,16 +324,14 @@ def fetch_twt_delta_data(symbol):
   return None, None, None, None
 
 
-df_5m, df_4h, df_6h, active_symbol = fetch_twt_delta_data(selected_symbol)
-
-
 class TWTDeltaEngine:
 
-  def __init__(self, df_5, df_4, df_6, symbol):
+  def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5 if df_5 is not None else None
     self.df_4 = df_4 if df_4 is not None else None
     self.df_6 = df_6 if df_6 is not None else None
     self.symbol = symbol
+    self.user_tz = user_tz
     self.candles = []
     self.signals = []
     self.resistance_lvl = 0
@@ -194,13 +384,15 @@ class TWTDeltaEngine:
       return
 
     IST = timezone(timedelta(hours=5, minutes=30))
+    current_utc_time = datetime.now(timezone.utc)
 
     for idx, row in enumerate(self.df_5.iterrows()):
       dt_utc = row[0]
       if dt_utc.tzinfo is None:
         dt_utc = dt_utc.replace(tzinfo=timezone.utc)
       dt_ist = dt_utc.astimezone(IST)
-      timestamp_str = dt_ist.strftime("%H:%M")
+      dt_user_tz = dt_utc.astimezone(self.user_tz)
+      timestamp_str = dt_user_tz.strftime("%H:%M")
 
       r = row[1]
       o, h, l, c, v = (
@@ -212,10 +404,15 @@ class TWTDeltaEngine:
       )
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
 
+      # 30 minutes expiration check
+      time_diff_mins = (current_utc_time - dt_utc).total_seconds() / 60.0
+      is_expired = time_diff_mins > 30
+
       self.candles.append({
           "id": idx + 1,
           "time": timestamp_str,
           "dt_ist": dt_ist,
+          "dt_utc": dt_utc,
           "color": "Green" if c >= o else "Red",
           "open": o,
           "high": h,
@@ -223,6 +420,7 @@ class TWTDeltaEngine:
           "close": c,
           "volume": v,
           "atr": atr,
+          "is_expired": is_expired,
       })
 
     res_touch_count = 0
@@ -239,7 +437,7 @@ class TWTDeltaEngine:
 
       atr = c["atr"]
       dec = get_decimals(c["close"])
-      candle_body = abs(c["close"] - c["open"])
+      status_suffix = " ⌛ [Don't use after 30 minutes]" if c["is_expired"] else ""
 
       # --- 4H RESISTANCE TOUCH TRACKING ---
       is_near_res = (
@@ -250,7 +448,6 @@ class TWTDeltaEngine:
         res_touch_count += 1
         last_res_candle_id = i
 
-        # 2nd or 3rd Touch Sell Trigger
         if res_touch_count >= 2:
           sl = round(c["high"] + (1.2 * atr), dec)
           tp1 = round(c["close"] - (1.0 * atr), dec)
@@ -263,15 +460,20 @@ class TWTDeltaEngine:
               for s in self.signals
           ):
             self.signals.append({
+                "Asset": self.symbol,
                 "Time": c["time"],
                 "Candle #": c["id"],
                 "Setup": "TWT Multi-Touch Resistance Sell",
-                "Action": f"Sell / Short (S) [Retest #{res_touch_count}] 🔴",
+                "Action": (
+                    f"Sell / Short (S) [Retest #{res_touch_count}] 🔴"
+                    f"{status_suffix}"
+                ),
                 "Entry Price": round(c["close"], dec),
                 "Stop Loss (SL)": sl,
                 "TP 1": tp1,
                 "TP 2": tp2,
                 "TP 3": tp3,
+                "Expired": c["is_expired"],
             })
 
       # --- 6H SUPPORT TOUCH TRACKING ---
@@ -283,7 +485,6 @@ class TWTDeltaEngine:
         sup_touch_count += 1
         last_sup_candle_id = i
 
-        # 2nd or 3rd Touch Buy Trigger
         if sup_touch_count >= 2:
           sl = round(c["low"] - (1.2 * atr), dec)
           tp1 = round(c["close"] + (1.0 * atr), dec)
@@ -296,29 +497,77 @@ class TWTDeltaEngine:
               for s in self.signals
           ):
             self.signals.append({
+                "Asset": self.symbol,
                 "Time": c["time"],
                 "Candle #": c["id"],
                 "Setup": "TWT Multi-Touch Support Buy",
-                "Action": f"Buy / Long (B) [Retest #{sup_touch_count}] 🟢",
+                "Action": (
+                    f"Buy / Long (B) [Retest #{sup_touch_count}] 🟢"
+                    f"{status_suffix}"
+                ),
                 "Entry Price": round(c["close"], dec),
                 "Stop Loss (SL)": sl,
                 "TP 1": tp1,
                 "TP 2": tp2,
                 "TP 3": tp3,
+                "Expired": c["is_expired"],
             })
 
 
-with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
-  if df_5m is not None and not df_5m.empty:
-    bot = TWTDeltaEngine(df_5m, df_4h, df_6h, selected_symbol)
-    bot.calculate_indicators()
-    bot.parse_and_scan()
+# ---------------------------------------------------------
+# MASTER LIVE SIGNAL SCANNER FOR ALL ASSETS
+# ---------------------------------------------------------
+st.markdown("---")
+st.subheader("🔥 TWT Master Live Signal Scanner (All 20+ Assets)")
+st.markdown(
+    "Scanning all Delta assets simultaneously so you never miss a signal!"
+)
 
+master_signals = []
+asset_engines = {}
+
+with st.spinner("⚡ Scanning all assets in real-time..."):
+  for sym in ASSET_LIST:
+    df_5, df_4, df_6, _ = fetch_twt_delta_data(sym, selected_tf)
+    if df_5 is not None and not df_5.empty:
+      engine = TWTDeltaEngine(df_5, df_4, df_6, sym, active_tz)
+      engine.calculate_indicators()
+      engine.parse_and_scan()
+      asset_engines[sym] = engine
+      if engine.signals:
+        master_signals.append(engine.signals[-1])
+
+if master_signals:
+  st.success(f"✅ Found {len(master_signals)} active setup(s) across assets!")
+  df_master = pd.DataFrame(master_signals)
+  st.dataframe(df_master, width="stretch")
+else:
+  st.warning(
+      "🟡 No immediate retest signals right now across assets. Monitoring price"
+      " action..."
+  )
+
+# ---------------------------------------------------------
+# INDIVIDUAL ASSET CHART VIEWER
+# ---------------------------------------------------------
+st.markdown("---")
+st.subheader("📊 Detailed Asset Chart & Levels")
+
+selected_symbol = st.selectbox(
+    "Select Delta Exchange Asset for Chart", options=ASSET_LIST, index=0
+)
+
+if selected_symbol in asset_engines:
+  bot = asset_engines[selected_symbol]
+else:
+  df_5m, df_4h, df_6h, _ = fetch_twt_delta_data(selected_symbol, selected_tf)
+  bot = TWTDeltaEngine(df_5m, df_4h, df_6h, selected_symbol, active_tz)
+  bot.calculate_indicators()
+  bot.parse_and_scan()
+
+with st.spinner(f"⚡ Loading Chart for {selected_symbol}..."):
+  if bot.df_5 is not None and not bot.df_5.empty:
     curr_p = bot.candles[-1]["close"] if bot.candles else 0.0
-    curr_atr = bot.candles[-1]["atr"] if bot.candles else (curr_p * 0.002)
-
-    st.markdown("---")
-    st.subheader(f"📊 Delta Exchange Live Dashboard ({selected_symbol})")
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
@@ -331,24 +580,37 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
       st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
     with col4:
       st.metric(
-          label="Methodology",
-          value="Smart Multi-Touch Retest",
-          delta="Active",
+          label="Timezone",
+          value=tz_short,
+          delta=f"TF: {selected_tf}",
       )
 
     st.markdown("---")
-    st.subheader("🎯 Trade With Tuckyaa (TUCKYAA) Multi-Touch Engine")
+    st.subheader(f"🎯 Latest Setup for {selected_symbol}")
 
     if bot.signals:
       latest_sig = bot.signals[-1]
       is_buy = "Buy" in latest_sig["Action"]
       entry_p = latest_sig["Entry Price"]
       signal_time = latest_sig["Time"]
+      is_exp = latest_sig["Expired"]
 
-      if is_buy:
+      if is_exp:
+        st.warning(
+            f"⏳ **TWT DELTA SETUP: {latest_sig['Action']}**\n\n"
+            f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
+            f" #{latest_sig['Candle #']})\n"
+            f"- **Entry Price:** `{entry_p}`\n"
+            f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
+            f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
+            f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
+            "⚠️ *Warning:* **Don't use after 30 minutes!** Signal is older than"
+            " 30 mins."
+        )
+      elif is_buy:
         st.success(
             f"🟢 **TWT DELTA SETUP: {latest_sig['Action']}**\n\n"
-            f"🕒 **Candle Time (IST):** `{signal_time}` (Candle"
+            f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
             f" #{latest_sig['Candle #']})\n"
             f"- **Entry Price:** `{entry_p}`\n"
             f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
@@ -359,7 +621,7 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
       else:
         st.error(
             f"🔴 **TWT DELTA SETUP: {latest_sig['Action']}**\n\n"
-            f"🕒 **Candle Time (IST):** `{signal_time}` (Candle"
+            f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
             f" #{latest_sig['Candle #']})\n"
             f"- **Entry Price:** `{entry_p}`\n"
             f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
@@ -374,13 +636,8 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
           " Support."
       )
 
-    if bot.signals:
-      st.markdown("---")
-      st.subheader("📋 Verified TWT Signal History")
-      st.dataframe(pd.DataFrame(bot.signals[-5:]), width="stretch")
-
     st.markdown("---")
-    st.subheader(f"📈 {selected_symbol} 5m Real-Time Chart")
+    st.subheader(f"📈 {selected_symbol} {selected_tf} Real-Time Chart")
     fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
 
     for c in bot.candles:
@@ -449,8 +706,10 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
       ax.set_ylim(min(lows) - margin, max(highs) + margin)
 
     for sig in bot.signals[-3:]:
-      tag = "B" if "Buy" in sig["Action"] else "S"
-      tag_color = "#00e676" if tag == "B" else "#ff1744"
+      tag = "EX" if sig["Expired"] else ("B" if "Buy" in sig["Action"] else "S")
+      tag_color = (
+          "#ffa726" if sig["Expired"] else ("#00e676" if tag == "B" else "#ff1744")
+      )
       ax.text(
           sig["Candle #"],
           sig["Entry Price"],
@@ -461,7 +720,7 @@ with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
       )
 
     ax.set_title(
-        f"{selected_symbol} 5m — TRADE WITH TUCKYAA (TUCKYAA) Delta Engine",
+        f"{selected_symbol} {selected_tf} — TRADE WITH TUCKYAA (TUCKYAA) Delta Engine ({tz_short})",
         color="white",
         fontsize=14,
     )
