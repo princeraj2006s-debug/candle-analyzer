@@ -178,12 +178,13 @@ else:
     st.rerun()
 
 # ---------------------------------------------------------
-# TRADING TIMEZONES & ASSETS
+# GLOBAL TRADING TIMEZONES & ASSETS
 # ---------------------------------------------------------
 TRADING_TIMEZONES = {
     "(UTC+5:30) Kolkata / India (IST)": timezone(
         timedelta(hours=5, minutes=30)
     ),
+    "(UTC+1:00) Berlin / Paris / CET": timezone(timedelta(hours=1)),
     "(UTC+0:00) London / UTC / GMT": timezone.utc,
     "(UTC-5:00) New York / US East (EST)": timezone(timedelta(hours=-5)),
     "(UTC+8:00) Singapore / Hong Kong (SGT)": timezone(timedelta(hours=8)),
