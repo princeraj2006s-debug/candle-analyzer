@@ -422,7 +422,6 @@ class TWTMultiRuleEngine:
           "is_within_1hr": is_within_1hr,
       })
 
-    # State tracking variables for all rules
     res_wick_touched = False
     res_inside_count = 0
     res_ready_for_retest = False
@@ -441,9 +440,7 @@ class TWTMultiRuleEngine:
       atr = c["atr"]
       dec = get_decimals(c["close"])
 
-      # ==========================================
-      # RULE 1 & 2: ORIGINAL BREAKOUT & WICK RETEST
-      # ==========================================
+      # --- SHORT LOGIC (RESISTANCE) ---
       if c["high"] >= self.resistance_lvl - (0.4 * atr):
         res_wick_touched = True
 
@@ -482,6 +479,7 @@ class TWTMultiRuleEngine:
             "Is_Within_1hr": c["is_within_1hr"],
         })
 
+      # --- LONG LOGIC (SUPPORT) ---
       if c["low"] <= self.support_lvl + (0.4 * atr):
         sup_wick_touched = True
 
@@ -520,13 +518,8 @@ class TWTMultiRuleEngine:
             "Is_Within_1hr": c["is_within_1hr"],
         })
 
-      # ==========================================
-      # NEW RULE: RESISTANCE UPPER REJECTION / CONTINUATION SHORT
-      # ==========================================
-      # Green candle crosses above resistance, pullback towards/at resistance,
-      # buyers look weak (small green body / upper wick rejection / strong red candle), give Short entry above resistance.
+      # --- NEW RULE: RESISTANCE UPPER REJECTION SHORT ---
       if not signal_given and c["close"] >= self.resistance_lvl:
-        # Check previous 2-3 candles for buyer weakness / rejection near or above resistance
         prev_c = self.candles[i - 1] if i > 0 else c
         if (
             prev_c["color"] == "Green"
@@ -553,11 +546,7 @@ class TWTMultiRuleEngine:
               "Is_Within_1hr": c["is_within_1hr"],
           })
 
-      # ==========================================
-      # NEW RULE: SUPPORT LOWER REJECTION / CONTINUATION LONG
-      # ==========================================
-      # Seller breaks below support, buyers try to push up or sellers fail,
-      # red candle weak / lower wick rejection / strong green candle below support, give Long entry.
+      # --- NEW RULE: SUPPORT LOWER REJECTION LONG ---
       if not signal_given and c["close"] <= self.support_lvl:
         prev_c = self.candles[i - 1] if i > 0 else c
         if (
@@ -607,9 +596,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner(
-    "⚡ Scanning all assets with multi-rule & strict alignment..."
-):
+with st.spinner("⚡ Scanning all assets with multi-rule & strict alignment..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -714,21 +701,22 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
     st.dataframe(df_history, width="stretch")
 
-  # Chart Rendering with Clear Visibility
+  # --- CLEAN ORIGINAL CHART RENDERER ---
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
   for c in bot.candles:
     col = "#26a69a" if c["color"] == "Green" else "#ef5350"
-    body_size = abs(c["close"] - c["open"])
-    min_body = curr_p * 0.0003
-    plot_height = max(body_size, min_body)
-    plot_bottom = (
-        min(c["open"], c["close"]) - ((min_body - body_size) / 2)
-        if body_size < min_body
-        else min(c["open"], c["close"])
-    )
+    body_bottom = min(c["open"], c["close"])
+    body_height = max(abs(c["close"] - c["open"]), curr_p * 0.0001)
 
-    ax.bar(c["id"], plot_height, bottom=plot_bottom, color=col, width=0.7)
-    ax.vlines(c["id"], c["low"], c["high"], color="#b2b5be", linewidth=1.3)
+    ax.bar(
+        c["id"],
+        body_height,
+        bottom=body_bottom,
+        color=col,
+        width=0.6,
+        align="center",
+    )
+    ax.vlines(c["id"], c["low"], c["high"], color=col, linewidth=1.0)
 
   ax.axhline(
       bot.resistance_lvl,
