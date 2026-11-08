@@ -218,7 +218,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Breakout & Retest Confirmation Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Advanced Multi-Candle Retest Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -248,7 +248,7 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
-st.sidebar.text("Logic            : Breakout -> Retest -> Confirmation")
+st.sidebar.text("Logic            : 2-Candle Breakout -> Pullback Retest")
 st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss          : ATR Managed")
 
@@ -317,7 +317,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTBreakoutRetestEngine:
+class TWTAdvancedRetestEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -414,8 +414,11 @@ class TWTBreakoutRetestEngine:
           "is_within_1hr": is_within_1hr,
       })
 
-    resistance_broken = False
-    support_broken = False
+    # State variables for multi-candle tracking
+    resistance_crossed_count = 0
+    support_crossed_count = 0
+    resistance_inside_zone = False
+    support_inside_zone = False
     signal_given = False
 
     for i in range(5, len(self.candles)):
@@ -426,67 +429,87 @@ class TWTBreakoutRetestEngine:
       atr = c["atr"]
       dec = get_decimals(c["close"])
 
-      # Breakout & Retest Logic for Resistance (Short)
-      if c["close"] > self.resistance_lvl:
-        resistance_broken = True
+      # --- SHORT LOGIC (RESISTANCE) ---
+      # Step 1: Price goes above resistance
+      if c["high"] > self.resistance_lvl:
+        resistance_crossed_count += 1
 
+      # Step 2: Price comes back inside resistance (at least 2 red candles closing inside)
       if (
-          resistance_broken
-          and not signal_given
-          and c["high"] >= self.resistance_lvl - (0.6 * atr)
-          and c["close"] <= self.resistance_lvl + (0.3 * atr)
+          resistance_crossed_count >= 1
+          and c["close"] < self.resistance_lvl
+          and c["color"] == "Red"
       ):
-        if c["color"] == "Red":  # Seller confirmation candle
-          signal_given = True
-          sl = round(c["high"] + (1.2 * atr), dec)
-          tp1 = round(c["close"] - (1.0 * atr), dec)
-          tp2 = round(c["close"] - (2.2 * atr), dec)
-          tp3 = round(c["close"] - (3.8 * atr), dec)
+        resistance_inside_zone = True
 
-          self.signals.append({
-              "Asset": self.symbol,
-              "Time": c["time"],
-              "Candle #": c["id"],
-              "Setup": "Resistance Breakout & Retest Short",
-              "Action": "Sell / Short (S) [Retest Confirmed] 🔴",
-              "Entry Price": round(c["close"], dec),
-              "Stop Loss (SL)": sl,
-              "TP 1": tp1,
-              "TP 2": tp2,
-              "TP 3": tp3,
-              "Is_Within_1hr": c["is_within_1hr"],
-          })
-
-      # Breakout & Retest Logic for Support (Long)
-      if c["close"] < self.support_lvl:
-        support_broken = True
-
+      # Step 3: Retest pullback (weak green candle) after coming inside -> SHORT ENTRY
       if (
-          support_broken
+          resistance_inside_zone
           and not signal_given
-          and c["low"] <= self.support_lvl + (0.6 * atr)
-          and c["close"] >= self.support_lvl - (0.3 * atr)
+          and c["color"] == "Green"
+          and c["high"]
+          >= self.resistance_lvl - (0.8 * atr)  # Retesting near resistance
       ):
-        if c["color"] == "Green":  # Buyer confirmation candle
-          signal_given = True
-          sl = round(c["low"] - (1.2 * atr), dec)
-          tp1 = round(c["close"] + (1.0 * atr), dec)
-          tp2 = round(c["close"] + (2.2 * atr), dec)
-          tp3 = round(c["close"] + (3.8 * atr), dec)
+        signal_given = True
+        sl = round(c["high"] + (1.2 * atr), dec)
+        tp1 = round(c["close"] - (1.0 * atr), dec)
+        tp2 = round(c["close"] - (2.2 * atr), dec)
+        tp3 = round(c["close"] - (3.8 * atr), dec)
 
-          self.signals.append({
-              "Asset": self.symbol,
-              "Time": c["time"],
-              "Candle #": c["id"],
-              "Setup": "Support Breakout & Retest Long",
-              "Action": "Buy / Long (B) [Retest Confirmed] 🟢",
-              "Entry Price": round(c["close"], dec),
-              "Stop Loss (SL)": sl,
-              "TP 1": tp1,
-              "TP 2": tp2,
-              "TP 3": tp3,
-              "Is_Within_1hr": c["is_within_1hr"],
-          })
+        self.signals.append({
+            "Asset": self.symbol,
+            "Time": c["time"],
+            "Candle #": c["id"],
+            "Setup": "Resistance 2-Candle Retest Short",
+            "Action": "Sell / Short (S) [Confirmed Retest] 🔴",
+            "Entry Price": round(c["close"], dec),
+            "Stop Loss (SL)": sl,
+            "TP 1": tp1,
+            "TP 2": tp2,
+            "TP 3": tp3,
+            "Is_Within_1hr": c["is_within_1hr"],
+        })
+
+      # --- LONG LOGIC (SUPPORT) ---
+      # Step 1: Price goes below support
+      if c["low"] < self.support_lvl:
+        support_crossed_count += 1
+
+      # Step 2: Price comes back above support (at least 2 green candles closing above)
+      if (
+          support_crossed_count >= 1
+          and c["close"] > self.support_lvl
+          and c["color"] == "Green"
+      ):
+        support_inside_zone = True
+
+      # Step 3: Retest pullback (weak red candle) after coming above -> LONG ENTRY
+      if (
+          support_inside_zone
+          and not signal_given
+          and c["color"] == "Red"
+          and c["low"]
+          <= self.support_lvl + (0.8 * atr)  # Retesting near support
+      ):
+        signal_given = True
+        sl = round(c["low"] - (1.2 * atr), dec)
+        tp1 = round(c["close"] + (1.0 * atr), dec)
+        tp2 = round(c["close"] + (2.2 * atr), dec)
+        tp3 = round(c["close"] + (3.8 * atr), dec)
+
+        self.signals.append({
+            "Asset": self.symbol,
+            "Time": c["time"],
+            "Candle #": c["id"],
+            "Setup": "Support 2-Candle Retest Long",
+            "Action": "Buy / Long (B) [Confirmed Retest] 🟢",
+            "Entry Price": round(c["close"], dec),
+            "Stop Loss (SL)": sl,
+            "TP 1": tp1,
+            "TP 2": tp2,
+            "TP 3": tp3,
+            "Is_Within_1hr": c["is_within_1hr"],
+        })
 
 
 # ---------------------------------------------------------
@@ -502,7 +525,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTBreakoutRetestEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTAdvancedRetestEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -510,7 +533,9 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets for Breakout & Retest setups..."):
+with st.spinner(
+    "⚡ Scanning all 20 assets for multi-candle retest setups..."
+):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -523,22 +548,19 @@ with st.spinner("⚡ Scanning all 20 assets for Breakout & Retest setups..."):
         master_signals.append(latest)
 
 if master_signals:
-  st.success(
-      f"✅ Found {len(master_signals)} active Breakout & Retest setup(s) across"
-      " assets!"
-  )
+  st.success(f"✅ Found {len(master_signals)} active retest setup(s) across!")
   df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
   st.info(
-      "ℹ️ No new entries in the last 1 hour. Waiting for market breakout &"
-      " retest..."
+      "ℹ️ No active retest signals in the last 1 hour. Waiting for multi-candle"
+      " level reaction..."
   )
 
 # ---------------------------------------------------------
-# MANUAL ASSET SELECTOR & CHART VIEWER (Shows all old & new history)
+# MANUAL ASSET SELECTOR & CHART VIEWER
 # ---------------------------------------------------------
 st.markdown("---")
 st.subheader("📊 Manual Asset Inspector & Chart")
@@ -546,16 +568,14 @@ st.subheader("📊 Manual Asset Inspector & Chart")
 selected_symbol = st.selectbox(
     "🔍 Select Asset to Load Chart & Complete History",
     options=ASSET_LIST,
-    index=0,
+    index=5,
 )
 
 if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTBreakoutRetestEngine(
-      df_5, df_4, df_6, selected_symbol, active_tz
-  )
+  bot = TWTAdvancedRetestEngine(df_5, df_4, df_6, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -590,8 +610,8 @@ if bot.df_5 is not None and not bot.df_5.empty:
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Support breakout -> Retest pullback -> Buyer"
-          " strength confirmed!"
+          "📌 *Instructions:* Support breakout -> Re-entry -> Retest pullback"
+          " -> Buyer strength confirmed!"
       )
     else:
       st.error(
@@ -602,17 +622,17 @@ if bot.df_5 is not None and not bot.df_5.empty:
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Resistance breakout -> Retest pullback -> Seller"
-          " strength confirmed!"
+          "📌 *Instructions:* Resistance breakout -> Re-entry -> Retest"
+          " pullback -> Seller strength confirmed!"
       )
   else:
     st.warning(
-        "🟡 **STATUS: WAITING FOR BREAKOUT & RETEST SETUP**\n\n"
-        "📌 *Instructions:* Monitoring level breakout, pullback, and candle"
-        " confirmation."
+        "🟡 **STATUS: WAITING FOR MULTI-CANDLE RETEST SETUP**\n\n"
+        "📌 *Instructions:* Monitoring multi-candle breakout and retest"
+        " pullback."
     )
 
-  # Complete Signal History (Shows both old and new signals)
+  # Complete Signal History
   if bot.signals:
     st.markdown("---")
     st.subheader(
@@ -697,7 +717,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Breakout & Retest Engine"
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Advanced Retest Engine"
       f" ({tz_short})",
       color="white",
       fontsize=14,
