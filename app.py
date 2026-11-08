@@ -218,7 +218,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Ultimate Wick & 2-Candle Retest Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Ultimate Multi-Rule Retest Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -235,7 +235,7 @@ with col_tz:
 tz_short = selected_tz_name.split(")")[0] + ")"
 
 # Sidebar Panel
-st.sidebar.markdown("### 🤖 TWT Ultimate Price Action Panel")
+st.sidebar.markdown("### 🤖 TWT Multi-Rule Engine Panel")
 st.sidebar.markdown("---")
 server_time_target = datetime.now(active_tz)
 st.sidebar.text(
@@ -245,10 +245,10 @@ st.sidebar.text("Support Ref (6H)   ———  05:30 IST Candle Low")
 st.sidebar.text("Resistance Ref (4H) ———  01:30 IST Candle High")
 st.sidebar.text("No-Trade Zone      ———  01:00 ➔ 06:00 IST")
 st.sidebar.markdown("---")
-st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
+st.sidebar.text("Exchange Platform  — Delta Exchange Direct")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
-st.sidebar.text("Logic            : Wick Touch + 2-Candle Retest")
+st.sidebar.text("Logic            : Classic + Wick + Above/Below Rejection Rules")
 st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss          : ATR Managed")
 
@@ -265,23 +265,23 @@ def get_decimals(price):
 @st.cache_data(ttl=30)
 def fetch_twt_delta_data(symbol, tf):
   exchanges_to_try = [
+      (ccxt.delta, symbol),
       (ccxt.binance, symbol),
       (ccxt.bybit, symbol),
-      (ccxt.kucoin, symbol),
   ]
 
-  # Fallback ticker mapping for RENDER or FIL if named differently on exchanges
-  symbol_variants = [symbol]
+  base, quote = symbol.split("/")
+  variants = [symbol, f"{base}{quote}", f"{base}/USDT:USDT"]
   if symbol == "RENDER/USDT":
-    symbol_variants = ["RENDER/USDT", "RENDERUSDT", "RNDR/USDT"]
+    variants.extend(["RNDR/USDT", "RENDERUSDT", "RNDRUSDT"])
   elif symbol == "FIL/USDT":
-    symbol_variants = ["FIL/USDT", "FILUSDT"]
+    variants.extend(["FILUSDT"])
 
   for ex_class, _ in exchanges_to_try:
     try:
       exchange = ex_class({"enableRateLimit": True, "timeout": 15000})
       exchange.load_markets()
-      for sym in symbol_variants:
+      for sym in variants:
         if sym in exchange.markets:
           ohlcv_tf = exchange.fetch_ohlcv(sym, timeframe=tf, limit=100)
           ohlcv_4h = exchange.fetch_ohlcv(sym, timeframe="4h", limit=25)
@@ -319,25 +319,13 @@ def fetch_twt_delta_data(symbol, tf):
             )
             df_6["timestamp"] = pd.to_datetime(df_6["timestamp"], unit="ms")
             df_6 = df_6.set_index("timestamp")
-
-            # --- REAL GOLD (XAUT) PRICE CALIBRATION ---
-            # Calibrating XAUT to perfectly align with spot gold scale if needed
-            if symbol == "XAUT/USDT":
-              gold_calibration_multiplier = (
-                  1.0025  # Fine-tuning offset calibration
-              )
-              for col in ["Open", "High", "Low", "Close"]:
-                df_5[col] = df_5[col] * gold_calibration_multiplier
-                df_4[col] = df_4[col] * gold_calibration_multiplier
-                df_6[col] = df_6[col] * gold_calibration_multiplier
-
             return df_5, df_4, df_6
     except Exception:
       continue
   return None, None, None
 
 
-class TWTUltimateEngine:
+class TWTMultiRuleEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -357,7 +345,7 @@ class TWTUltimateEngine:
     IST = timezone(timedelta(hours=5, minutes=30))
     current_utc_time = datetime.now(timezone.utc)
 
-    # 1. Calculate Key Levels
+    # 1. Key Levels Calculation
     if self.df_4 is not None and not self.df_4.empty:
       idx_utc = (
           self.df_4.index.tz_localize("UTC")
@@ -434,6 +422,7 @@ class TWTUltimateEngine:
           "is_within_1hr": is_within_1hr,
       })
 
+    # State tracking variables for all rules
     res_wick_touched = False
     res_inside_count = 0
     res_ready_for_retest = False
@@ -452,7 +441,9 @@ class TWTUltimateEngine:
       atr = c["atr"]
       dec = get_decimals(c["close"])
 
-      # --- SHORT LOGIC (RESISTANCE) ---
+      # ==========================================
+      # RULE 1 & 2: ORIGINAL BREAKOUT & WICK RETEST
+      # ==========================================
       if c["high"] >= self.resistance_lvl - (0.4 * atr):
         res_wick_touched = True
 
@@ -481,8 +472,8 @@ class TWTUltimateEngine:
             "Asset": self.symbol,
             "Time": c["time"],
             "Candle #": c["id"],
-            "Setup": "Resistance Wick + 2-Candle Retest Short",
-            "Action": "Sell / Short (S) [Confirmed Retest] 🔴",
+            "Setup": "Resistance Retest Short",
+            "Action": "Sell / Short (S) [Confirmed] 🔴",
             "Entry Price": round(c["close"], dec),
             "Stop Loss (SL)": sl,
             "TP 1": tp1,
@@ -491,7 +482,6 @@ class TWTUltimateEngine:
             "Is_Within_1hr": c["is_within_1hr"],
         })
 
-      # --- LONG LOGIC (SUPPORT) ---
       if c["low"] <= self.support_lvl + (0.4 * atr):
         sup_wick_touched = True
 
@@ -520,8 +510,8 @@ class TWTUltimateEngine:
             "Asset": self.symbol,
             "Time": c["time"],
             "Candle #": c["id"],
-            "Setup": "Support Wick + 2-Candle Retest Long",
-            "Action": "Buy / Long (B) [Confirmed Retest] 🟢",
+            "Setup": "Support Retest Long",
+            "Action": "Buy / Long (B) [Confirmed] 🟢",
             "Entry Price": round(c["close"], dec),
             "Stop Loss (SL)": sl,
             "TP 1": tp1,
@@ -529,6 +519,71 @@ class TWTUltimateEngine:
             "TP 3": tp3,
             "Is_Within_1hr": c["is_within_1hr"],
         })
+
+      # ==========================================
+      # NEW RULE: RESISTANCE UPPER REJECTION / CONTINUATION SHORT
+      # ==========================================
+      # Green candle crosses above resistance, pullback towards/at resistance,
+      # buyers look weak (small green body / upper wick rejection / strong red candle), give Short entry above resistance.
+      if not signal_given and c["close"] >= self.resistance_lvl:
+        # Check previous 2-3 candles for buyer weakness / rejection near or above resistance
+        prev_c = self.candles[i - 1] if i > 0 else c
+        if (
+            prev_c["color"] == "Green"
+            and (prev_c["high"] - max(prev_c["open"], prev_c["close"]))
+            > abs(prev_c["close"] - prev_c["open"]) * 1.2
+        ) or (c["color"] == "Red" and c["close"] < self.resistance_lvl):
+          signal_given = True
+          sl = round(c["high"] + (1.2 * atr), dec)
+          tp1 = round(c["close"] - (1.0 * atr), dec)
+          tp2 = round(c["close"] - (2.2 * atr), dec)
+          tp3 = round(c["close"] - (3.8 * atr), dec)
+
+          self.signals.append({
+              "Asset": self.symbol,
+              "Time": c["time"],
+              "Candle #": c["id"],
+              "Setup": "Resistance Upper Rejection Short",
+              "Action": "Sell / Short (S) [Upper Rejection] 🔴",
+              "Entry Price": round(c["close"], dec),
+              "Stop Loss (SL)": sl,
+              "TP 1": tp1,
+              "TP 2": tp2,
+              "TP 3": tp3,
+              "Is_Within_1hr": c["is_within_1hr"],
+          })
+
+      # ==========================================
+      # NEW RULE: SUPPORT LOWER REJECTION / CONTINUATION LONG
+      # ==========================================
+      # Seller breaks below support, buyers try to push up or sellers fail,
+      # red candle weak / lower wick rejection / strong green candle below support, give Long entry.
+      if not signal_given and c["close"] <= self.support_lvl:
+        prev_c = self.candles[i - 1] if i > 0 else c
+        if (
+            prev_c["color"] == "Red"
+            and (min(prev_c["open"], prev_c["close"]) - prev_c["low"])
+            > abs(prev_c["close"] - prev_c["open"]) * 1.2
+        ) or (c["color"] == "Green" and c["close"] > self.support_lvl):
+          signal_given = True
+          sl = round(c["low"] - (1.2 * atr), dec)
+          tp1 = round(c["close"] + (1.0 * atr), dec)
+          tp2 = round(c["close"] + (2.2 * atr), dec)
+          tp3 = round(c["close"] + (3.8 * atr), dec)
+
+          self.signals.append({
+              "Asset": self.symbol,
+              "Time": c["time"],
+              "Candle #": c["id"],
+              "Setup": "Support Lower Rejection Long",
+              "Action": "Buy / Long (B) [Lower Rejection] 🟢",
+              "Entry Price": round(c["close"], dec),
+              "Stop Loss (SL)": sl,
+              "TP 1": tp1,
+              "TP 2": tp2,
+              "TP 3": tp3,
+              "Is_Within_1hr": c["is_within_1hr"],
+          })
 
 
 # ---------------------------------------------------------
@@ -544,7 +599,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTUltimateEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTMultiRuleEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -552,7 +607,9 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets (including RENDER & FIL)..."):
+with st.spinner(
+    "⚡ Scanning all assets with multi-rule & strict alignment..."
+):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -565,16 +622,13 @@ with st.spinner("⚡ Scanning all 20 assets (including RENDER & FIL)..."):
         master_signals.append(latest)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} active ultimate setup(s)!")
+  st.success(f"✅ Found {len(master_signals)} active multi-rule setup(s)!")
   df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
-  st.info(
-      "ℹ️ No active ultimate signals in the last 1 hour. Waiting for wick touch"
-      " & 2-candle retest..."
-  )
+  st.info("ℹ️ No active signals in the last 1 hour. Waiting for setup...")
 
 # ---------------------------------------------------------
 # MANUAL ASSET SELECTOR & CHART VIEWER
@@ -592,7 +646,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTUltimateEngine(df_5, df_4, df_6, selected_symbol, active_tz)
+  bot = TWTMultiRuleEngine(df_5, df_4, df_6, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -608,7 +662,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Ultimate Active")
+    st.metric(label="Timezone", value=tz_short, delta="Multi-Rule Active")
 
   if bot.signals:
     latest_sig = bot.signals[-1]
@@ -620,33 +674,33 @@ if bot.df_5 is not None and not bot.df_5.empty:
 
     if is_buy:
       st.success(
-          f"🟢 **TWT ULTIMATE SETUP: {latest_sig['Action']}**\n\n"
+          f"🟢 **TWT MULTI-RULE SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Support wick touch -> 2 Candles above -> Retest"
-          " pullback -> Buyer confirmed!"
+          "📌 *Instructions:* Support rejection / retest confirmed -> Buyer"
+          " strength!"
       )
     else:
       st.error(
-          f"🔴 **TWT ULTIMATE SETUP: {latest_sig['Action']}**\n\n"
+          f"🔴 **TWT MULTI-RULE SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Resistance wick touch -> 2 Candles inside -> Retest"
-          " pullback -> Seller confirmed!"
+          "📌 *Instructions:* Resistance upper rejection / retest confirmed ->"
+          " Seller strength!"
       )
   else:
     st.warning(
-        "🟡 **STATUS: WAITING FOR WICK TOUCH & 2-CANDLE RETEST**\n\n"
-        "📌 *Instructions:* Monitoring wick touches and multi-candle"
-        " confirmations."
+        "🟡 **STATUS: WAITING FOR MULTI-RULE SETUP**\n\n"
+        "📌 *Instructions:* Monitoring exact levels, wicks, and rejection"
+        " rules."
     )
 
   # Complete Signal History
@@ -660,7 +714,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
     st.dataframe(df_history, width="stretch")
 
-  # Chart Rendering
+  # Chart Rendering with Clear Visibility
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
   for c in bot.candles:
     col = "#26a69a" if c["color"] == "Green" else "#ef5350"
@@ -734,7 +788,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Ultimate Engine"
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Multi-Rule Engine"
       f" ({tz_short})",
       color="white",
       fontsize=14,
