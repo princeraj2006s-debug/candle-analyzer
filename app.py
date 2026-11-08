@@ -284,7 +284,7 @@ class TWTUltimateEngine:
 
     signal_given = False
 
-    # Proximity & Probability checking for dashboard
+    # Default Proximity Status (for when no recent signal is triggered)
     last_c = self.candles[-1] if self.candles else None
     if last_c:
       dist_to_res = abs(last_c["close"] - self.resistance_lvl)
@@ -336,8 +336,9 @@ class TWTUltimateEngine:
         tp2 = round(c["close"] - (2.2 * atr), dec)
         tp3 = round(c["close"] - (3.8 * atr), dec)
 
-        self.market_status = "🔴 Confirmed Short Setup Triggered"
-        self.est_time = "Active Now"
+        if c["is_within_1hr"]:
+          self.market_status = "🔴 Confirmed Short Setup Triggered"
+          self.est_time = "Active Now"
 
         self.signals.append({
             "Asset": self.symbol,
@@ -378,8 +379,9 @@ class TWTUltimateEngine:
         tp2 = round(c["close"] + (2.2 * atr), dec)
         tp3 = round(c["close"] + (3.8 * atr), dec)
 
-        self.market_status = "🟢 Confirmed Long Setup Triggered"
-        self.est_time = "Active Now"
+        if c["is_within_1hr"]:
+          self.market_status = "🟢 Confirmed Long Setup Triggered"
+          self.est_time = "Active Now"
 
         self.signals.append({
             "Asset": self.symbol,
@@ -484,8 +486,11 @@ if bot.df_5 is not None and not bot.df_5.empty:
       f"⏱️ **Expected Entry Timing / Probability:** `{bot.est_time}`"
   )
 
-  if bot.signals:
-    latest_sig = bot.signals[-1]
+  # STRICT FILTER: Only consider signals that occurred within the last 1 hour
+  recent_signals = [s for s in bot.signals if s.get("Is_Within_1hr", False)]
+
+  if recent_signals:
+    latest_sig = recent_signals[-1]
     is_buy = "Buy" in latest_sig["Action"]
     entry_p = latest_sig["Entry Price"]
     signal_time = latest_sig["Time"]
@@ -518,12 +523,14 @@ if bot.df_5 is not None and not bot.df_5.empty:
       )
   else:
     st.warning(
-        "🟡 **STATUS: WAITING FOR CONFIRMATION (No entry given yet)**\n\n"
-        "📌 *Instructions:* Engine will only trigger entry once candles fully"
-        " confirm support/resistance retest."
+        "🟡 **STATUS: WAITING FOR CONFIRMATION (No recent signal in the last 1"
+        " hour)**\n\n"
+        "📌 *Instructions:* Engine will only trigger an active trade box when"
+        " a fresh signal is confirmed within the last 1 hour. Currently"
+        " scanning price action."
     )
 
-  # Complete Signal History
+  # Complete Signal History (Shows all old and new history in table below)
   if bot.signals:
     st.markdown("---")
     st.subheader(
