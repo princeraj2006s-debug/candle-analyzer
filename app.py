@@ -1,6 +1,4 @@
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, time, timedelta, timezone
-import sqlite3
 import ccxt
 import matplotlib.pyplot as plt
 import numpy as np
@@ -12,7 +10,7 @@ st.set_page_config(
     page_title="TWT Delta Pro by TUCKYAA", page_icon="⚡", layout="wide"
 )
 
-# Hide Streamlit Header, Footer, Menu & GitHub Icon via CSS
+# Hide Streamlit Header, Footer & Menu via CSS
 hide_streamlit_style = """
     <style>
     #MainMenu {visibility: hidden;}
@@ -22,165 +20,15 @@ hide_streamlit_style = """
     """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-# ---------------------------------------------------------
-# DATABASE INITIALIZATION (SQLite Authentication)
-# ---------------------------------------------------------
-conn = sqlite3.connect("twt_users.db", check_same_thread=False)
-c = conn.cursor()
-c.execute("""CREATE TABLE IF NOT EXISTS users 
-             (username TEXT PRIMARY KEY, password TEXT, status TEXT, role TEXT)""")
+# Safe Auto-refresh every 30 seconds to prevent 502 Bad Gateway
+count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
-# Default Admin Account (Username: tuckyaa, Password: 8002771200)
-c.execute(
-    "INSERT OR IGNORE INTO users VALUES ('tuckyaa', '8002771200', 'approved',"
-    " 'admin')"
+st.title(
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — First-Touch Level Rejection & Breakout"
+    " Engine"
 )
-conn.commit()
 
-# ---------------------------------------------------------
-# AUTHENTICATION & ACCESS GATE
-# ---------------------------------------------------------
-if "user" not in st.session_state:
-  st.session_state.user = None
-if "role" not in st.session_state:
-  st.session_state.role = None
-
-
-def login_register_page():
-  st.title("🔒 TRADE WITH TUCKYAA — VIP Portal")
-  st.markdown("Login or Request Access to the Professional Delta Trading Engine.")
-
-  tab1, tab2 = st.tabs(["🔑 Login", "📝 Request Access"])
-
-  with tab1:
-    st.subheader("User Login")
-    l_user = st.text_input("Username / Mobile Number", key="l_user")
-    l_pass = st.text_input("Password", type="password", key="l_pass")
-    if st.button("Login to Dashboard"):
-      c.execute(
-          "SELECT password, status, role FROM users WHERE username=?", (l_user,)
-      )
-      row = c.fetchone()
-      if row:
-        db_pass, db_status, db_role = row
-        if db_pass == l_pass:
-          if db_status == "blocked":
-            st.error(
-                "❌ Your service has been blocked by Admin (Tuckyaa). Contact"
-                " support."
-            )
-            return
-
-          if db_status == "approved":
-            st.session_state.user = l_user
-            st.session_state.role = db_role
-            st.success("Login successful!")
-            st.rerun()
-          else:
-            st.warning(
-                "⏳ Your account is pending Admin approval. Please wait for"
-                " Tuckyaa to approve."
-            )
-        else:
-          st.error("❌ Incorrect Password!")
-      else:
-        st.error("❌ Username not found! Please register first.")
-
-  with tab2:
-    st.subheader("New User Registration")
-    r_user = st.text_input("Choose Username / Mobile Number", key="r_user")
-    r_pass = st.text_input("Choose Password", type="password", key="r_pass")
-    if st.button("Submit Access Request"):
-      if r_user and r_pass:
-        try:
-          c.execute(
-              "INSERT INTO users VALUES (?, ?, 'pending', 'user')",
-              (r_user, r_pass),
-          )
-          conn.commit()
-          st.success(
-              "✅ Request submitted successfully! Admin (Tuckyaa) will approve"
-              " your account soon."
-          )
-        except sqlite3.IntegrityError:
-          st.error(
-              "❌ Username already exists! Try logging in or use another name."
-          )
-      else:
-        st.warning("Please fill in all fields.")
-
-
-if st.session_state.user is None:
-  login_register_page()
-  st.stop()
-
-# ---------------------------------------------------------
-# ADMIN PANEL (Visible ONLY to Admin 'tuckyaa')
-# ---------------------------------------------------------
-if st.session_state.role == "admin":
-  st.sidebar.markdown("---")
-  st.sidebar.markdown("### 👑 Admin Control Panel")
-  if st.sidebar.button("Logout Admin"):
-    st.session_state.user = None
-    st.session_state.role = None
-    st.rerun()
-
-  with st.expander("🛠️ Manage User Approvals & Services (Admin Only)"):
-    st.subheader("Pending User Requests")
-    c.execute("SELECT username FROM users WHERE status='pending'")
-    pending_users = c.fetchall()
-
-    if pending_users:
-      for p_user in pending_users:
-        u_name = p_user[0]
-        col_a, col_b = st.columns([2, 1])
-        col_a.write(f"User: **{u_name}**")
-        if col_b.button("Approve", key=f"app_{u_name}"):
-          c.execute(
-              "UPDATE users SET status='approved' WHERE username=?", (u_name,)
-          )
-          conn.commit()
-          st.success(f"Approved {u_name}!")
-          st.rerun()
-    else:
-      st.info("No pending user requests.")
-
-    st.markdown("---")
-    st.subheader("Manage Active Users (Block/Unblock Service)")
-    c.execute("SELECT username, status FROM users WHERE role!='admin'")
-    all_users = c.fetchall()
-
-    if all_users:
-      for u_name, u_status in all_users:
-        col1, col2 = st.columns([2, 1])
-        col1.write(f"**{u_name}** (Status: `{u_status}`)")
-        if u_status == "approved":
-          if col2.button("Block Service", key=f"block_{u_name}"):
-            c.execute(
-                "UPDATE users SET status='blocked' WHERE username=?", (u_name,)
-            )
-            conn.commit()
-            st.warning(f"Blocked {u_name}!")
-            st.rerun()
-        else:
-          if col2.button("Unblock", key=f"unblock_{u_name}"):
-            c.execute(
-                "UPDATE users SET status='approved' WHERE username=?", (u_name,)
-            )
-            conn.commit()
-            st.success(f"Unblocked {u_name}!")
-            st.rerun()
-    else:
-      st.info("No regular users registered yet.")
-else:
-  if st.sidebar.button("Logout"):
-    st.session_state.user = None
-    st.session_state.role = None
-    st.rerun()
-
-# ---------------------------------------------------------
-# GLOBAL TRADING TIMEZONES & ASSET LIST
-# ---------------------------------------------------------
+# Timezones & Asset List Configuration
 TRADING_TIMEZONES = {
     "(UTC+5:30) Kolkata / India (IST)": timezone(
         timedelta(hours=5, minutes=30)
@@ -214,17 +62,11 @@ ASSET_LIST = [
     "RENDER/USDT",
 ]
 
-count = st_autorefresh(interval=30000, key="twt_delta_refresh")
-
-st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — First-Touch Level Rejection & Breakout"
-    " Engine"
-)
-
-col_tf, col_tz = st.columns([1, 2])
-with col_tf:
-  selected_tf = st.selectbox(
-      "⏱️ Timeframe", options=["5m", "15m", "30m", "1h"], index=0
+# Layout Controls: Asset Selector & Timezone Selector
+col_sel, col_tz = st.columns([2, 2])
+with col_sel:
+  selected_symbol = st.selectbox(
+      "🔍 Select Delta Exchange Asset", options=ASSET_LIST, index=3
   )
 with col_tz:
   selected_tz_name = st.selectbox(
@@ -234,8 +76,8 @@ with col_tz:
 
 tz_short = selected_tz_name.split(")")[0] + ")"
 
-# Sidebar Panel
-st.sidebar.markdown("### 🤖 TWT First-Touch Engine")
+# Sidebar Session Box Panel
+st.sidebar.markdown("### 🤖 TWT Expert Panel")
 st.sidebar.markdown("---")
 server_time_target = datetime.now(active_tz)
 st.sidebar.text(
@@ -247,10 +89,10 @@ st.sidebar.text("No-Trade Zone      ———  01:00 ➔ 06:00 IST")
 st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Engine Strategy")
-st.sidebar.text("Trigger Mode     : First-Touch Level Rejection")
-st.sidebar.text("Volume Filter    : Institutional Spike Check")
-st.sidebar.text("Risk Management  : ATR Managed Stop Loss")
+st.sidebar.markdown("#### Trading Settings")
+st.sidebar.text("Entry method     : First-Touch Level Rejection")
+st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
+st.sidebar.text("Stop loss          : ATR Managed")
 
 
 def get_decimals(price):
@@ -263,7 +105,7 @@ def get_decimals(price):
 
 
 @st.cache_data(ttl=30)
-def fetch_twt_delta_data(symbol, tf):
+def fetch_twt_delta_data(symbol):
   exchanges_to_try = [
       (ccxt.binance, symbol),
       (ccxt.bybit, symbol),
@@ -272,28 +114,20 @@ def fetch_twt_delta_data(symbol, tf):
 
   for ex_class, sym in exchanges_to_try:
     try:
-      exchange = ex_class({"enableRateLimit": True, "timeout": 5000})
+      exchange = ex_class({"enableRateLimit": True, "timeout": 15000})
       exchange.load_markets()
       if sym in exchange.markets:
-        ohlcv_tf = exchange.fetch_ohlcv(sym, timeframe=tf, limit=100)
-        ohlcv_1h = exchange.fetch_ohlcv(sym, timeframe="1h", limit=30)
+        ohlcv_5m = exchange.fetch_ohlcv(sym, timeframe="5m", limit=80)
         ohlcv_4h = exchange.fetch_ohlcv(sym, timeframe="4h", limit=25)
         ohlcv_6h = exchange.fetch_ohlcv(sym, timeframe="6h", limit=25)
 
-        if ohlcv_tf and ohlcv_4h:
+        if ohlcv_5m and ohlcv_4h:
           df_5 = pd.DataFrame(
-              ohlcv_tf,
+              ohlcv_5m,
               columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
           )
           df_5["timestamp"] = pd.to_datetime(df_5["timestamp"], unit="ms")
           df_5 = df_5.set_index("timestamp")
-
-          df_1h = pd.DataFrame(
-              ohlcv_1h,
-              columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
-          )
-          df_1h["timestamp"] = pd.to_datetime(df_1h["timestamp"], unit="ms")
-          df_1h = df_1h.set_index("timestamp")
 
           df_4 = pd.DataFrame(
               ohlcv_4h,
@@ -319,19 +153,22 @@ def fetch_twt_delta_data(symbol, tf):
           )
           df_6["timestamp"] = pd.to_datetime(df_6["timestamp"], unit="ms")
           df_6 = df_6.set_index("timestamp")
-          return df_5, df_1h, df_4, df_6
+
+          return df_5, df_4, df_6, symbol
     except Exception:
       continue
   return None, None, None, None
 
 
+df_5m, df_4h, df_6h, active_symbol = fetch_twt_delta_data(selected_symbol)
+
+
 class TWTFirstTouchEngine:
 
-  def __init__(self, df_5, df_1h, df_4, df_6, symbol, user_tz):
-    self.df_5 = df_5
-    self.df_1h = df_1h
-    self.df_4 = df_4
-    self.df_6 = df_6
+  def __init__(self, df_5, df_4, df_6, symbol, user_tz):
+    self.df_5 = df_5 if df_5 is not None else None
+    self.df_4 = df_4 if df_4 is not None else None
+    self.df_6 = df_6 if df_6 is not None else None
     self.symbol = symbol
     self.user_tz = user_tz
     self.candles = []
@@ -339,62 +176,62 @@ class TWTFirstTouchEngine:
     self.resistance_lvl = 0
     self.support_lvl = 0
 
-  def calculate_and_scan(self):
+  def calculate_indicators(self):
+    IST = timezone(timedelta(hours=5, minutes=30))
+    if self.df_5 is not None and len(self.df_5) >= 20:
+      if self.df_4 is not None and not self.df_4.empty:
+        idx_utc = (
+            self.df_4.index.tz_localize("UTC")
+            if self.df_4.index.tz is None
+            else self.df_4.index
+        )
+        df_4_ist = idx_utc.tz_convert(IST)
+        mask_4h = df_4_ist.hour == 1
+        filtered_4h = self.df_4[mask_4h]
+        if not filtered_4h.empty:
+          self.resistance_lvl = float(filtered_4h["High"].iloc[-1])
+        else:
+          self.resistance_lvl = float(self.df_4["High"].iloc[-1])
+
+      if self.df_6 is not None and not self.df_6.empty:
+        idx_utc_6 = (
+            self.df_6.index.tz_localize("UTC")
+            if self.df_6.index.tz is None
+            else self.df_6.index
+        )
+        df_6_ist = idx_utc_6.tz_convert(IST)
+        mask_6h = df_6_ist.hour == 5
+        filtered_6h = self.df_6[mask_6h]
+        if not filtered_6h.empty:
+          self.support_lvl = float(filtered_6h["Low"].iloc[-1])
+        else:
+          self.support_lvl = float(self.df_6["Low"].iloc[-1])
+      elif self.df_4 is not None:
+        self.support_lvl = float(self.df_4["Low"].iloc[-1])
+
+      self.df_5["TR"] = np.maximum(
+          self.df_5["High"] - self.df_5["Low"],
+          np.maximum(
+              abs(self.df_5["High"] - self.df_5["Close"].shift(1)),
+              abs(self.df_5["Low"] - self.df_5["Close"].shift(1)),
+          ),
+      )
+      self.df_5["ATR"] = self.df_5["TR"].rolling(14).mean()
+      self.df_5["VolMA"] = self.df_5["Volume"].rolling(20).mean()
+
+  def parse_and_scan(self):
     if self.df_5 is None or self.df_5.empty:
       return
 
     IST = timezone(timedelta(hours=5, minutes=30))
-    current_utc_time = datetime.now(timezone.utc)
-
-    # Calculate Key Levels
-    if self.df_4 is not None and not self.df_4.empty:
-      idx_utc = (
-          self.df_4.index.tz_localize("UTC")
-          if self.df_4.index.tz is None
-          else self.df_4.index
-      )
-      df_4_ist = idx_utc.tz_convert(IST)
-      filtered_4h = self.df_4[df_4_ist.hour == 1]
-      self.resistance_lvl = (
-          float(filtered_4h["High"].iloc[-1])
-          if not filtered_4h.empty
-          else float(self.df_4["High"].iloc[-1])
-      )
-
-    if self.df_6 is not None and not self.df_6.empty:
-      idx_utc_6 = (
-          self.df_6.index.tz_localize("UTC")
-          if self.df_6.index.tz is None
-          else self.df_6.index
-      )
-      df_6_ist = idx_utc_6.tz_convert(IST)
-      filtered_6h = self.df_6[df_6_ist.hour == 5]
-      self.support_lvl = (
-          float(filtered_6h["Low"].iloc[-1])
-          if not filtered_6h.empty
-          else float(self.df_6["Low"].iloc[-1])
-      )
-    elif self.df_4 is not None:
-      self.support_lvl = float(self.df_4["Low"].iloc[-1])
-
-    # Indicators Calculation
-    self.df_5["TR"] = np.maximum(
-        self.df_5["High"] - self.df_5["Low"],
-        np.maximum(
-            abs(self.df_5["High"] - self.df_5["Close"].shift(1)),
-            abs(self.df_5["Low"] - self.df_5["Close"].shift(1)),
-        ),
-    )
-    self.df_5["ATR"] = self.df_5["TR"].rolling(14).mean()
-    self.df_5["VolMA"] = self.df_5["Volume"].rolling(20).mean()
 
     for idx, row in enumerate(self.df_5.iterrows()):
       dt_utc = row[0]
       if dt_utc.tzinfo is None:
         dt_utc = dt_utc.replace(tzinfo=timezone.utc)
       dt_ist = dt_utc.astimezone(IST)
-      dt_user_tz = dt_utc.astimezone(self.user_tz)
-      timestamp_str = dt_user_tz.strftime("%H:%M")
+      dt_user = dt_utc.astimezone(self.user_tz)
+      timestamp_str = dt_user.strftime("%H:%M")
 
       r = row[1]
       o, h, l, c, v = (
@@ -407,14 +244,10 @@ class TWTFirstTouchEngine:
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
       vol_ma = float(r["VolMA"]) if not pd.isna(r["VolMA"]) else v
 
-      age_minutes = (current_utc_time - dt_utc).total_seconds() / 60.0
-      is_within_1hr = age_minutes <= 60.0
-
       self.candles.append({
           "id": idx + 1,
           "time": timestamp_str,
           "dt_ist": dt_ist,
-          "dt_user": dt_user_tz,
           "color": "Green" if c >= o else "Red",
           "open": o,
           "high": h,
@@ -423,29 +256,28 @@ class TWTFirstTouchEngine:
           "volume": v,
           "vol_ma": vol_ma,
           "atr": atr,
-          "is_within_1hr": is_within_1hr,
       })
 
-    # State tracking to trigger ONLY on the FIRST touch/cross of the session
+    # First-touch trigger state variables
     resistance_triggered = False
     support_triggered = False
 
     for i in range(5, len(self.candles)):
       c = self.candles[i]
-      if time(1, 0) <= c["dt_ist"].time() <= time(6, 0):
+      c_time = c["dt_ist"].time()
+      if time(1, 0) <= c_time <= time(6, 0):
         continue
 
       atr = c["atr"]
       dec = get_decimals(c["close"])
       is_high_vol = c["volume"] > (c["vol_ma"] * 1.1)
 
-      # 1. FIRST TOUCH 4H RESISTANCE REJECTION (Sell / Short Signal)
+      # --- FIRST TOUCH 4H RESISTANCE REJECTION (Short Setup) ---
       is_touching_res = (
           c["high"] >= self.resistance_lvl - (0.6 * atr)
           and c["high"] <= self.resistance_lvl + (0.6 * atr)
       )
       if is_touching_res and not resistance_triggered and is_high_vol:
-        # Must close bearish (Red candle rejection from resistance)
         if c["color"] == "Red":
           resistance_triggered = True
           sl = round(c["high"] + (1.5 * atr), dec)
@@ -454,7 +286,6 @@ class TWTFirstTouchEngine:
           tp3 = round(c["close"] - (4.0 * atr), dec)
 
           self.signals.append({
-              "Asset": self.symbol,
               "Time": c["time"],
               "Candle #": c["id"],
               "Setup": "First-Touch Resistance Rejection",
@@ -464,16 +295,14 @@ class TWTFirstTouchEngine:
               "TP 1": tp1,
               "TP 2": tp2,
               "TP 3": tp3,
-              "Is_Within_1hr": c["is_within_1hr"],
           })
 
-      # 2. FIRST TOUCH 6H SUPPORT BOUNCE (Buy / Long Signal)
+      # --- FIRST TOUCH 6H SUPPORT BOUNCE (Long Setup) ---
       is_touching_sup = (
           c["low"] <= self.support_lvl + (0.6 * atr)
           and c["low"] >= self.support_lvl - (0.6 * atr)
       )
       if is_touching_sup and not support_triggered and is_high_vol:
-        # Must close bullish (Green candle bounce from support)
         if c["color"] == "Green":
           support_triggered = True
           sl = round(c["low"] - (1.5 * atr), dec)
@@ -482,7 +311,6 @@ class TWTFirstTouchEngine:
           tp3 = round(c["close"] + (4.0 * atr), dec)
 
           self.signals.append({
-              "Asset": self.symbol,
               "Time": c["time"],
               "Candle #": c["id"],
               "Setup": "First-Touch Support Bounce",
@@ -492,194 +320,179 @@ class TWTFirstTouchEngine:
               "TP 1": tp1,
               "TP 2": tp2,
               "TP 3": tp3,
-              "Is_Within_1hr": c["is_within_1hr"],
           })
 
 
-# ---------------------------------------------------------
-# STABLE PARALLEL SCANNER
-# ---------------------------------------------------------
-st.markdown("---")
-st.subheader("🔥 TWT First-Touch Master Signal Scanner (Last 1 Hour)")
+with st.spinner(f"⚡ Loading TWT First-Touch Engine for {selected_symbol}..."):
+  if df_5m is not None and not df_5m.empty:
+    bot = TWTFirstTouchEngine(df_5m, df_4h, df_6h, selected_symbol, active_tz)
+    bot.calculate_indicators()
+    bot.parse_and_scan()
 
-master_signals = []
-asset_engines = {}
+    curr_p = bot.candles[-1]["close"] if bot.candles else 0.0
 
+    st.markdown("---")
+    st.subheader(f"📊 Delta Exchange Live Dashboard ({selected_symbol})")
 
-def scan_single_asset(sym):
-  df_5, df_1h, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
-  if df_5 is not None and not df_5.empty:
-    engine = TWTFirstTouchEngine(df_5, df_1h, df_4, df_6, sym, active_tz)
-    engine.calculate_and_scan()
-    recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
-    latest = recent_sigs[-1] if recent_sigs else None
-    return sym, engine, latest
-  return sym, None, None
-
-
-with st.spinner("⚡ Scanning assets for First-Touch Level reactions..."):
-  with ThreadPoolExecutor(max_workers=5) as executor:
-    futures = {
-        executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
-    }
-    for future in as_completed(futures):
-      sym, engine, latest = future.result()
-      if engine:
-        asset_engines[sym] = engine
-      if latest:
-        master_signals.append(latest)
-
-if master_signals:
-  st.success(
-      f"✅ Found {len(master_signals)} First-Touch Setup(s) in the last 1 hour!"
-  )
-  df_display = pd.DataFrame(master_signals).drop(
-      columns=["Is_Within_1hr"], errors="ignore"
-  )
-  st.dataframe(df_display, width="stretch")
-else:
-  st.info(
-      "ℹ️ No first-touch signals in the last 1 hour. Waiting for precise level"
-      " interaction."
-  )
-
-# ---------------------------------------------------------
-# MANUAL ASSET SELECTOR & CHART VIEWER
-# ---------------------------------------------------------
-st.markdown("---")
-st.subheader("📊 Manual Asset Inspector & Chart")
-
-selected_symbol = st.selectbox(
-    "🔍 Select Asset to Load Chart & Levels", options=ASSET_LIST, index=0
-)
-
-if selected_symbol in asset_engines:
-  bot = asset_engines[selected_symbol]
-else:
-  df_5, df_1h, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTFirstTouchEngine(df_5, df_1h, df_4, df_6, selected_symbol, active_tz)
-  bot.calculate_and_scan()
-
-if bot.df_5 is not None and not bot.df_5.empty:
-  curr_p = bot.candles[-1]["close"] if bot.candles else 0.0
-
-  col1, col2, col3, col4 = st.columns(4)
-  with col1:
-    st.metric(
-        label="4H Resistance (01:30 High)", value=f"{bot.resistance_lvl:.2f}"
-    )
-  with col2:
-    st.metric(label="6H Support (05:30 Low)", value=f"{bot.support_lvl:.2f}")
-  with col3:
-    st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
-  with col4:
-    st.metric(label="Timezone", value=tz_short, delta=f"TF: {selected_tf}")
-
-  if bot.signals:
-    latest_sig = bot.signals[-1]
-    is_buy = "Buy" in latest_sig["Action"]
-    entry_p = latest_sig["Entry Price"]
-    signal_time = latest_sig["Time"]
-
-    st.warning("⚠️ **Don't use after 40 minutes!**")
-
-    if is_buy:
-      st.success(
-          f"🟢 **TWT FIRST-TOUCH SETUP: {latest_sig['Action']}**\n\n"
-          f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
-          f" #{latest_sig['Candle #']})\n"
-          f"- **Entry Price:** `{entry_p}`\n"
-          f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
-          f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
-          f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* First-touch support bounce confirmed with"
-          " volume!"
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+      st.metric(
+          label="4H Resistance (01:30 High)", value=f"{bot.resistance_lvl:.2f}"
       )
+    with col2:
+      st.metric(label="6H Support (05:30 Low)", value=f"{bot.support_lvl:.2f}")
+    with col3:
+      st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
+    with col4:
+      st.metric(label="Timezone", value=tz_short, delta="First-Touch Active")
+
+    st.markdown("---")
+    st.subheader(
+        "🎯 Trade With Tuckyaa (TUCKYAA) First-Touch Rejection Engine"
+    )
+
+    if bot.signals:
+      latest_sig = bot.signals[-1]
+      is_buy = "Buy" in latest_sig["Action"]
+      entry_p = latest_sig["Entry Price"]
+      signal_time = latest_sig["Time"]
+
+      st.warning("⚠️ **Don't use after 40 minutes!**")
+
+      if is_buy:
+        st.success(
+            f"🟢 **TWT FIRST-TOUCH SETUP: {latest_sig['Action']}**\n\n"
+            f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
+            f" #{latest_sig['Candle #']})\n"
+            f"- **Entry Price:** `{entry_p}`\n"
+            f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
+            f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
+            f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
+            "📌 *Instructions:* First-touch support bounce confirmed with"
+            " volume!"
+        )
+      else:
+        st.error(
+            f"🔴 **TWT FIRST-TOUCH SETUP: {latest_sig['Action']}**\n\n"
+            f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
+            f" #{latest_sig['Candle #']})\n"
+            f"- **Entry Price:** `{entry_p}`\n"
+            f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
+            f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
+            f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
+            "📌 *Instructions:* First-touch resistance rejection confirmed with"
+            " volume!"
+        )
     else:
-      st.error(
-          f"🔴 **TWT FIRST-TOUCH SETUP: {latest_sig['Action']}**\n\n"
-          f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
-          f" #{latest_sig['Candle #']})\n"
-          f"- **Entry Price:** `{entry_p}`\n"
-          f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
-          f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
-          f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* First-touch resistance rejection confirmed with"
-          " volume!"
+      st.warning(
+          "🟡 **STATUS: WAITING FOR FIRST-TOUCH LEVEL REACTION**\n\n"
+          "📌 *Instructions:* Monitoring volume and price action near 4H"
+          " Resistance and 6H Support."
       )
-  else:
-    st.warning("🟡 Waiting for the price to reach key 4H/6H levels...")
 
-  # Chart Rendering
-  fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
-  for c in bot.candles:
-    col = "#26a69a" if c["color"] == "Green" else "#ef5350"
-    body_size = abs(c["close"] - c["open"])
-    min_body = curr_p * 0.0003
-    plot_height = max(body_size, min_body)
-    plot_bottom = (
-        min(c["open"], c["close"]) - ((min_body - body_size) / 2)
-        if body_size < min_body
-        else min(c["open"], c["close"])
+    if bot.signals:
+      st.markdown("---")
+      st.subheader("📋 Verified TWT Signal History")
+      st.dataframe(pd.DataFrame(bot.signals[-5:]), width="stretch")
+
+    st.markdown("---")
+    st.subheader(f"📈 {selected_symbol} 5m Real-Time Chart")
+    fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
+
+    for c in bot.candles:
+      col = "#26a69a" if c["color"] == "Green" else "#ef5350"
+      body_size = abs(c["close"] - c["open"])
+      min_body = curr_p * 0.0003
+      plot_height = max(body_size, min_body)
+      plot_bottom = (
+          min(c["open"], c["close"]) - ((min_body - body_size) / 2)
+          if body_size < min_body
+          else min(c["open"], c["close"])
+      )
+
+      ax.bar(
+          c["id"],
+          plot_height,
+          bottom=plot_bottom,
+          color=col,
+          width=0.7,
+      )
+      ax.vlines(c["id"], c["low"], c["high"], color="#b2b5be", linewidth=1.3)
+
+    ax.axhline(
+        bot.resistance_lvl,
+        color="#ffeb3b",
+        linestyle="--",
+        linewidth=2,
+        label="4H Resistance",
     )
-    ax.bar(c["id"], plot_height, bottom=plot_bottom, color=col, width=0.7)
-    ax.vlines(c["id"], c["low"], c["high"], color="#b2b5be", linewidth=1.3)
-
-  ax.axhline(
-      bot.resistance_lvl,
-      color="#ffeb3b",
-      linestyle="--",
-      linewidth=2,
-      label="4H Resistance",
-  )
-  ax.axhline(
-      bot.support_lvl,
-      color="#26a69a",
-      linestyle="--",
-      linewidth=2,
-      label="6H Support",
-  )
-
-  lows = [c["low"] for c in bot.candles]
-  highs = [c["high"] for c in bot.candles]
-  if bot.resistance_lvl > 0:
-    highs.append(bot.resistance_lvl)
-  if bot.support_lvl > 0:
-    lows.append(bot.support_lvl)
-
-  if lows and highs:
-    margin = (max(highs) - min(lows)) * 0.09
-    if margin == 0:
-      margin = curr_p * 0.005
-    ax.set_ylim(min(lows) - margin, max(highs) + margin)
-
-  for sig in bot.signals[-3:]:
-    tag = "B" if "Buy" in sig["Action"] else "S"
-    tag_color = "#00e676" if tag == "B" else "#ff1744"
     ax.text(
-        sig["Candle #"],
-        sig["Entry Price"],
-        f" {tag} ",
-        color="white",
+        2,
+        bot.resistance_lvl,
+        f"  4H Resistance ({bot.resistance_lvl:.1f})",
+        color="#ffeb3b",
         weight="bold",
-        bbox=dict(boxstyle="round,pad=0.2", facecolor=tag_color, alpha=0.9),
+        fontsize=10,
     )
 
-  ax.set_title(
-      f"{selected_symbol} {selected_tf} — TRADE WITH TUCKYAA First-Touch"
-      f" Engine ({tz_short})",
-      color="white",
-      fontsize=14,
-  )
-  ax.set_facecolor("#131722")
-  fig.patch.set_facecolor("#1e222d")
-  ax.tick_params(colors="white")
-  ax.xaxis.label.set_color("white")
-  ax.yaxis.label.set_color("white")
-  for spine in ax.spines.values():
-    spine.set_color("#363a45")
-  ax.grid(color="#2a2e39", linestyle="--", linewidth=0.5)
+    ax.axhline(
+        bot.support_lvl,
+        color="#26a69a",
+        linestyle="--",
+        linewidth=2,
+        label="6H Support",
+    )
+    ax.text(
+        2,
+        bot.support_lvl,
+        f"  6H Support ({bot.support_lvl:.1f})",
+        color="#26a69a",
+        weight="bold",
+        fontsize=10,
+    )
 
-  st.pyplot(fig)
-else:
-  st.error("Market data load failed. Please retry after a few seconds.")
+    lows = [c["low"] for c in bot.candles]
+    highs = [c["high"] for c in bot.candles]
+    if bot.resistance_lvl > 0:
+      highs.append(bot.resistance_lvl)
+    if bot.support_lvl > 0:
+      lows.append(bot.support_lvl)
+
+    if lows and highs:
+      margin = (max(highs) - min(lows)) * 0.09
+      if margin == 0:
+        margin = curr_p * 0.005
+      ax.set_ylim(min(lows) - margin, max(highs) + margin)
+
+    for sig in bot.signals[-3:]:
+      tag = "B" if "Buy" in sig["Action"] else "S"
+      tag_color = "#00e676" if tag == "B" else "#ff1744"
+      ax.text(
+          sig["Candle #"],
+          sig["Entry Price"],
+          f" {tag} ",
+          color="white",
+          weight="bold",
+          bbox=dict(boxstyle="round,pad=0.2", facecolor=tag_color, alpha=0.9),
+      )
+
+    ax.set_title(
+        f"{selected_symbol} 5m — TRADE WITH TUCKYAA First-Touch Engine"
+        f" ({tz_short})",
+        color="white",
+        fontsize=14,
+    )
+    ax.set_facecolor("#131722")
+    fig.patch.set_facecolor("#1e222d")
+    ax.tick_params(colors="white")
+    ax.xaxis.label.set_color("white")
+    ax.yaxis.label.set_color("white")
+    ax.spines["bottom"].set_color("#363a45")
+    ax.spines["top"].set_color("#363a45")
+    ax.spines["left"].set_color("#363a45")
+    ax.spines["right"].set_color("#363a45")
+    ax.grid(color="#2a2e39", linestyle="--", linewidth=0.5)
+
+    st.pyplot(fig)
+  else:
+    st.error("Market data load failed. Please check internet connection.")
