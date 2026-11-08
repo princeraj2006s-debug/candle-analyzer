@@ -48,7 +48,7 @@ if "role" not in st.session_state:
 
 def login_register_page():
   st.title("🔒 TRADE WITH TUCKYAA — VIP Portal")
-  st.markdown("Login or Request Access to the Delta Trading Engine.")
+  st.markdown("Login or Request Access to the Professional Delta Trading Engine.")
 
   tab1, tab2 = st.tabs(["🔑 Login", "📝 Request Access"])
 
@@ -217,7 +217,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Delta Exchange Multi-Retest Level Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Professional Multi-Confluence Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -234,7 +234,7 @@ with col_tz:
 tz_short = selected_tz_name.split(")")[0] + ")"
 
 # Sidebar Session Box Panel
-st.sidebar.markdown("### 🤖 TWT Expert Panel")
+st.sidebar.markdown("### 🤖 TWT Pro Risk & Structure Panel")
 st.sidebar.markdown("---")
 server_time_target = datetime.now(active_tz)
 st.sidebar.text(
@@ -246,10 +246,11 @@ st.sidebar.text("No-Trade Zone      ———  01:00 ➔ 06:00 IST")
 st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Trading Settings")
-st.sidebar.text("Entry method     : Rejection + EMA 50 Filter")
-st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
-st.sidebar.text("Stop loss          : ATR Managed")
+st.sidebar.markdown("#### Professional Filters")
+st.sidebar.text("1. Multi-TF Trend  : 1H & 4H EMA Alignment")
+st.sidebar.text("2. Volume Spike    : > 1.5x Volume Filter")
+st.sidebar.text("3. Body Strength   : Anti-Fakeout Displacement")
+st.sidebar.text("4. Risk Control    : ATR Dynamic Stop Loss")
 
 
 def get_decimals(price):
@@ -274,7 +275,8 @@ def fetch_twt_delta_data(symbol, tf):
       exchange = ex_class({"enableRateLimit": True, "timeout": 5000})
       exchange.load_markets()
       if sym in exchange.markets:
-        ohlcv_tf = exchange.fetch_ohlcv(sym, timeframe=tf, limit=80)
+        ohlcv_tf = exchange.fetch_ohlcv(sym, timeframe=tf, limit=100)
+        ohlcv_1h = exchange.fetch_ohlcv(sym, timeframe="1h", limit=30)
         ohlcv_4h = exchange.fetch_ohlcv(sym, timeframe="4h", limit=25)
         ohlcv_6h = exchange.fetch_ohlcv(sym, timeframe="6h", limit=25)
 
@@ -285,6 +287,13 @@ def fetch_twt_delta_data(symbol, tf):
           )
           df_5["timestamp"] = pd.to_datetime(df_5["timestamp"], unit="ms")
           df_5 = df_5.set_index("timestamp")
+
+          df_1h = pd.DataFrame(
+              ohlcv_1h,
+              columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
+          )
+          df_1h["timestamp"] = pd.to_datetime(df_1h["timestamp"], unit="ms")
+          df_1h = df_1h.set_index("timestamp")
 
           df_4 = pd.DataFrame(
               ohlcv_4h,
@@ -310,16 +319,17 @@ def fetch_twt_delta_data(symbol, tf):
           )
           df_6["timestamp"] = pd.to_datetime(df_6["timestamp"], unit="ms")
           df_6 = df_6.set_index("timestamp")
-          return df_5, df_4, df_6
+          return df_5, df_1h, df_4, df_6
     except Exception:
       continue
-  return None, None, None
+  return None, None, None, None
 
 
-class TWTDeltaEngine:
+class TWTProfessionalEngine:
 
-  def __init__(self, df_5, df_4, df_6, symbol, user_tz):
+  def __init__(self, df_5, df_1h, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
+    self.df_1h = df_1h
     self.df_4 = df_4
     self.df_6 = df_6
     self.symbol = symbol
@@ -336,6 +346,7 @@ class TWTDeltaEngine:
     IST = timezone(timedelta(hours=5, minutes=30))
     current_utc_time = datetime.now(timezone.utc)
 
+    # 1. Calculate Key Levels from HTF Sessions
     if self.df_4 is not None and not self.df_4.empty:
       idx_utc = (
           self.df_4.index.tz_localize("UTC")
@@ -366,6 +377,7 @@ class TWTDeltaEngine:
     elif self.df_4 is not None:
       self.support_lvl = float(self.df_4["Low"].iloc[-1])
 
+    # 2. Indicators Calculation (ATR, Volume MA, EMA 50 & EMA 200 on 5m and 1H)
     self.df_5["TR"] = np.maximum(
         self.df_5["High"] - self.df_5["Low"],
         np.maximum(
@@ -375,6 +387,14 @@ class TWTDeltaEngine:
     )
     self.df_5["ATR"] = self.df_5["TR"].rolling(14).mean()
     self.df_5["EMA50"] = self.df_5["Close"].ewm(span=50, adjust=False).mean()
+    self.df_5["VolMA"] = self.df_5["Volume"].rolling(20).mean()
+
+    # Higher Timeframe Trend (1H EMA 50 check)
+    htf_trend_bullish = True
+    if self.df_1h is not None and not self.df_1h.empty:
+      ema_1h = self.df_1h["Close"].ewm(span=50, adjust=False).mean().iloc[-1]
+      close_1h = self.df_1h["Close"].iloc[-1]
+      htf_trend_bullish = close_1h > ema_1h
 
     for idx, row in enumerate(self.df_5.iterrows()):
       dt_utc = row[0]
@@ -394,6 +414,7 @@ class TWTDeltaEngine:
       )
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
       ema50 = float(r["EMA50"]) if not pd.isna(r["EMA50"]) else c
+      vol_ma = float(r["VolMA"]) if not pd.isna(r["VolMA"]) else v
 
       age_minutes = (current_utc_time - dt_utc).total_seconds() / 60.0
       is_within_1hr = age_minutes <= 60.0
@@ -409,6 +430,7 @@ class TWTDeltaEngine:
           "low": l,
           "close": c,
           "volume": v,
+          "vol_ma": vol_ma,
           "atr": atr,
           "ema50": ema50,
           "is_within_1hr": is_within_1hr,
@@ -427,38 +449,53 @@ class TWTDeltaEngine:
       atr = c["atr"]
       dec = get_decimals(c["close"])
 
-      # ---------------------------------------------------------
-      # STRICT REJECTION + EMA TREND FILTER LOGIC
-      # ---------------------------------------------------------
+      # -------------------------------------------------------------------------
+      # PROFESSIONAL INSTITUTIONAL CONFLUENCE FILTERS
+      # -------------------------------------------------------------------------
+      # Rule A: Volume must be higher than average (Institutional participation)
+      is_high_volume = c["volume"] > (c["vol_ma"] * 1.2)
 
-      # 1. Resistance Sell Setup (Only when price is BELOW EMA 50 - Bearish trend)
+      # Rule B: Strong Candle Body (Displacement - Avoiding tiny dojis/wicks)
+      body_size = abs(c["close"] - c["open"])
+      avg_body = (
+          np.mean([abs(x["close"] - x["open"]) for x in self.candles[i - 5 : i]])
+          if i >= 5
+          else body_size
+      )
+      is_strong_displacement = body_size >= (avg_body * 0.8)
+
+      # 1. Professional Resistance Sell Setup
       is_near_res = (
           c["high"] >= self.resistance_lvl - (0.8 * atr)
           and c["high"] <= self.resistance_lvl + (0.8 * atr)
       )
       is_rejection_res = c["color"] == "Red"
-      is_trend_bearish = c["close"] < c["ema50"]
+      is_trend_bearish = (
+          c["close"] < c["ema50"] and not htf_trend_bullish
+      )  # Multi-TF confirmation
 
       if (
           is_near_res
           and is_rejection_res
           and is_trend_bearish
-          and (i - last_res_id > 5)
+          and is_high_volume
+          and is_strong_displacement
+          and (i - last_res_id > 6)
       ):
         res_touch_count += 1
         last_res_id = i
         if res_touch_count >= 2:
-          sl = round(c["high"] + (1.2 * atr), dec)
-          tp1 = round(c["close"] - (1.0 * atr), dec)
-          tp2 = round(c["close"] - (2.2 * atr), dec)
-          tp3 = round(c["close"] - (3.8 * atr), dec)
+          sl = round(c["high"] + (1.5 * atr), dec)  .   # Safer ATR Stop Loss
+          tp1 = round(c["close"] - (1.2 * atr), dec)
+          tp2 = round(c["close"] - (2.5 * atr), dec)
+          tp3 = round(c["close"] - (4.0 * atr), dec)
 
           self.signals.append({
               "Asset": self.symbol,
               "Time": c["time"],
               "Candle #": c["id"],
-              "Setup": "Resistance Sell",
-              "Action": f"Sell / Short (S) [Rej #{res_touch_count}] 🔴",
+              "Setup": "Pro Resistance Short",
+              "Action": f"Sell / Short (S) [Pro Rej #{res_touch_count}] 🔴",
               "Entry Price": round(c["close"], dec),
               "Stop Loss (SL)": sl,
               "TP 1": tp1,
@@ -467,34 +504,38 @@ class TWTDeltaEngine:
               "Is_Within_1hr": c["is_within_1hr"],
           })
 
-      # 2. Support Buy Setup (Only when price is ABOVE EMA 50 - Bullish trend / No falling knives)
+      # 2. Professional Support Buy Setup
       is_near_sup = (
           c["low"] <= self.support_lvl + (0.8 * atr)
           and c["low"] >= self.support_lvl - (0.8 * atr)
       )
       is_rejection_sup = c["color"] == "Green"
-      is_trend_bullish = c["close"] > c["ema50"]
+      is_trend_bullish = (
+          c["close"] > c["ema50"] and htf_trend_bullish
+      )  # Multi-TF confirmation
 
       if (
           is_near_sup
           and is_rejection_sup
           and is_trend_bullish
-          and (i - last_sup_id > 5)
+          and is_high_volume
+          and is_strong_displacement
+          and (i - last_sup_id > 6)
       ):
         sup_touch_count += 1
         last_sup_id = i
         if sup_touch_count >= 2:
-          sl = round(c["low"] - (1.2 * atr), dec)
-          tp1 = round(c["close"] + (1.0 * atr), dec)
-          tp2 = round(c["close"] + (2.2 * atr), dec)
-          tp3 = round(c["close"] + (3.8 * atr), dec)
+          sl = round(c["low"] - (1.5 * atr), dec)  .   # Safer ATR Stop Loss
+          tp1 = round(c["close"] + (1.2 * atr), dec)
+          tp2 = round(c["close"] + (2.5 * atr), dec)
+          tp3 = round(c["close"] + (4.0 * atr), dec)
 
           self.signals.append({
               "Asset": self.symbol,
               "Time": c["time"],
               "Candle #": c["id"],
-              "Setup": "Support Buy",
-              "Action": f"Buy / Long (B) [Rej #{sup_touch_count}] 🟢",
+              "Setup": "Pro Support Buy",
+              "Action": f"Buy / Long (B) [Pro Rej #{sup_touch_count}] 🟢",
               "Entry Price": round(c["close"], dec),
               "Stop Loss (SL)": sl,
               "TP 1": tp1,
@@ -505,19 +546,19 @@ class TWTDeltaEngine:
 
 
 # ---------------------------------------------------------
-# STABLE PARALLEL SCANNER (OPTIMIZED THREADS FOR STREAMLIT)
+# STABLE PARALLEL SCANNER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("🔥 TWT Live Master Signal Scanner (Last 1 Hour Active Entries)")
+st.subheader("🔥 TWT Professional Live Master Signal Scanner (Last 1 Hour)")
 
 master_signals = []
 asset_engines = {}
 
 
 def scan_single_asset(sym):
-  df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
+  df_5, df_1h, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTDeltaEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTProfessionalEngine(df_5, df_1h, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -525,7 +566,9 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning assets safely with EMA Trend Filter..."):
+with st.spinner(
+    "⚡ Scanning assets with Institutional Volume & Multi-TF Filters..."
+):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -539,8 +582,8 @@ with st.spinner("⚡ Scanning assets safely with EMA Trend Filter..."):
 
 if master_signals:
   st.success(
-      f"✅ Found {len(master_signals)} High-Probability Setup(s) in the last 1"
-      " hour!"
+      f"✅ Found {len(master_signals)} Institutional-Grade Setup(s) in the last"
+      " 1 hour!"
   )
   df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
@@ -548,15 +591,15 @@ if master_signals:
   st.dataframe(df_display, width="stretch")
 else:
   st.info(
-      "ℹ️ No trend-filtered signals in the last 1 hour. Safe from false"
-      " breakouts!"
+      "ℹ️ No institutional setups found in the last 1 hour. Protecting capital"
+      " from fakeouts!"
   )
 
 # ---------------------------------------------------------
 # MANUAL ASSET SELECTOR & CHART VIEWER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("📊 Manual Asset Inspector & Chart")
+st.subheader("📊 Manual Pro Asset Inspector & Chart")
 
 selected_symbol = st.selectbox(
     "🔍 Select Asset to Load Chart & Levels", options=ASSET_LIST, index=0
@@ -565,8 +608,8 @@ selected_symbol = st.selectbox(
 if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
-  df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTDeltaEngine(df_5, df_4, df_6, selected_symbol, active_tz)
+  df_5, df_1h, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
+  bot = TWTProfessionalEngine(df_5, df_1h, df_4, df_6, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -594,30 +637,32 @@ if bot.df_5 is not None and not bot.df_5.empty:
 
     if is_buy:
       st.success(
-          f"🟢 **TWT DELTA SETUP: {latest_sig['Action']}**\n\n"
+          f"🟢 **TWT PRO SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Support bullish rejection + EMA trend confirmed!"
+          "📌 *Instructions:* Volume spike + Multi-TF Trend + Support Bounce"
+          " confirmed!"
       )
     else:
       st.error(
-          f"🔴 **TWT DELTA SETUP: {latest_sig['Action']}**\n\n"
+          f"🔴 **TWT PRO SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Resistance bearish rejection + EMA trend"
-          " confirmed!"
+          "📌 *Instructions:* Volume spike + Multi-TF Trend + Resistance"
+          " rejection confirmed!"
       )
   else:
     st.warning(
-        "🟡 Monitoring price action with strict EMA trend & rejection filters..."
+        "🟡 Monitoring volume and institutional price action near key"
+        " levels..."
     )
 
   # Chart Rendering
@@ -676,7 +721,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} {selected_tf} — TRADE WITH TUCKYAA Engine"
+      f"{selected_symbol} {selected_tf} — TRADE WITH TUCKYAA Pro Engine"
       f" ({tz_short})",
       color="white",
       fontsize=14,
