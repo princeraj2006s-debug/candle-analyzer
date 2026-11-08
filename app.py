@@ -218,7 +218,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Advanced Multi-Candle Retest Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Ultimate Wick & 2-Candle Retest Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -235,7 +235,7 @@ with col_tz:
 tz_short = selected_tz_name.split(")")[0] + ")"
 
 # Sidebar Panel
-st.sidebar.markdown("### 🤖 TWT Price Action Panel")
+st.sidebar.markdown("### 🤖 TWT Ultimate Price Action Panel")
 st.sidebar.markdown("---")
 server_time_target = datetime.now(active_tz)
 st.sidebar.text(
@@ -248,7 +248,7 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
-st.sidebar.text("Logic            : 2-Candle Breakout -> Pullback Retest")
+st.sidebar.text("Logic            : Wick Touch + 2-Candle Retest")
 st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss          : ATR Managed")
 
@@ -317,7 +317,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTAdvancedRetestEngine:
+class TWTUltimateEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -414,11 +414,15 @@ class TWTAdvancedRetestEngine:
           "is_within_1hr": is_within_1hr,
       })
 
-    # State variables for multi-candle tracking
-    resistance_crossed_count = 0
-    support_crossed_count = 0
-    resistance_inside_zone = False
-    support_inside_zone = False
+    # State tracking variables
+    res_wick_touched = False
+    res_inside_count = 0
+    res_ready_for_retest = False
+
+    sup_wick_touched = False
+    sup_inside_count = 0
+    sup_ready_for_retest = False
+
     signal_given = False
 
     for i in range(5, len(self.candles)):
@@ -430,25 +434,26 @@ class TWTAdvancedRetestEngine:
       dec = get_decimals(c["close"])
 
       # --- SHORT LOGIC (RESISTANCE) ---
-      # Step 1: Price goes above resistance
-      if c["high"] > self.resistance_lvl:
-        resistance_crossed_count += 1
+      # 1. Seller upper wick touches resistance
+      if c["high"] >= self.resistance_lvl - (0.4 * atr):
+        res_wick_touched = True
 
-      # Step 2: Price comes back inside resistance (at least 2 red candles closing inside)
+      # 2. Price crosses resistance and at least 2 red candles close inside/below resistance
       if (
-          resistance_crossed_count >= 1
+          res_wick_touched
           and c["close"] < self.resistance_lvl
           and c["color"] == "Red"
       ):
-        resistance_inside_zone = True
+        res_inside_count += 1
+        if res_inside_count >= 2:
+          res_ready_for_retest = True
 
-      # Step 3: Retest pullback (weak green candle) after coming inside -> SHORT ENTRY
+      # 3. Retest pullback (weak green candle) -> SHORT ENTRY
       if (
-          resistance_inside_zone
+          res_ready_for_retest
           and not signal_given
           and c["color"] == "Green"
-          and c["high"]
-          >= self.resistance_lvl - (0.8 * atr)  # Retesting near resistance
+          and c["high"] >= self.resistance_lvl - (0.8 * atr)
       ):
         signal_given = True
         sl = round(c["high"] + (1.2 * atr), dec)
@@ -460,7 +465,7 @@ class TWTAdvancedRetestEngine:
             "Asset": self.symbol,
             "Time": c["time"],
             "Candle #": c["id"],
-            "Setup": "Resistance 2-Candle Retest Short",
+            "Setup": "Resistance Wick + 2-Candle Retest Short",
             "Action": "Sell / Short (S) [Confirmed Retest] 🔴",
             "Entry Price": round(c["close"], dec),
             "Stop Loss (SL)": sl,
@@ -471,25 +476,26 @@ class TWTAdvancedRetestEngine:
         })
 
       # --- LONG LOGIC (SUPPORT) ---
-      # Step 1: Price goes below support
-      if c["low"] < self.support_lvl:
-        support_crossed_count += 1
+      # 1. Buyer lower wick touches support
+      if c["low"] <= self.support_lvl + (0.4 * atr):
+        sup_wick_touched = True
 
-      # Step 2: Price comes back above support (at least 2 green candles closing above)
+      # 2. Price crosses support and at least 2 green candles close above support
       if (
-          support_crossed_count >= 1
+          sup_wick_touched
           and c["close"] > self.support_lvl
           and c["color"] == "Green"
       ):
-        support_inside_zone = True
+        sup_inside_count += 1
+        if sup_inside_count >= 2:
+          sup_ready_for_retest = True
 
-      # Step 3: Retest pullback (weak red candle) after coming above -> LONG ENTRY
+      # 3. Retest pullback (weak red candle) -> LONG ENTRY
       if (
-          support_inside_zone
+          sup_ready_for_retest
           and not signal_given
           and c["color"] == "Red"
-          and c["low"]
-          <= self.support_lvl + (0.8 * atr)  # Retesting near support
+          and c["low"] <= self.support_lvl + (0.8 * atr)
       ):
         signal_given = True
         sl = round(c["low"] - (1.2 * atr), dec)
@@ -501,7 +507,7 @@ class TWTAdvancedRetestEngine:
             "Asset": self.symbol,
             "Time": c["time"],
             "Candle #": c["id"],
-            "Setup": "Support 2-Candle Retest Long",
+            "Setup": "Support Wick + 2-Candle Retest Long",
             "Action": "Buy / Long (B) [Confirmed Retest] 🟢",
             "Entry Price": round(c["close"], dec),
             "Stop Loss (SL)": sl,
@@ -525,7 +531,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTAdvancedRetestEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTUltimateEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -533,9 +539,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner(
-    "⚡ Scanning all 20 assets for multi-candle retest setups..."
-):
+with st.spinner("⚡ Scanning all 20 assets for ultimate wick retest setups..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -548,15 +552,15 @@ with st.spinner(
         master_signals.append(latest)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} active retest setup(s) across!")
+  st.success(f"✅ Found {len(master_signals)} active ultimate setup(s)!")
   df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
   st.info(
-      "ℹ️ No active retest signals in the last 1 hour. Waiting for multi-candle"
-      " level reaction..."
+      "ℹ️ No active ultimate signals in the last 1 hour. Waiting for wick touch"
+      " & 2-candle retest..."
   )
 
 # ---------------------------------------------------------
@@ -568,14 +572,14 @@ st.subheader("📊 Manual Asset Inspector & Chart")
 selected_symbol = st.selectbox(
     "🔍 Select Asset to Load Chart & Complete History",
     options=ASSET_LIST,
-    index=5,
+    index=8,
 )
 
 if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTAdvancedRetestEngine(df_5, df_4, df_6, selected_symbol, active_tz)
+  bot = TWTUltimateEngine(df_5, df_4, df_6, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -591,7 +595,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Retest Active")
+    st.metric(label="Timezone", value=tz_short, delta="Ultimate Active")
 
   if bot.signals:
     latest_sig = bot.signals[-1]
@@ -603,33 +607,33 @@ if bot.df_5 is not None and not bot.df_5.empty:
 
     if is_buy:
       st.success(
-          f"🟢 **TWT RETEST SETUP: {latest_sig['Action']}**\n\n"
+          f"🟢 **TWT ULTIMATE SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Support breakout -> Re-entry -> Retest pullback"
-          " -> Buyer strength confirmed!"
+          "📌 *Instructions:* Support wick touch -> 2 Candles above -> Retest"
+          " pullback -> Buyer confirmed!"
       )
     else:
       st.error(
-          f"🔴 **TWT RETEST SETUP: {latest_sig['Action']}**\n\n"
+          f"🔴 **TWT ULTIMATE SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Resistance breakout -> Re-entry -> Retest"
-          " pullback -> Seller strength confirmed!"
+          "📌 *Instructions:* Resistance wick touch -> 2 Candles inside -> Retest"
+          " pullback -> Seller confirmed!"
       )
   else:
     st.warning(
-        "🟡 **STATUS: WAITING FOR MULTI-CANDLE RETEST SETUP**\n\n"
-        "📌 *Instructions:* Monitoring multi-candle breakout and retest"
-        " pullback."
+        "🟡 **STATUS: WAITING FOR WICK TOUCH & 2-CANDLE RETEST**\n\n"
+        "📌 *Instructions:* Monitoring wick touches and multi-candle"
+        " confirmations."
     )
 
   # Complete Signal History
@@ -717,7 +721,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Advanced Retest Engine"
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Ultimate Engine"
       f" ({tz_short})",
       color="white",
       fontsize=14,
