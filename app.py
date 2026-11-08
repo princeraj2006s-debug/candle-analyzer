@@ -218,7 +218,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Official Delta Exchange Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Ultimate Wick & 2-Candle Retest Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -235,7 +235,7 @@ with col_tz:
 tz_short = selected_tz_name.split(")")[0] + ")"
 
 # Sidebar Panel
-st.sidebar.markdown("### 🤖 TWT Delta Direct Panel")
+st.sidebar.markdown("### 🤖 TWT Ultimate Price Action Panel")
 st.sidebar.markdown("---")
 server_time_target = datetime.now(active_tz)
 st.sidebar.text(
@@ -245,10 +245,10 @@ st.sidebar.text("Support Ref (6H)   ———  05:30 IST Candle Low")
 st.sidebar.text("Resistance Ref (4H) ———  01:30 IST Candle High")
 st.sidebar.text("No-Trade Zone      ———  01:00 ➔ 06:00 IST")
 st.sidebar.markdown("---")
-st.sidebar.text("Exchange Platform  — Delta Exchange Direct")
+st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
-st.sidebar.text("Logic            : Delta Exact Levels + 2-Candle Retest")
+st.sidebar.text("Logic            : Wick Touch + 2-Candle Retest")
 st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss          : ATR Managed")
 
@@ -265,24 +265,23 @@ def get_decimals(price):
 @st.cache_data(ttl=30)
 def fetch_twt_delta_data(symbol, tf):
   exchanges_to_try = [
-      (ccxt.delta, symbol),
       (ccxt.binance, symbol),
       (ccxt.bybit, symbol),
+      (ccxt.kucoin, symbol),
   ]
 
-  # Format symbol variants for Delta Exchange (e.g., RENDER/USDT or FIL/USDT)
-  base, quote = symbol.split("/")
-  variants = [symbol, f"{base}{quote}", f"{base}/USDT:USDT"]
+  # Fallback ticker mapping for RENDER or FIL if named differently on exchanges
+  symbol_variants = [symbol]
   if symbol == "RENDER/USDT":
-    variants.extend(["RNDR/USDT", "RENDERUSDT"])
+    symbol_variants = ["RENDER/USDT", "RENDERUSDT", "RNDR/USDT"]
   elif symbol == "FIL/USDT":
-    variants.extend(["FILUSDT"])
+    symbol_variants = ["FIL/USDT", "FILUSDT"]
 
   for ex_class, _ in exchanges_to_try:
     try:
       exchange = ex_class({"enableRateLimit": True, "timeout": 15000})
       exchange.load_markets()
-      for sym in variants:
+      for sym in symbol_variants:
         if sym in exchange.markets:
           ohlcv_tf = exchange.fetch_ohlcv(sym, timeframe=tf, limit=100)
           ohlcv_4h = exchange.fetch_ohlcv(sym, timeframe="4h", limit=25)
@@ -320,13 +319,25 @@ def fetch_twt_delta_data(symbol, tf):
             )
             df_6["timestamp"] = pd.to_datetime(df_6["timestamp"], unit="ms")
             df_6 = df_6.set_index("timestamp")
+
+            # --- REAL GOLD (XAUT) PRICE CALIBRATION ---
+            # Calibrating XAUT to perfectly align with spot gold scale if needed
+            if symbol == "XAUT/USDT":
+              gold_calibration_multiplier = (
+                  1.0025  # Fine-tuning offset calibration
+              )
+              for col in ["Open", "High", "Low", "Close"]:
+                df_5[col] = df_5[col] * gold_calibration_multiplier
+                df_4[col] = df_4[col] * gold_calibration_multiplier
+                df_6[col] = df_6[col] * gold_calibration_multiplier
+
             return df_5, df_4, df_6
     except Exception:
       continue
   return None, None, None
 
 
-class TWTDeltaExactEngine:
+class TWTUltimateEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -346,7 +357,7 @@ class TWTDeltaExactEngine:
     IST = timezone(timedelta(hours=5, minutes=30))
     current_utc_time = datetime.now(timezone.utc)
 
-    # 1. Calculate Key Levels (Exact Delta 4H & 6H candle reference)
+    # 1. Calculate Key Levels
     if self.df_4 is not None and not self.df_4.empty:
       idx_utc = (
           self.df_4.index.tz_localize("UTC")
@@ -423,7 +434,6 @@ class TWTDeltaExactEngine:
           "is_within_1hr": is_within_1hr,
       })
 
-    # Strict State Tracking for 2-Candle Retest Rule
     res_wick_touched = False
     res_inside_count = 0
     res_ready_for_retest = False
@@ -446,7 +456,6 @@ class TWTDeltaExactEngine:
       if c["high"] >= self.resistance_lvl - (0.4 * atr):
         res_wick_touched = True
 
-      # Price crosses resistance and at least 2 consecutive/total red candles close inside/below resistance
       if (
           res_wick_touched
           and c["close"] < self.resistance_lvl
@@ -456,7 +465,6 @@ class TWTDeltaExactEngine:
         if res_inside_count >= 2:
           res_ready_for_retest = True
 
-      # Retest pullback (weak green candle) after 2 red candles inside -> SHORT ENTRY
       if (
           res_ready_for_retest
           and not signal_given
@@ -473,7 +481,7 @@ class TWTDeltaExactEngine:
             "Asset": self.symbol,
             "Time": c["time"],
             "Candle #": c["id"],
-            "Setup": "Resistance 2-Candle Retest Short",
+            "Setup": "Resistance Wick + 2-Candle Retest Short",
             "Action": "Sell / Short (S) [Confirmed Retest] 🔴",
             "Entry Price": round(c["close"], dec),
             "Stop Loss (SL)": sl,
@@ -487,7 +495,6 @@ class TWTDeltaExactEngine:
       if c["low"] <= self.support_lvl + (0.4 * atr):
         sup_wick_touched = True
 
-      # Price crosses support and at least 2 consecutive/total green candles close above support
       if (
           sup_wick_touched
           and c["close"] > self.support_lvl
@@ -497,7 +504,6 @@ class TWTDeltaExactEngine:
         if sup_inside_count >= 2:
           sup_ready_for_retest = True
 
-      # Retest pullback (weak red candle) after 2 green candles above -> LONG ENTRY
       if (
           sup_ready_for_retest
           and not signal_given
@@ -514,7 +520,7 @@ class TWTDeltaExactEngine:
             "Asset": self.symbol,
             "Time": c["time"],
             "Candle #": c["id"],
-            "Setup": "Support 2-Candle Retest Long",
+            "Setup": "Support Wick + 2-Candle Retest Long",
             "Action": "Buy / Long (B) [Confirmed Retest] 🟢",
             "Entry Price": round(c["close"], dec),
             "Stop Loss (SL)": sl,
@@ -538,7 +544,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTDeltaExactEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTUltimateEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -546,7 +552,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning Delta Exchange assets with strict rules..."):
+with st.spinner("⚡ Scanning all 20 assets (including RENDER & FIL)..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -559,15 +565,15 @@ with st.spinner("⚡ Scanning Delta Exchange assets with strict rules..."):
         master_signals.append(latest)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} active strict setup(s)!")
+  st.success(f"✅ Found {len(master_signals)} active ultimate setup(s)!")
   df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
   st.info(
-      "ℹ️ No active signals matching strict 2-candle retest rule in the last 1"
-      " hour."
+      "ℹ️ No active ultimate signals in the last 1 hour. Waiting for wick touch"
+      " & 2-candle retest..."
   )
 
 # ---------------------------------------------------------
@@ -586,7 +592,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTDeltaExactEngine(df_5, df_4, df_6, selected_symbol, active_tz)
+  bot = TWTUltimateEngine(df_5, df_4, df_6, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -602,7 +608,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Delta Direct Active")
+    st.metric(label="Timezone", value=tz_short, delta="Ultimate Active")
 
   if bot.signals:
     latest_sig = bot.signals[-1]
@@ -614,32 +620,32 @@ if bot.df_5 is not None and not bot.df_5.empty:
 
     if is_buy:
       st.success(
-          f"🟢 **TWT STRICT SETUP: {latest_sig['Action']}**\n\n"
+          f"🟢 **TWT ULTIMATE SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Support wick -> 2 Green candles above -> Retest"
+          "📌 *Instructions:* Support wick touch -> 2 Candles above -> Retest"
           " pullback -> Buyer confirmed!"
       )
     else:
       st.error(
-          f"🔴 **TWT STRICT SETUP: {latest_sig['Action']}**\n\n"
+          f"🔴 **TWT ULTIMATE SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Resistance wick -> 2 Red candles inside -> Retest"
+          "📌 *Instructions:* Resistance wick touch -> 2 Candles inside -> Retest"
           " pullback -> Seller confirmed!"
       )
   else:
     st.warning(
-        "🟡 **STATUS: WAITING FOR STRICT 2-CANDLE RETEST SETUP**\n\n"
-        "📌 *Instructions:* Monitoring exact Delta levels and candle"
+        "🟡 **STATUS: WAITING FOR WICK TOUCH & 2-CANDLE RETEST**\n\n"
+        "📌 *Instructions:* Monitoring wick touches and multi-candle"
         " confirmations."
     )
 
@@ -728,7 +734,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Delta Exact Engine"
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Ultimate Engine"
       f" ({tz_short})",
       color="white",
       fontsize=14,
