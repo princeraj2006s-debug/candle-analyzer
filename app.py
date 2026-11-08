@@ -452,10 +452,8 @@ class TWTProfessionalEngine:
       # -------------------------------------------------------------------------
       # PROFESSIONAL INSTITUTIONAL CONFLUENCE FILTERS
       # -------------------------------------------------------------------------
-      # Rule A: Volume must be higher than average (Institutional participation)
       is_high_volume = c["volume"] > (c["vol_ma"] * 1.2)
 
-      # Rule B: Strong Candle Body (Displacement - Avoiding tiny dojis/wicks)
       body_size = abs(c["close"] - c["open"])
       avg_body = (
           np.mean([abs(x["close"] - x["open"]) for x in self.candles[i - 5 : i]])
@@ -470,9 +468,7 @@ class TWTProfessionalEngine:
           and c["high"] <= self.resistance_lvl + (0.8 * atr)
       )
       is_rejection_res = c["color"] == "Red"
-      is_trend_bearish = (
-          c["close"] < c["ema50"] and not htf_trend_bullish
-      )  # Multi-TF confirmation
+      is_trend_bearish = c["close"] < c["ema50"] and not htf_trend_bullish
 
       if (
           is_near_res
@@ -485,7 +481,7 @@ class TWTProfessionalEngine:
         res_touch_count += 1
         last_res_id = i
         if res_touch_count >= 2:
-          sl = round(c["high"] + (1.5 * atr), dec)  .   # Safer ATR Stop Loss
+          sl = round(c["high"] + (1.5 * atr), dec)  # Safer ATR Stop Loss
           tp1 = round(c["close"] - (1.2 * atr), dec)
           tp2 = round(c["close"] - (2.5 * atr), dec)
           tp3 = round(c["close"] - (4.0 * atr), dec)
@@ -510,9 +506,7 @@ class TWTProfessionalEngine:
           and c["low"] >= self.support_lvl - (0.8 * atr)
       )
       is_rejection_sup = c["color"] == "Green"
-      is_trend_bullish = (
-          c["close"] > c["ema50"] and htf_trend_bullish
-      )  # Multi-TF confirmation
+      is_trend_bullish = c["close"] > c["ema50"] and htf_trend_bullish
 
       if (
           is_near_sup
@@ -525,7 +519,7 @@ class TWTProfessionalEngine:
         sup_touch_count += 1
         last_sup_id = i
         if sup_touch_count >= 2:
-          sl = round(c["low"] - (1.5 * atr), dec)  .   # Safer ATR Stop Loss
+          sl = round(c["low"] - (1.5 * atr), dec)  # Safer ATR Stop Loss
           tp1 = round(c["close"] + (1.2 * atr), dec)
           tp2 = round(c["close"] + (2.5 * atr), dec)
           tp3 = round(c["close"] + (4.0 * atr), dec)
