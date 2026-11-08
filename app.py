@@ -187,8 +187,8 @@ class TWTUltimateEngine:
     self.signals = []
     self.resistance_lvl = 0
     self.support_lvl = 0
-    self.market_status = "Scanning for Setup..."
-    self.est_time = "Calculating..."
+    self.market_status = "Scanning Market..."
+    self.est_time = "~10-15 mins (Wait for confirmation)"
 
   def calculate_and_scan(self):
     if self.df_5 is None or self.df_5.empty:
@@ -284,7 +284,7 @@ class TWTUltimateEngine:
 
     signal_given = False
 
-    # Proximity checking for probability status
+    # Proximity & Probability checking for dashboard
     last_c = self.candles[-1] if self.candles else None
     if last_c:
       dist_to_res = abs(last_c["close"] - self.resistance_lvl)
@@ -293,23 +293,15 @@ class TWTUltimateEngine:
 
       if dist_to_res <= (1.5 * atr_val):
         self.market_status = (
-            "⚠️ Approaching Resistance — Preparing Short Retest Setup"
+            "⚠️ Approaching Resistance (Short Setup Expected)"
         )
-        self.est_time = (
-            "~5 to 10 mins (Waiting for candle closure & confirmation)"
-        )
+        self.est_time = "~5 mins (Wait for confirmation)"
       elif dist_to_sup <= (1.5 * atr_val):
-        self.market_status = (
-            "⚠️ Approaching Support — Preparing Long Retest Setup"
-        )
-        self.est_time = (
-            "~5 to 10 mins (Waiting for candle closure & confirmation)"
-        )
+        self.market_status = "⚠️ Approaching Support (Long Setup Expected)"
+        self.est_time = "~5 mins (Wait for confirmation)"
       else:
-        self.market_status = (
-            "🟡 In Range — Waiting for Key Level Wick Touch & Retest"
-        )
-        self.est_time = "~15 to 30 mins (Scanning price action)"
+        self.market_status = "🟡 In Range (Consolidating / Scanning)"
+        self.est_time = "~10 to 20 mins (Waiting for wick touch)"
 
     for i in range(5, len(self.candles)):
       c = self.candles[i]
@@ -344,15 +336,15 @@ class TWTUltimateEngine:
         tp2 = round(c["close"] - (2.2 * atr), dec)
         tp3 = round(c["close"] - (3.8 * atr), dec)
 
-        self.market_status = "✅ Confirmed Short Retest Setup Triggered!"
+        self.market_status = "🔴 Confirmed Short Setup Triggered"
         self.est_time = "Active Now"
 
         self.signals.append({
             "Asset": self.symbol,
             "Time": c["time"],
             "Candle #": c["id"],
-            "Setup": "Resistance Wick + 2-Candle Retest Short",
-            "Action": "Sell / Short (S) [Confirmed Retest] 🔴",
+            "Setup": "Resistance Retest Short",
+            "Action": "Sell / Short (S) 🔴",
             "Entry Price": round(c["close"], dec),
             "Stop Loss (SL)": sl,
             "TP 1": tp1,
@@ -386,15 +378,15 @@ class TWTUltimateEngine:
         tp2 = round(c["close"] + (2.2 * atr), dec)
         tp3 = round(c["close"] + (3.8 * atr), dec)
 
-        self.market_status = "✅ Confirmed Long Retest Setup Triggered!"
+        self.market_status = "🟢 Confirmed Long Setup Triggered"
         self.est_time = "Active Now"
 
         self.signals.append({
             "Asset": self.symbol,
             "Time": c["time"],
             "Candle #": c["id"],
-            "Setup": "Support Wick + 2-Candle Retest Long",
-            "Action": "Buy / Long (B) [Confirmed Retest] 🟢",
+            "Setup": "Support Retest Long",
+            "Action": "Buy / Long (B) 🟢",
             "Entry Price": round(c["close"], dec),
             "Stop Loss (SL)": sl,
             "TP 1": tp1,
@@ -408,9 +400,11 @@ class TWTUltimateEngine:
 # MASTER SCANNER (Global Feed for Top Dashboard)
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("🔥 TWT Master Live Signal Dashboard (Last 1 Hour)")
+st.subheader(
+    "🔥 TWT Master Live Signal Dashboard (All 20 Assets & Probability Timing)"
+)
 
-master_signals = []
+master_summary = []
 asset_engines = {}
 
 
@@ -419,35 +413,36 @@ def scan_single_asset(sym):
   if df_5 is not None and not df_5.empty:
     engine = TWTUltimateEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
-    recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
-    latest = recent_sigs[-1] if recent_sigs else None
-    return sym, engine, latest
-  return sym, None, None
+    return sym, engine
+  return sym, None
 
 
-with st.spinner("⚡ Scanning all 20 assets with probability analysis..."):
+with st.spinner(
+    "⚡ Scanning all 20 assets for probability & setup timing..."
+):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
     }
     for future in as_completed(futures):
-      sym, engine, latest = future.result()
+      sym, engine = future.result()
       if engine:
         asset_engines[sym] = engine
-      if latest:
-        master_signals.append(latest)
+        curr_price = (
+            engine.candles[-1]["close"] if engine.candles else 0.0
+        )
+        master_summary.append({
+            "Asset": sym,
+            "Current Price": curr_price,
+            "Market Status": engine.market_status,
+            "Expected Entry Timing": engine.est_time,
+        })
 
-if master_signals:
-  st.success(f"✅ Found {len(master_signals)} active ultimate setup(s)!")
-  df_display = pd.DataFrame(master_signals).drop(
-      columns=["Is_Within_1hr"], errors="ignore"
-  )
-  st.dataframe(df_display, width="stretch")
+if master_summary:
+  df_summary = pd.DataFrame(master_summary)
+  st.dataframe(df_summary, width="stretch", hide_index=True)
 else:
-  st.info(
-      "ℹ️ No active signals in the last 1 hour. Waiting for exact wick touch &"
-      " confirmation..."
-  )
+  st.warning("⚠️ Could not load scanner feed at the moment.")
 
 # ---------------------------------------------------------
 # MANUAL ASSET SELECTOR & CHART VIEWER
@@ -456,7 +451,7 @@ st.markdown("---")
 st.subheader("📊 Manual Asset Inspector & Chart")
 
 selected_symbol = st.selectbox(
-    "🔍 Select Asset to Load Chart & Complete History",
+    "🔍 Select Asset to Load Detailed Chart & History",
     options=ASSET_LIST,
     index=0,
 )
@@ -483,11 +478,10 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col4:
     st.metric(label="Timezone", value=tz_short, delta="Live Engine Active")
 
-  # Probability & Estimated Time Display
+  # Detailed Status & Probability info for selected asset
   st.info(
-      f"🤖 **TWT AI Market Status for {selected_symbol}:**"
-      f" `{bot.market_status}`\n"
-      f"⏱️ **Estimated Setup Arrival:** `{bot.est_time}`"
+      f"🤖 **AI Analysis for {selected_symbol}:** `{bot.market_status}`\n"
+      f"⏱️ **Expected Entry Timing / Probability:** `{bot.est_time}`"
   )
 
   if bot.signals:
@@ -507,7 +501,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Support wick touch -> Candles confirmed -> Buyer"
+          "📌 *Instructions:* Support retest & candles confirmed -> Buyer"
           " strength verified!"
       )
     else:
@@ -519,14 +513,14 @@ if bot.df_5 is not None and not bot.df_5.empty:
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Resistance wick touch -> Candles confirmed ->"
-          " Seller strength verified!"
+          "📌 *Instructions:* Resistance retest & candles confirmed -> Seller"
+          " strength verified!"
       )
   else:
     st.warning(
-        "🟡 **STATUS: WAITING FOR STRICT CONFIRMATION**\n\n"
-        "📌 *Instructions:* Patience is key. Engine will not trigger until"
-        " candles fully confirm the retest."
+        "🟡 **STATUS: WAITING FOR CONFIRMATION (No entry given yet)**\n\n"
+        "📌 *Instructions:* Engine will only trigger entry once candles fully"
+        " confirm support/resistance retest."
     )
 
   # Complete Signal History
