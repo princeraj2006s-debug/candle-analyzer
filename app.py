@@ -248,7 +248,7 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
-st.sidebar.text("Logic            : Wick Touch + 2-Candle Retest + Rejection Rules")
+st.sidebar.text("Logic            : Wick Touch + 2-Candle Retest")
 st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss          : ATR Managed")
 
@@ -321,6 +321,7 @@ def fetch_twt_delta_data(symbol, tf):
             df_6 = df_6.set_index("timestamp")
 
             # --- REAL GOLD (XAUT) PRICE CALIBRATION ---
+            # Calibrating XAUT to perfectly align with spot gold scale if needed
             if symbol == "XAUT/USDT":
               gold_calibration_multiplier = (
                   1.0025  # Fine-tuning offset calibration
@@ -529,62 +530,6 @@ class TWTUltimateEngine:
             "Is_Within_1hr": c["is_within_1hr"],
         })
 
-      # --- NEW RULE: RESISTANCE UPPER REJECTION / CONTINUATION SHORT ---
-      if not signal_given and c["close"] >= self.resistance_lvl:
-        prev_c = self.candles[i - 1] if i > 0 else c
-        if (
-            prev_c["color"] == "Green"
-            and (prev_c["high"] - max(prev_c["open"], prev_c["close"]))
-            > abs(prev_c["close"] - prev_c["open"]) * 1.2
-        ) or (c["color"] == "Red" and c["close"] < self.resistance_lvl):
-          signal_given = True
-          sl = round(c["high"] + (1.2 * atr), dec)
-          tp1 = round(c["close"] - (1.0 * atr), dec)
-          tp2 = round(c["close"] - (2.2 * atr), dec)
-          tp3 = round(c["close"] - (3.8 * atr), dec)
-
-          self.signals.append({
-              "Asset": self.symbol,
-              "Time": c["time"],
-              "Candle #": c["id"],
-              "Setup": "Resistance Upper Rejection Short",
-              "Action": "Sell / Short (S) [Upper Rejection] 🔴",
-              "Entry Price": round(c["close"], dec),
-              "Stop Loss (SL)": sl,
-              "TP 1": tp1,
-              "TP 2": tp2,
-              "TP 3": tp3,
-              "Is_Within_1hr": c["is_within_1hr"],
-          })
-
-      # --- NEW RULE: SUPPORT LOWER REJECTION / CONTINUATION LONG ---
-      if not signal_given and c["close"] <= self.support_lvl:
-        prev_c = self.candles[i - 1] if i > 0 else c
-        if (
-            prev_c["color"] == "Red"
-            and (min(prev_c["open"], prev_c["close"]) - prev_c["low"])
-            > abs(prev_c["close"] - prev_c["open"]) * 1.2
-        ) or (c["color"] == "Green" and c["close"] > self.support_lvl):
-          signal_given = True
-          sl = round(c["low"] - (1.2 * atr), dec)
-          tp1 = round(c["close"] + (1.0 * atr), dec)
-          tp2 = round(c["close"] + (2.2 * atr), dec)
-          tp3 = round(c["close"] + (3.8 * atr), dec)
-
-          self.signals.append({
-              "Asset": self.symbol,
-              "Time": c["time"],
-              "Candle #": c["id"],
-              "Setup": "Support Lower Rejection Long",
-              "Action": "Buy / Long (B) [Lower Rejection] 🟢",
-              "Entry Price": round(c["close"], dec),
-              "Stop Loss (SL)": sl,
-              "TP 1": tp1,
-              "TP 2": tp2,
-              "TP 3": tp3,
-              "Is_Within_1hr": c["is_within_1hr"],
-          })
-
 
 # ---------------------------------------------------------
 # MASTER SCANNER (Global Feed for Top Dashboard)
@@ -682,8 +627,8 @@ if bot.df_5 is not None and not bot.df_5.empty:
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Support support/rejection confirmed -> Buyer"
-          " strength!"
+          "📌 *Instructions:* Support wick touch -> 2 Candles above -> Retest"
+          " pullback -> Buyer confirmed!"
       )
     else:
       st.error(
@@ -694,14 +639,14 @@ if bot.df_5 is not None and not bot.df_5.empty:
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Resistance rejection/retest confirmed -> Seller"
-          " strength!"
+          "📌 *Instructions:* Resistance wick touch -> 2 Candles inside -> Retest"
+          " pullback -> Seller confirmed!"
       )
   else:
     st.warning(
-        "🟡 **STATUS: WAITING FOR SETUP**\n\n"
-        "📌 *Instructions:* Monitoring wick touches, retests, and rejection"
-        " rules."
+        "🟡 **STATUS: WAITING FOR WICK TOUCH & 2-CANDLE RETEST**\n\n"
+        "📌 *Instructions:* Monitoring wick touches and multi-candle"
+        " confirmations."
     )
 
   # Complete Signal History
@@ -715,7 +660,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
     st.dataframe(df_history, width="stretch")
 
-  # Chart Rendering (Original Stable Clean Look)
+  # Chart Rendering
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
   for c in bot.candles:
     col = "#26a69a" if c["color"] == "Green" else "#ef5350"
