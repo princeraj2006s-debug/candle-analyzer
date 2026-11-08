@@ -24,8 +24,7 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — First-Touch Level Rejection & Breakout"
-    " Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Breakout & Retest Price Action Engine"
 )
 
 # Timezones & Asset List Configuration
@@ -66,7 +65,7 @@ ASSET_LIST = [
 col_sel, col_tz = st.columns([2, 2])
 with col_sel:
   selected_symbol = st.selectbox(
-      "🔍 Select Delta Exchange Asset", options=ASSET_LIST, index=10
+      "🔍 Select Delta Exchange Asset", options=ASSET_LIST, index=0
   )
 with col_tz:
   selected_tz_name = st.selectbox(
@@ -77,7 +76,7 @@ with col_tz:
 tz_short = selected_tz_name.split(")")[0] + ")"
 
 # Sidebar Session Box Panel
-st.sidebar.markdown("### 🤖 TWT Expert Panel")
+st.sidebar.markdown("### 🤖 TWT Price Action Panel")
 st.sidebar.markdown("---")
 server_time_target = datetime.now(active_tz)
 st.sidebar.text(
@@ -89,8 +88,8 @@ st.sidebar.text("No-Trade Zone      ———  01:00 ➔ 06:00 IST")
 st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Trading Settings")
-st.sidebar.text("Entry method     : Instant First-Touch Level Signal")
+st.sidebar.markdown("#### Trading Strategy")
+st.sidebar.text("Logic            : Breakout -> Retest -> Confirmation")
 st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss          : ATR Managed")
 
@@ -163,7 +162,7 @@ def fetch_twt_delta_data(symbol):
 df_5m, df_4h, df_6h, active_symbol = fetch_twt_delta_data(selected_symbol)
 
 
-class TWTFirstTouchEngine:
+class TWTBreakoutRetestEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5 if df_5 is not None else None
@@ -255,11 +254,12 @@ class TWTFirstTouchEngine:
           "atr": atr,
       })
 
-    # First-touch trigger state flags
-    resistance_triggered = False
-    support_triggered = False
+    # State tracking for Breakout & Retest logic
+    resistance_broken = False
+    support_broken = False
+    signal_given = False
 
-    for i in range(3, len(self.candles)):
+    for i in range(5, len(self.candles)):
       c = self.candles[i]
       c_time = c["dt_ist"].time()
       if time(1, 0) <= c_time <= time(6, 0):
@@ -268,54 +268,74 @@ class TWTFirstTouchEngine:
       atr = c["atr"]
       dec = get_decimals(c["close"])
 
-      # --- INSTANT FIRST TOUCH / CROSS 4H RESISTANCE (Short Signal) ---
-      # Triggered the moment price touches or crosses above resistance range
-      is_touching_res = c["high"] >= self.resistance_lvl - (0.8 * atr)
-      if is_touching_res and not resistance_triggered:
-        resistance_triggered = True
-        sl = round(c["high"] + (1.5 * atr), dec)
-        tp1 = round(c["close"] - (1.2 * atr), dec)
-        tp2 = round(c["close"] - (2.5 * atr), dec)
-        tp3 = round(c["close"] - (4.0 * atr), dec)
+      # 1. Check if price broke above 4H Resistance
+      if c["close"] > self.resistance_lvl:
+        resistance_broken = True
 
-        self.signals.append({
-            "Time": c["time"],
-            "Candle #": c["id"],
-            "Setup": "Instant First-Touch Resistance",
-            "Action": "Sell / Short (S) [1st Touch] 🔴",
-            "Entry Price": round(c["close"], dec),
-            "Stop Loss (SL)": sl,
-            "TP 1": tp1,
-            "TP 2": tp2,
-            "TP 3": tp3,
-        })
+      # 2. Resistance Retest & Seller Confirmation (Short Signal)
+      # Condition: Resistance pehle break ho chuki ho, ab price wapas resistance ke paas aaye, aur red candle bane (Seller strong, Buyer weak)
+      if (
+          resistance_broken
+          and not signal_given
+          and c["high"] >= self.resistance_lvl - (0.5 * atr)
+          and c["close"] <= self.resistance_lvl + (0.3 * atr)
+      ):
+        if c["color"] == "Red":  # Seller confirmation candle
+          signal_given = True
+          sl = round(c["high"] + (1.5 * atr), dec)
+          tp1 = round(c["close"] - (1.2 * atr), dec)
+          tp2 = round(c["close"] - (2.5 * atr), dec)
+          tp3 = round(c["close"] - (4.0 * atr), dec)
 
-      # --- INSTANT FIRST TOUCH / CROSS 6H SUPPORT (Long Signal) ---
-      # Triggered the moment price touches or crosses below support range
-      is_touching_sup = c["low"] <= self.support_lvl + (0.8 * atr)
-      if is_touching_sup and not support_triggered:
-        support_triggered = True
-        sl = round(c["low"] - (1.5 * atr), dec)
-        tp1 = round(c["close"] + (1.2 * atr), dec)
-        tp2 = round(c["close"] + (2.5 * atr), dec)
-        tp3 = round(c["close"] + (4.0 * atr), dec)
+          self.signals.append({
+              "Time": c["time"],
+              "Candle #": c["id"],
+              "Setup": "Resistance Breakout & Retest Short",
+              "Action": "Sell / Short (S) [Retest Confirmed] 🔴",
+              "Entry Price": round(c["close"], dec),
+              "Stop Loss (SL)": sl,
+              "TP 1": tp1,
+              "TP 2": tp2,
+              "TP 3": tp3,
+          })
 
-        self.signals.append({
-            "Time": c["time"],
-            "Candle #": c["id"],
-            "Setup": "Instant First-Touch Support",
-            "Action": "Buy / Long (B) [1st Touch] 🟢",
-            "Entry Price": round(c["close"], dec),
-            "Stop Loss (SL)": sl,
-            "TP 1": tp1,
-            "TP 2": tp2,
-            "TP 3": tp3,
-        })
+      # 3. Check if price broke below 6H Support
+      if c["close"] < self.support_lvl:
+        support_broken = True
+
+      # 4. Support Retest & Buyer Confirmation (Long Signal)
+      # Condition: Support pehle break ho chuki ho, ab price wapas support ke upar aaye, aur green candle bane (Buyer strong, Seller weak)
+      if (
+          support_broken
+          and not signal_given
+          and c["low"] <= self.support_lvl + (0.5 * atr)
+          and c["close"] >= self.support_lvl - (0.3 * atr)
+      ):
+        if c["color"] == "Green":  # Buyer confirmation candle
+          signal_given = True
+          sl = round(c["low"] - (1.5 * atr), dec)
+          tp1 = round(c["close"] + (1.2 * atr), dec)
+          tp2 = round(c["close"] + (2.5 * atr), dec)
+          tp3 = round(c["close"] + (4.0 * atr), dec)
+
+          self.signals.append({
+              "Time": c["time"],
+              "Candle #": c["id"],
+              "Setup": "Support Breakout & Retest Long",
+              "Action": "Buy / Long (B) [Retest Confirmed] 🟢",
+              "Entry Price": round(c["close"], dec),
+              "Stop Loss (SL)": sl,
+              "TP 1": tp1,
+              "TP 2": tp2,
+              "TP 3": tp3,
+          })
 
 
-with st.spinner(f"⚡ Loading TWT First-Touch Engine for {selected_symbol}..."):
+with st.spinner(
+    f"⚡ Loading TWT Breakout & Retest Engine for {selected_symbol}..."
+):
   if df_5m is not None and not df_5m.empty:
-    bot = TWTFirstTouchEngine(df_5m, df_4h, df_6h, selected_symbol, active_tz)
+    bot = TWTBreakoutRetestEngine(df_5m, df_4h, df_6h, selected_symbol, active_tz)
     bot.calculate_indicators()
     bot.parse_and_scan()
 
@@ -334,11 +354,11 @@ with st.spinner(f"⚡ Loading TWT First-Touch Engine for {selected_symbol}..."):
     with col3:
       st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
     with col4:
-      st.metric(label="Timezone", value=tz_short, delta="Instant Active")
+      st.metric(label="Timezone", value=tz_short, delta="Retest Active")
 
     st.markdown("---")
     st.subheader(
-        "🎯 Trade With Tuckyaa (TUCKYAA) Instant First-Touch Engine"
+        "🎯 Trade With Tuckyaa (TUCKYAA) Breakout & Retest Confirmation Engine"
     )
 
     if bot.signals:
@@ -351,32 +371,33 @@ with st.spinner(f"⚡ Loading TWT First-Touch Engine for {selected_symbol}..."):
 
       if is_buy:
         st.success(
-            f"🟢 **TWT FIRST-TOUCH SETUP: {latest_sig['Action']}**\n\n"
+            f"🟢 **TWT RETEST SETUP: {latest_sig['Action']}**\n\n"
             f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
             f" #{latest_sig['Candle #']})\n"
             f"- **Entry Price:** `{entry_p}`\n"
             f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
             f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
             f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-            "📌 *Instructions:* Instant first-touch support signal triggered!"
+            "📌 *Instructions:* Support breakout -> Retest -> Buyer strength"
+            " confirmed!"
         )
       else:
         st.error(
-            f"🔴 **TWT FIRST-TOUCH SETUP: {latest_sig['Action']}**\n\n"
+            f"🔴 **TWT RETEST SETUP: {latest_sig['Action']}**\n\n"
             f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
             f" #{latest_sig['Candle #']})\n"
             f"- **Entry Price:** `{entry_p}`\n"
             f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
             f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
             f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-            "📌 *Instructions:* Instant first-touch resistance signal"
-            " triggered!"
+            "📌 *Instructions:* Resistance breakout -> Retest -> Seller strength"
+            " confirmed!"
         )
     else:
       st.warning(
-          "🟡 **STATUS: WAITING FOR FIRST LEVEL INTERACTION**\n\n"
-          "📌 *Instructions:* Monitoring exact candle touch on 4H Resistance and"
-          " 6H Support."
+          "🟡 **STATUS: WAITING FOR BREAKOUT & RETEST SETUP**\n\n"
+          "📌 *Instructions:* Bot is waiting for level breakout, pullback,"
+          " and candle confirmation."
       )
 
     if bot.signals:
@@ -466,7 +487,7 @@ with st.spinner(f"⚡ Loading TWT First-Touch Engine for {selected_symbol}..."):
       )
 
     ax.set_title(
-        f"{selected_symbol} 5m — TRADE WITH TUCKYAA Instant Engine"
+        f"{selected_symbol} 5m — TRADE WITH TUCKYAA Breakout & Retest Engine"
         f" ({tz_short})",
         color="white",
         fontsize=14,
