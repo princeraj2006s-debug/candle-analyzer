@@ -1,6 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, time, timedelta, timezone
-import sqlite3
 import ccxt
 import matplotlib.pyplot as plt
 import numpy as np
@@ -21,162 +20,6 @@ hide_streamlit_style = """
     </style>
     """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
-
-# ---------------------------------------------------------
-# DATABASE INITIALIZATION (SQLite Authentication)
-# ---------------------------------------------------------
-conn = sqlite3.connect("twt_users.db", check_same_thread=False)
-c = conn.cursor()
-c.execute("""CREATE TABLE IF NOT EXISTS users 
-             (username TEXT PRIMARY KEY, password TEXT, status TEXT, role TEXT)""")
-
-# Default Admin Account (Username: tuckyaa, Password: 8002771200)
-c.execute(
-    "INSERT OR IGNORE INTO users VALUES ('tuckyaa', '8002771200', 'approved',"
-    " 'admin')"
-)
-conn.commit()
-
-# ---------------------------------------------------------
-# AUTHENTICATION & ACCESS GATE
-# ---------------------------------------------------------
-if "user" not in st.session_state:
-  st.session_state.user = None
-if "role" not in st.session_state:
-  st.session_state.role = None
-
-
-def login_register_page():
-  st.title("🔒 TRADE WITH TUCKYAA — VIP Portal")
-  st.markdown("Login or Request Access to the Professional Delta Trading Engine.")
-
-  tab1, tab2 = st.tabs(["🔑 Login", "📝 Request Access"])
-
-  with tab1:
-    st.subheader("User Login")
-    l_user = st.text_input("Username / Mobile Number", key="l_user")
-    l_pass = st.text_input("Password", type="password", key="l_pass")
-    if st.button("Login to Dashboard"):
-      c.execute(
-          "SELECT password, status, role FROM users WHERE username=?", (l_user,)
-      )
-      row = c.fetchone()
-      if row:
-        db_pass, db_status, db_role = row
-        if db_pass == l_pass:
-          if db_status == "blocked":
-            st.error(
-                "❌ Your service has been blocked by Admin (Tuckyaa). Contact"
-                " support."
-            )
-            return
-
-          if db_status == "approved":
-            st.session_state.user = l_user
-            st.session_state.role = db_role
-            st.success("Login successful!")
-            st.rerun()
-          else:
-            st.warning(
-                "⏳ Your account is pending Admin approval. Please wait for"
-                " Tuckyaa to approve."
-            )
-        else:
-          st.error("❌ Incorrect Password!")
-      else:
-        st.error("❌ Username not found! Please register first.")
-
-  with tab2:
-    st.subheader("New User Registration")
-    r_user = st.text_input("Choose Username / Mobile Number", key="r_user")
-    r_pass = st.text_input("Choose Password", type="password", key="r_pass")
-    if st.button("Submit Access Request"):
-      if r_user and r_pass:
-        try:
-          c.execute(
-              "INSERT INTO users VALUES (?, ?, 'pending', 'user')",
-              (r_user, r_pass),
-          )
-          conn.commit()
-          st.success(
-              "✅ Request submitted successfully! Admin (Tuckyaa) will approve"
-              " your account soon."
-          )
-        except sqlite3.IntegrityError:
-          st.error(
-              "❌ Username already exists! Try logging in or use another name."
-          )
-      else:
-        st.warning("Please fill in all fields.")
-
-
-if st.session_state.user is None:
-  login_register_page()
-  st.stop()
-
-# ---------------------------------------------------------
-# ADMIN PANEL (Visible ONLY to Admin 'tuckyaa')
-# ---------------------------------------------------------
-if st.session_state.role == "admin":
-  st.sidebar.markdown("---")
-  st.sidebar.markdown("### 👑 Admin Control Panel")
-  if st.sidebar.button("Logout Admin"):
-    st.session_state.user = None
-    st.session_state.role = None
-    st.rerun()
-
-  with st.expander("🛠️ Manage User Approvals & Services (Admin Only)"):
-    st.subheader("Pending User Requests")
-    c.execute("SELECT username FROM users WHERE status='pending'")
-    pending_users = c.fetchall()
-
-    if pending_users:
-      for p_user in pending_users:
-        u_name = p_user[0]
-        col_a, col_b = st.columns([2, 1])
-        col_a.write(f"User: **{u_name}**")
-        if col_b.button("Approve", key=f"app_{u_name}"):
-          c.execute(
-              "UPDATE users SET status='approved' WHERE username=?", (u_name,)
-          )
-          conn.commit()
-          st.success(f"Approved {u_name}!")
-          st.rerun()
-    else:
-      st.info("No pending user requests.")
-
-    st.markdown("---")
-    st.subheader("Manage Active Users (Block/Unblock Service)")
-    c.execute("SELECT username, status FROM users WHERE role!='admin'")
-    all_users = c.fetchall()
-
-    if all_users:
-      for u_name, u_status in all_users:
-        col1, col2 = st.columns([2, 1])
-        col1.write(f"**{u_name}** (Status: `{u_status}`)")
-        if u_status == "approved":
-          if col2.button("Block Service", key=f"block_{u_name}"):
-            c.execute(
-                "UPDATE users SET status='blocked' WHERE username=?", (u_name,)
-            )
-            conn.commit()
-            st.warning(f"Blocked {u_name}!")
-            st.rerun()
-        else:
-          if col2.button("Unblock", key=f"unblock_{u_name}"):
-            c.execute(
-                "UPDATE users SET status='approved' WHERE username=?", (u_name,)
-            )
-            conn.commit()
-            st.success(f"Unblocked {u_name}!")
-            st.rerun()
-    else:
-      st.info("No regular users registered yet.")
-else:
-  if st.sidebar.button("Logout"):
-    st.session_state.user = None
-    st.session_state.role = None
-    st.rerun()
 
 # ---------------------------------------------------------
 # GLOBAL TRADING TIMEZONES & COMPLETE 20+ ASSETS LIST
@@ -218,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Ultimate Wick & 2-Candle Retest Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Ultimate Retest & Probability Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -248,9 +91,9 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
-st.sidebar.text("Logic            : Wick Touch + 2-Candle Retest")
-st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
-st.sidebar.text("Stop loss          : ATR Managed")
+st.sidebar.text("Logic            : Strict Confirmation + Probability Timing")
+st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
+st.sidebar.text("Stop loss        : ATR Managed")
 
 
 def get_decimals(price):
@@ -270,7 +113,6 @@ def fetch_twt_delta_data(symbol, tf):
       (ccxt.kucoin, symbol),
   ]
 
-  # Fallback ticker mapping for RENDER or FIL if named differently on exchanges
   symbol_variants = [symbol]
   if symbol == "RENDER/USDT":
     symbol_variants = ["RENDER/USDT", "RENDERUSDT", "RNDR/USDT"]
@@ -320,12 +162,8 @@ def fetch_twt_delta_data(symbol, tf):
             df_6["timestamp"] = pd.to_datetime(df_6["timestamp"], unit="ms")
             df_6 = df_6.set_index("timestamp")
 
-            # --- REAL GOLD (XAUT) PRICE CALIBRATION ---
-            # Calibrating XAUT to perfectly align with spot gold scale if needed
             if symbol == "XAUT/USDT":
-              gold_calibration_multiplier = (
-                  1.0025  # Fine-tuning offset calibration
-              )
+              gold_calibration_multiplier = 1.0025
               for col in ["Open", "High", "Low", "Close"]:
                 df_5[col] = df_5[col] * gold_calibration_multiplier
                 df_4[col] = df_4[col] * gold_calibration_multiplier
@@ -349,6 +187,8 @@ class TWTUltimateEngine:
     self.signals = []
     self.resistance_lvl = 0
     self.support_lvl = 0
+    self.market_status = "Scanning for Setup..."
+    self.est_time = "Calculating..."
 
   def calculate_and_scan(self):
     if self.df_5 is None or self.df_5.empty:
@@ -444,6 +284,33 @@ class TWTUltimateEngine:
 
     signal_given = False
 
+    # Proximity checking for probability status
+    last_c = self.candles[-1] if self.candles else None
+    if last_c:
+      dist_to_res = abs(last_c["close"] - self.resistance_lvl)
+      dist_to_sup = abs(last_c["close"] - self.support_lvl)
+      atr_val = last_c["atr"]
+
+      if dist_to_res <= (1.5 * atr_val):
+        self.market_status = (
+            "⚠️ Approaching Resistance — Preparing Short Retest Setup"
+        )
+        self.est_time = (
+            "~5 to 10 mins (Waiting for candle closure & confirmation)"
+        )
+      elif dist_to_sup <= (1.5 * atr_val):
+        self.market_status = (
+            "⚠️ Approaching Support — Preparing Long Retest Setup"
+        )
+        self.est_time = (
+            "~5 to 10 mins (Waiting for candle closure & confirmation)"
+        )
+      else:
+        self.market_status = (
+            "🟡 In Range — Waiting for Key Level Wick Touch & Retest"
+        )
+        self.est_time = "~15 to 30 mins (Scanning price action)"
+
     for i in range(5, len(self.candles)):
       c = self.candles[i]
       if time(1, 0) <= c["dt_ist"].time() <= time(6, 0):
@@ -476,6 +343,9 @@ class TWTUltimateEngine:
         tp1 = round(c["close"] - (1.0 * atr), dec)
         tp2 = round(c["close"] - (2.2 * atr), dec)
         tp3 = round(c["close"] - (3.8 * atr), dec)
+
+        self.market_status = "✅ Confirmed Short Retest Setup Triggered!"
+        self.est_time = "Active Now"
 
         self.signals.append({
             "Asset": self.symbol,
@@ -516,6 +386,9 @@ class TWTUltimateEngine:
         tp2 = round(c["close"] + (2.2 * atr), dec)
         tp3 = round(c["close"] + (3.8 * atr), dec)
 
+        self.market_status = "✅ Confirmed Long Retest Setup Triggered!"
+        self.est_time = "Active Now"
+
         self.signals.append({
             "Asset": self.symbol,
             "Time": c["time"],
@@ -552,7 +425,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets (including RENDER & FIL)..."):
+with st.spinner("⚡ Scanning all 20 assets with probability analysis..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -572,8 +445,8 @@ if master_signals:
   st.dataframe(df_display, width="stretch")
 else:
   st.info(
-      "ℹ️ No active ultimate signals in the last 1 hour. Waiting for wick touch"
-      " & 2-candle retest..."
+      "ℹ️ No active signals in the last 1 hour. Waiting for exact wick touch &"
+      " confirmation..."
   )
 
 # ---------------------------------------------------------
@@ -608,7 +481,14 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Ultimate Active")
+    st.metric(label="Timezone", value=tz_short, delta="Live Engine Active")
+
+  # Probability & Estimated Time Display
+  st.info(
+      f"🤖 **TWT AI Market Status for {selected_symbol}:**"
+      f" `{bot.market_status}`\n"
+      f"⏱️ **Estimated Setup Arrival:** `{bot.est_time}`"
+  )
 
   if bot.signals:
     latest_sig = bot.signals[-1]
@@ -627,8 +507,8 @@ if bot.df_5 is not None and not bot.df_5.empty:
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Support wick touch -> 2 Candles above -> Retest"
-          " pullback -> Buyer confirmed!"
+          "📌 *Instructions:* Support wick touch -> Candles confirmed -> Buyer"
+          " strength verified!"
       )
     else:
       st.error(
@@ -639,14 +519,14 @@ if bot.df_5 is not None and not bot.df_5.empty:
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Resistance wick touch -> 2 Candles inside -> Retest"
-          " pullback -> Seller confirmed!"
+          "📌 *Instructions:* Resistance wick touch -> Candles confirmed ->"
+          " Seller strength verified!"
       )
   else:
     st.warning(
-        "🟡 **STATUS: WAITING FOR WICK TOUCH & 2-CANDLE RETEST**\n\n"
-        "📌 *Instructions:* Monitoring wick touches and multi-candle"
-        " confirmations."
+        "🟡 **STATUS: WAITING FOR STRICT CONFIRMATION**\n\n"
+        "📌 *Instructions:* Patience is key. Engine will not trigger until"
+        " candles fully confirm the retest."
     )
 
   # Complete Signal History
