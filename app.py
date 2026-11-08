@@ -66,7 +66,7 @@ ASSET_LIST = [
 col_sel, col_tz = st.columns([2, 2])
 with col_sel:
   selected_symbol = st.selectbox(
-      "🔍 Select Delta Exchange Asset", options=ASSET_LIST, index=3
+      "🔍 Select Delta Exchange Asset", options=ASSET_LIST, index=10
   )
 with col_tz:
   selected_tz_name = st.selectbox(
@@ -90,7 +90,7 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Settings")
-st.sidebar.text("Entry method     : First-Touch Level Rejection")
+st.sidebar.text("Entry method     : Instant First-Touch Level Signal")
 st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss          : ATR Managed")
 
@@ -117,7 +117,7 @@ def fetch_twt_delta_data(symbol):
       exchange = ex_class({"enableRateLimit": True, "timeout": 15000})
       exchange.load_markets()
       if sym in exchange.markets:
-        ohlcv_5m = exchange.fetch_ohlcv(sym, timeframe="5m", limit=80)
+        ohlcv_5m = exchange.fetch_ohlcv(sym, timeframe="5m", limit=100)
         ohlcv_4h = exchange.fetch_ohlcv(sym, timeframe="4h", limit=25)
         ohlcv_6h = exchange.fetch_ohlcv(sym, timeframe="6h", limit=25)
 
@@ -205,7 +205,7 @@ class TWTFirstTouchEngine:
         if not filtered_6h.empty:
           self.support_lvl = float(filtered_6h["Low"].iloc[-1])
         else:
-          self.support_lvl = float(self.df_6["Low"].iloc[-1])
+          self.support_lvl = float(filtered_6h["Low"].iloc[-1])
       elif self.df_4 is not None:
         self.support_lvl = float(self.df_4["Low"].iloc[-1])
 
@@ -217,7 +217,6 @@ class TWTFirstTouchEngine:
           ),
       )
       self.df_5["ATR"] = self.df_5["TR"].rolling(14).mean()
-      self.df_5["VolMA"] = self.df_5["Volume"].rolling(20).mean()
 
   def parse_and_scan(self):
     if self.df_5 is None or self.df_5.empty:
@@ -242,7 +241,6 @@ class TWTFirstTouchEngine:
           float(r["Volume"]),
       )
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
-      vol_ma = float(r["VolMA"]) if not pd.isna(r["VolMA"]) else v
 
       self.candles.append({
           "id": idx + 1,
@@ -254,15 +252,14 @@ class TWTFirstTouchEngine:
           "low": l,
           "close": c,
           "volume": v,
-          "vol_ma": vol_ma,
           "atr": atr,
       })
 
-    # First-touch trigger state variables
+    # First-touch trigger state flags
     resistance_triggered = False
     support_triggered = False
 
-    for i in range(5, len(self.candles)):
+    for i in range(3, len(self.candles)):
       c = self.candles[i]
       c_time = c["dt_ist"].time()
       if time(1, 0) <= c_time <= time(6, 0):
@@ -270,57 +267,50 @@ class TWTFirstTouchEngine:
 
       atr = c["atr"]
       dec = get_decimals(c["close"])
-      is_high_vol = c["volume"] > (c["vol_ma"] * 1.1)
 
-      # --- FIRST TOUCH 4H RESISTANCE REJECTION (Short Setup) ---
-      is_touching_res = (
-          c["high"] >= self.resistance_lvl - (0.6 * atr)
-          and c["high"] <= self.resistance_lvl + (0.6 * atr)
-      )
-      if is_touching_res and not resistance_triggered and is_high_vol:
-        if c["color"] == "Red":
-          resistance_triggered = True
-          sl = round(c["high"] + (1.5 * atr), dec)
-          tp1 = round(c["close"] - (1.2 * atr), dec)
-          tp2 = round(c["close"] - (2.5 * atr), dec)
-          tp3 = round(c["close"] - (4.0 * atr), dec)
+      # --- INSTANT FIRST TOUCH / CROSS 4H RESISTANCE (Short Signal) ---
+      # Triggered the moment price touches or crosses above resistance range
+      is_touching_res = c["high"] >= self.resistance_lvl - (0.8 * atr)
+      if is_touching_res and not resistance_triggered:
+        resistance_triggered = True
+        sl = round(c["high"] + (1.5 * atr), dec)
+        tp1 = round(c["close"] - (1.2 * atr), dec)
+        tp2 = round(c["close"] - (2.5 * atr), dec)
+        tp3 = round(c["close"] - (4.0 * atr), dec)
 
-          self.signals.append({
-              "Time": c["time"],
-              "Candle #": c["id"],
-              "Setup": "First-Touch Resistance Rejection",
-              "Action": "Sell / Short (S) [1st Touch] 🔴",
-              "Entry Price": round(c["close"], dec),
-              "Stop Loss (SL)": sl,
-              "TP 1": tp1,
-              "TP 2": tp2,
-              "TP 3": tp3,
-          })
+        self.signals.append({
+            "Time": c["time"],
+            "Candle #": c["id"],
+            "Setup": "Instant First-Touch Resistance",
+            "Action": "Sell / Short (S) [1st Touch] 🔴",
+            "Entry Price": round(c["close"], dec),
+            "Stop Loss (SL)": sl,
+            "TP 1": tp1,
+            "TP 2": tp2,
+            "TP 3": tp3,
+        })
 
-      # --- FIRST TOUCH 6H SUPPORT BOUNCE (Long Setup) ---
-      is_touching_sup = (
-          c["low"] <= self.support_lvl + (0.6 * atr)
-          and c["low"] >= self.support_lvl - (0.6 * atr)
-      )
-      if is_touching_sup and not support_triggered and is_high_vol:
-        if c["color"] == "Green":
-          support_triggered = True
-          sl = round(c["low"] - (1.5 * atr), dec)
-          tp1 = round(c["close"] + (1.2 * atr), dec)
-          tp2 = round(c["close"] + (2.5 * atr), dec)
-          tp3 = round(c["close"] + (4.0 * atr), dec)
+      # --- INSTANT FIRST TOUCH / CROSS 6H SUPPORT (Long Signal) ---
+      # Triggered the moment price touches or crosses below support range
+      is_touching_sup = c["low"] <= self.support_lvl + (0.8 * atr)
+      if is_touching_sup and not support_triggered:
+        support_triggered = True
+        sl = round(c["low"] - (1.5 * atr), dec)
+        tp1 = round(c["close"] + (1.2 * atr), dec)
+        tp2 = round(c["close"] + (2.5 * atr), dec)
+        tp3 = round(c["close"] + (4.0 * atr), dec)
 
-          self.signals.append({
-              "Time": c["time"],
-              "Candle #": c["id"],
-              "Setup": "First-Touch Support Bounce",
-              "Action": "Buy / Long (B) [1st Touch] 🟢",
-              "Entry Price": round(c["close"], dec),
-              "Stop Loss (SL)": sl,
-              "TP 1": tp1,
-              "TP 2": tp2,
-              "TP 3": tp3,
-          })
+        self.signals.append({
+            "Time": c["time"],
+            "Candle #": c["id"],
+            "Setup": "Instant First-Touch Support",
+            "Action": "Buy / Long (B) [1st Touch] 🟢",
+            "Entry Price": round(c["close"], dec),
+            "Stop Loss (SL)": sl,
+            "TP 1": tp1,
+            "TP 2": tp2,
+            "TP 3": tp3,
+        })
 
 
 with st.spinner(f"⚡ Loading TWT First-Touch Engine for {selected_symbol}..."):
@@ -344,11 +334,11 @@ with st.spinner(f"⚡ Loading TWT First-Touch Engine for {selected_symbol}..."):
     with col3:
       st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
     with col4:
-      st.metric(label="Timezone", value=tz_short, delta="First-Touch Active")
+      st.metric(label="Timezone", value=tz_short, delta="Instant Active")
 
     st.markdown("---")
     st.subheader(
-        "🎯 Trade With Tuckyaa (TUCKYAA) First-Touch Rejection Engine"
+        "🎯 Trade With Tuckyaa (TUCKYAA) Instant First-Touch Engine"
     )
 
     if bot.signals:
@@ -368,8 +358,7 @@ with st.spinner(f"⚡ Loading TWT First-Touch Engine for {selected_symbol}..."):
             f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
             f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
             f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-            "📌 *Instructions:* First-touch support bounce confirmed with"
-            " volume!"
+            "📌 *Instructions:* Instant first-touch support signal triggered!"
         )
       else:
         st.error(
@@ -380,14 +369,14 @@ with st.spinner(f"⚡ Loading TWT First-Touch Engine for {selected_symbol}..."):
             f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
             f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
             f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-            "📌 *Instructions:* First-touch resistance rejection confirmed with"
-            " volume!"
+            "📌 *Instructions:* Instant first-touch resistance signal"
+            " triggered!"
         )
     else:
       st.warning(
-          "🟡 **STATUS: WAITING FOR FIRST-TOUCH LEVEL REACTION**\n\n"
-          "📌 *Instructions:* Monitoring volume and price action near 4H"
-          " Resistance and 6H Support."
+          "🟡 **STATUS: WAITING FOR FIRST LEVEL INTERACTION**\n\n"
+          "📌 *Instructions:* Monitoring exact candle touch on 4H Resistance and"
+          " 6H Support."
       )
 
     if bot.signals:
@@ -477,7 +466,7 @@ with st.spinner(f"⚡ Loading TWT First-Touch Engine for {selected_symbol}..."):
       )
 
     ax.set_title(
-        f"{selected_symbol} 5m — TRADE WITH TUCKYAA First-Touch Engine"
+        f"{selected_symbol} 5m — TRADE WITH TUCKYAA Instant Engine"
         f" ({tz_short})",
         color="white",
         fontsize=14,
