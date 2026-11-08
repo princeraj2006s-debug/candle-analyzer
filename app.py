@@ -214,7 +214,7 @@ ASSET_LIST = [
     "RENDER/USDT",
 ]
 
-count = st_autorefresh(interval=15000, key="twt_delta_refresh")
+count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
     "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Delta Exchange Multi-Retest Level Engine"
@@ -247,7 +247,7 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Settings")
-st.sidebar.text("Entry method     : Smart Multi-Touch Retest")
+st.sidebar.text("Entry method     : Rejection + EMA 50 Filter")
 st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss          : ATR Managed")
 
@@ -261,7 +261,7 @@ def get_decimals(price):
     return 2
 
 
-@st.cache_data(ttl=15)
+@st.cache_data(ttl=30)
 def fetch_twt_delta_data(symbol, tf):
   exchanges_to_try = [
       (ccxt.binance, symbol),
@@ -271,7 +271,7 @@ def fetch_twt_delta_data(symbol, tf):
 
   for ex_class, sym in exchanges_to_try:
     try:
-      exchange = ex_class({"enableRateLimit": True, "timeout": 6000})
+      exchange = ex_class({"enableRateLimit": True, "timeout": 5000})
       exchange.load_markets()
       if sym in exchange.markets:
         ohlcv_tf = exchange.fetch_ohlcv(sym, timeframe=tf, limit=80)
@@ -374,6 +374,7 @@ class TWTDeltaEngine:
         ),
     )
     self.df_5["ATR"] = self.df_5["TR"].rolling(14).mean()
+    self.df_5["EMA50"] = self.df_5["Close"].ewm(span=50, adjust=False).mean()
 
     for idx, row in enumerate(self.df_5.iterrows()):
       dt_utc = row[0]
@@ -392,8 +393,8 @@ class TWTDeltaEngine:
           float(r["Volume"]),
       )
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
+      ema50 = float(r["EMA50"]) if not pd.isna(r["EMA50"]) else c
 
-      # Check if signal occurred within the last 60 minutes (1 hour)
       age_minutes = (current_utc_time - dt_utc).total_seconds() / 60.0
       is_within_1hr = age_minutes <= 60.0
 
@@ -409,6 +410,7 @@ class TWTDeltaEngine:
           "close": c,
           "volume": v,
           "atr": atr,
+          "ema50": ema50,
           "is_within_1hr": is_within_1hr,
       })
 
@@ -425,11 +427,24 @@ class TWTDeltaEngine:
       atr = c["atr"]
       dec = get_decimals(c["close"])
 
+      # ---------------------------------------------------------
+      # STRICT REJECTION + EMA TREND FILTER LOGIC
+      # ---------------------------------------------------------
+
+      # 1. Resistance Sell Setup (Only when price is BELOW EMA 50 - Bearish trend)
       is_near_res = (
           c["high"] >= self.resistance_lvl - (0.8 * atr)
           and c["high"] <= self.resistance_lvl + (0.8 * atr)
       )
-      if is_near_res and (i - last_res_id > 5):
+      is_rejection_res = c["color"] == "Red"
+      is_trend_bearish = c["close"] < c["ema50"]
+
+      if (
+          is_near_res
+          and is_rejection_res
+          and is_trend_bearish
+          and (i - last_res_id > 5)
+      ):
         res_touch_count += 1
         last_res_id = i
         if res_touch_count >= 2:
@@ -443,7 +458,7 @@ class TWTDeltaEngine:
               "Time": c["time"],
               "Candle #": c["id"],
               "Setup": "Resistance Sell",
-              "Action": f"Sell / Short (S) [Retest #{res_touch_count}] 🔴",
+              "Action": f"Sell / Short (S) [Rej #{res_touch_count}] 🔴",
               "Entry Price": round(c["close"], dec),
               "Stop Loss (SL)": sl,
               "TP 1": tp1,
@@ -452,11 +467,20 @@ class TWTDeltaEngine:
               "Is_Within_1hr": c["is_within_1hr"],
           })
 
+      # 2. Support Buy Setup (Only when price is ABOVE EMA 50 - Bullish trend / No falling knives)
       is_near_sup = (
           c["low"] <= self.support_lvl + (0.8 * atr)
           and c["low"] >= self.support_lvl - (0.8 * atr)
       )
-      if is_near_sup and (i - last_sup_id > 5):
+      is_rejection_sup = c["color"] == "Green"
+      is_trend_bullish = c["close"] > c["ema50"]
+
+      if (
+          is_near_sup
+          and is_rejection_sup
+          and is_trend_bullish
+          and (i - last_sup_id > 5)
+      ):
         sup_touch_count += 1
         last_sup_id = i
         if sup_touch_count >= 2:
@@ -470,7 +494,7 @@ class TWTDeltaEngine:
               "Time": c["time"],
               "Candle #": c["id"],
               "Setup": "Support Buy",
-              "Action": f"Buy / Long (B) [Retest #{sup_touch_count}] 🟢",
+              "Action": f"Buy / Long (B) [Rej #{sup_touch_count}] 🟢",
               "Entry Price": round(c["close"], dec),
               "Stop Loss (SL)": sl,
               "TP 1": tp1,
@@ -481,7 +505,7 @@ class TWTDeltaEngine:
 
 
 # ---------------------------------------------------------
-# LIGHTNING-FAST PARALLEL MASTER SCANNER (ALL 20+ ASSETS)
+# STABLE PARALLEL SCANNER (OPTIMIZED THREADS FOR STREAMLIT)
 # ---------------------------------------------------------
 st.markdown("---")
 st.subheader("🔥 TWT Live Master Signal Scanner (Last 1 Hour Active Entries)")
@@ -501,10 +525,8 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner(
-    "⚡ Lightning scanning all 20+ assets in parallel... Please wait."
-):
-  with ThreadPoolExecutor(max_workers=10) as executor:
+with st.spinner("⚡ Scanning assets safely with EMA Trend Filter..."):
+  with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
     }
@@ -517,7 +539,8 @@ with st.spinner(
 
 if master_signals:
   st.success(
-      f"✅ Found {len(master_signals)} Active Setup(s) in the last 1 hour!"
+      f"✅ Found {len(master_signals)} High-Probability Setup(s) in the last 1"
+      " hour!"
   )
   df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
@@ -525,12 +548,12 @@ if master_signals:
   st.dataframe(df_display, width="stretch")
 else:
   st.info(
-      "ℹ️ No retest signals found in the last 1 hour across 20+ assets. Select"
-      " any coin below to view its live chart."
+      "ℹ️ No trend-filtered signals in the last 1 hour. Safe from false"
+      " breakouts!"
   )
 
 # ---------------------------------------------------------
-# MANUAL ASSET SELECTOR & CHART VIEWER (WITH COMPLETE 20+ ASSETS)
+# MANUAL ASSET SELECTOR & CHART VIEWER
 # ---------------------------------------------------------
 st.markdown("---")
 st.subheader("📊 Manual Asset Inspector & Chart")
@@ -567,7 +590,6 @@ if bot.df_5 is not None and not bot.df_5.empty:
     entry_p = latest_sig["Entry Price"]
     signal_time = latest_sig["Time"]
 
-    # 40 Minutes Warning Message Displayed At The Top Of Signal
     st.warning("⚠️ **Don't use after 40 minutes!**")
 
     if is_buy:
@@ -579,7 +601,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Support multi-touch retest confirmed!"
+          "📌 *Instructions:* Support bullish rejection + EMA trend confirmed!"
       )
     else:
       st.error(
@@ -590,10 +612,13 @@ if bot.df_5 is not None and not bot.df_5.empty:
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Resistance multi-touch retest confirmed!"
+          "📌 *Instructions:* Resistance bearish rejection + EMA trend"
+          " confirmed!"
       )
   else:
-    st.warning("🟡 Monitoring price action near support and resistance levels...")
+    st.warning(
+        "🟡 Monitoring price action with strict EMA trend & rejection filters..."
+    )
 
   # Chart Rendering
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
