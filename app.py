@@ -24,7 +24,7 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Breakout & Retest Price Action Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Breakout & Retest Confirmation Engine"
 )
 
 # Timezones & Asset List Configuration
@@ -65,7 +65,7 @@ ASSET_LIST = [
 col_sel, col_tz = st.columns([2, 2])
 with col_sel:
   selected_symbol = st.selectbox(
-      "🔍 Select Delta Exchange Asset", options=ASSET_LIST, index=0
+      "Select Delta Exchange Asset", options=ASSET_LIST, index=0
   )
 with col_tz:
   selected_tz_name = st.selectbox(
@@ -76,7 +76,7 @@ with col_tz:
 tz_short = selected_tz_name.split(")")[0] + ")"
 
 # Sidebar Session Box Panel
-st.sidebar.markdown("### 🤖 TWT Price Action Panel")
+st.sidebar.markdown("### 🤖 TWT Expert Panel")
 st.sidebar.markdown("---")
 server_time_target = datetime.now(active_tz)
 st.sidebar.text(
@@ -88,8 +88,8 @@ st.sidebar.text("No-Trade Zone      ———  01:00 ➔ 06:00 IST")
 st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Trading Strategy")
-st.sidebar.text("Logic            : Breakout -> Retest -> Confirmation")
+st.sidebar.markdown("#### Trading Settings")
+st.sidebar.text("Entry method     : Breakout -> Retest -> Confirmation")
 st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss          : ATR Managed")
 
@@ -117,8 +117,8 @@ def fetch_twt_delta_data(symbol):
       exchange.load_markets()
       if sym in exchange.markets:
         ohlcv_5m = exchange.fetch_ohlcv(sym, timeframe="5m", limit=100)
-        ohlcv_4h = exchange.fetch_ohlcv(sym, timeframe="4h", limit=25)
-        ohlcv_6h = exchange.fetch_ohlcv(sym, timeframe="6h", limit=25)
+        ohlcv_4h = exchange.fetch_ohlcv(sym, timeframe="4h", limit=30)
+        ohlcv_6h = exchange.fetch_ohlcv(sym, timeframe="6h", limit=30)
 
         if ohlcv_5m and ohlcv_4h:
           df_5 = pd.DataFrame(
@@ -162,7 +162,7 @@ def fetch_twt_delta_data(symbol):
 df_5m, df_4h, df_6h, active_symbol = fetch_twt_delta_data(selected_symbol)
 
 
-class TWTBreakoutRetestEngine:
+class TWTDeltaEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5 if df_5 is not None else None
@@ -177,7 +177,7 @@ class TWTBreakoutRetestEngine:
 
   def calculate_indicators(self):
     IST = timezone(timedelta(hours=5, minutes=30))
-    if self.df_5 is not None and len(self.df_5) >= 20:
+    if self.df_5 is not None and len(self.df_5) >= 30:
       if self.df_4 is not None and not self.df_4.empty:
         idx_utc = (
             self.df_4.index.tz_localize("UTC")
@@ -254,7 +254,7 @@ class TWTBreakoutRetestEngine:
           "atr": atr,
       })
 
-    # State tracking for Breakout & Retest logic
+    # Breakout & Retest State Tracking
     resistance_broken = False
     support_broken = False
     signal_given = False
@@ -268,29 +268,29 @@ class TWTBreakoutRetestEngine:
       atr = c["atr"]
       dec = get_decimals(c["close"])
 
-      # 1. Check if price broke above 4H Resistance
+      # 1. Track if price broke above Resistance
       if c["close"] > self.resistance_lvl:
         resistance_broken = True
 
-      # 2. Resistance Retest & Seller Confirmation (Short Signal)
-      # Condition: Resistance pehle break ho chuki ho, ab price wapas resistance ke paas aaye, aur red candle bane (Seller strong, Buyer weak)
+      # 2. Resistance Retest & Seller Confirmation (Short Entry)
+      # Condition: Resistance cross ho chuki ho, price wapas retest ke liye aaye, aur seller strong red candle banaye (Buyer weak)
       if (
           resistance_broken
           and not signal_given
-          and c["high"] >= self.resistance_lvl - (0.5 * atr)
+          and c["high"] >= self.resistance_lvl - (0.6 * atr)
           and c["close"] <= self.resistance_lvl + (0.3 * atr)
       ):
         if c["color"] == "Red":  # Seller confirmation candle
           signal_given = True
-          sl = round(c["high"] + (1.5 * atr), dec)
-          tp1 = round(c["close"] - (1.2 * atr), dec)
-          tp2 = round(c["close"] - (2.5 * atr), dec)
-          tp3 = round(c["close"] - (4.0 * atr), dec)
+          sl = round(c["high"] + (1.2 * atr), dec)
+          tp1 = round(c["close"] - (1.0 * atr), dec)
+          tp2 = round(c["close"] - (2.2 * atr), dec)
+          tp3 = round(c["close"] - (3.8 * atr), dec)
 
           self.signals.append({
               "Time": c["time"],
               "Candle #": c["id"],
-              "Setup": "Resistance Breakout & Retest Short",
+              "Setup": "TWT Resistance Breakout & Retest Sell",
               "Action": "Sell / Short (S) [Retest Confirmed] 🔴",
               "Entry Price": round(c["close"], dec),
               "Stop Loss (SL)": sl,
@@ -299,29 +299,29 @@ class TWTBreakoutRetestEngine:
               "TP 3": tp3,
           })
 
-      # 3. Check if price broke below 6H Support
+      # 3. Track if price broke below Support
       if c["close"] < self.support_lvl:
         support_broken = True
 
-      # 4. Support Retest & Buyer Confirmation (Long Signal)
-      # Condition: Support pehle break ho chuki ho, ab price wapas support ke upar aaye, aur green candle bane (Buyer strong, Seller weak)
+      # 4. Support Retest & Buyer Confirmation (Buy Entry)
+      # Condition: Support break ho chuki ho, price wapas upar aakar retest kare, aur buyer strong green candle banaye (Seller weak)
       if (
           support_broken
           and not signal_given
-          and c["low"] <= self.support_lvl + (0.5 * atr)
+          and c["low"] <= self.support_lvl + (0.6 * atr)
           and c["close"] >= self.support_lvl - (0.3 * atr)
       ):
         if c["color"] == "Green":  # Buyer confirmation candle
           signal_given = True
-          sl = round(c["low"] - (1.5 * atr), dec)
-          tp1 = round(c["close"] + (1.2 * atr), dec)
-          tp2 = round(c["close"] + (2.5 * atr), dec)
-          tp3 = round(c["close"] + (4.0 * atr), dec)
+          sl = round(c["low"] - (1.2 * atr), dec)
+          tp1 = round(c["close"] + (1.0 * atr), dec)
+          tp2 = round(c["close"] + (2.2 * atr), dec)
+          tp3 = round(c["close"] + (3.8 * atr), dec)
 
           self.signals.append({
               "Time": c["time"],
               "Candle #": c["id"],
-              "Setup": "Support Breakout & Retest Long",
+              "Setup": "TWT Support Breakout & Retest Buy",
               "Action": "Buy / Long (B) [Retest Confirmed] 🟢",
               "Entry Price": round(c["close"], dec),
               "Stop Loss (SL)": sl,
@@ -331,15 +331,14 @@ class TWTBreakoutRetestEngine:
           })
 
 
-with st.spinner(
-    f"⚡ Loading TWT Breakout & Retest Engine for {selected_symbol}..."
-):
+with st.spinner(f"⚡ Loading TWT Delta Engine for {selected_symbol}..."):
   if df_5m is not None and not df_5m.empty:
-    bot = TWTBreakoutRetestEngine(df_5m, df_4h, df_6h, selected_symbol, active_tz)
+    bot = TWTDeltaEngine(df_5m, df_4h, df_6h, selected_symbol, active_tz)
     bot.calculate_indicators()
     bot.parse_and_scan()
 
     curr_p = bot.candles[-1]["close"] if bot.candles else 0.0
+    curr_atr = bot.candles[-1]["atr"] if bot.candles else (curr_p * 0.002)
 
     st.markdown("---")
     st.subheader(f"📊 Delta Exchange Live Dashboard ({selected_symbol})")
@@ -358,7 +357,7 @@ with st.spinner(
 
     st.markdown("---")
     st.subheader(
-        "🎯 Trade With Tuckyaa (TUCKYAA) Breakout & Retest Confirmation Engine"
+        "🎯 Trade With Tuckyaa (TUCKYAA) Breakout & Retest Engine"
     )
 
     if bot.signals:
@@ -378,8 +377,8 @@ with st.spinner(
             f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
             f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
             f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-            "📌 *Instructions:* Support breakout -> Retest -> Buyer strength"
-            " confirmed!"
+            "📌 *Instructions:* Support breakout -> Retest pullback -> Buyer"
+            " strength confirmed!"
         )
       else:
         st.error(
@@ -390,14 +389,14 @@ with st.spinner(
             f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
             f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
             f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-            "📌 *Instructions:* Resistance breakout -> Retest -> Seller strength"
-            " confirmed!"
+            "📌 *Instructions:* Resistance breakout -> Retest pullback -> Seller"
+            " strength confirmed!"
         )
     else:
       st.warning(
           "🟡 **STATUS: WAITING FOR BREAKOUT & RETEST SETUP**\n\n"
-          "📌 *Instructions:* Bot is waiting for level breakout, pullback,"
-          " and candle confirmation."
+          "📌 *Instructions:* Monitoring level breakout, pullback, and candle"
+          " confirmation."
       )
 
     if bot.signals:
@@ -487,7 +486,7 @@ with st.spinner(
       )
 
     ax.set_title(
-        f"{selected_symbol} 5m — TRADE WITH TUCKYAA Breakout & Retest Engine"
+        f"{selected_symbol} 5m — TRADE WITH TUCKYAA (TUCKYAA) Delta Engine"
         f" ({tz_short})",
         color="white",
         fontsize=14,
