@@ -701,21 +701,22 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
     st.dataframe(df_history, width="stretch")
 
-  # --- ORIGINAL CLEAN CHART RENDERER RESTORED ---
+  # --- PROPERLY FIXED STABLE CANDLESTICK CHART RENDERER ---
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
   for c in bot.candles:
     col = "#26a69a" if c["color"] == "Green" else "#ef5350"
-    body_size = abs(c["close"] - c["open"])
-    min_body = curr_p * 0.0003
-    plot_height = max(body_size, min_body)
-    plot_bottom = (
-        min(c["open"], c["close"]) - ((min_body - body_size) / 2)
-        if body_size < min_body
-        else min(c["open"], c["close"])
-    )
+    body_low = min(c["open"], c["close"])
+    body_height = max(abs(c["close"] - c["open"]), curr_p * 0.0001)
 
-    ax.bar(c["id"], plot_height, bottom=plot_bottom, color=col, width=0.7)
-    ax.vlines(c["id"], c["low"], c["high"], color="#b2b5be", linewidth=1.3)
+    ax.bar(
+        c["id"],
+        body_height,
+        bottom=body_low,
+        color=col,
+        width=0.55,
+        align="center",
+    )
+    ax.vlines(c["id"], c["low"], c["high"], color=col, linewidth=1.2)
 
   ax.axhline(
       bot.resistance_lvl,
