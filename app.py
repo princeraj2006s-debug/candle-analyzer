@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Exact Pullback & Retest Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Strict Sequence & Pullback Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -91,7 +91,7 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
-st.sidebar.text("Logic            : Support Cross -> Pullback -> Green Candle")
+st.sidebar.text("Logic            : Support Cross -> Pullback Red -> Green Confirm")
 st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss        : ATR Managed")
 
@@ -154,7 +154,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTExactEngine:
+class TWTStrictSequenceEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -229,39 +229,41 @@ class TWTExactEngine:
       })
 
     # =========================================================
-    # EXACT RULE ENGINE: SUPPORT CROSS -> PULLBACK -> GREEN CANDLE
+    # STRICT USER RULE IMPLEMENTATION
     # =========================================================
-    buy_signals_history = []
-    sell_signals_history = []
+    buy_signals = []
+    sell_signals = []
 
-    for i in range(10, len(self.candles)):
+    for i in range(12, len(self.candles)):
       c = self.candles[i]
       if time(1, 0) <= c["dt_ist"].time() <= time(6, 0):
         continue
 
       atr = c["atr"]
       dec = get_decimals(c["close"])
-      recent = self.candles[i - 6:i]  # last few candles for pullback check
+      recent = self.candles[i - 8:i]  # previous 8 candles context
 
-      # --- BUY / LONG RULE ---
-      # 1. Price crossed below support earlier, then buyers pushed above support
-      # 2. Seller pullback happened (e.g. 2-3 red candles)
-      # 3. Current candle is Green confirming the bounce
-      was_below_support = any(x["low"] < self.support_lvl for x in recent[:3])
-      seller_pullback = all(x["color"] == "Red" for x in recent[-3:-1])  # 2 red candles pullback
-      buyer_green_confirmation = (c["color"] == "Green") and (c["close"] > c["open"]) and (c["close"] > self.support_lvl)
+      # --- BUY / LONG STRICT RULE ---
+      # 1. Price went below support recently
+      # 2. Buyers pushed price above support
+      # 3. Seller pullback happened (at least 2 consecutive Red candles pulling down)
+      # 4. Current candle is Green confirming the bounce
+      crossed_below = any(x["low"] < self.support_lvl for x in recent[:4])
+      crossed_above = any(x["close"] > self.support_lvl for x in recent[3:6])
+      seller_pullback_reds = all(x["color"] == "Red" for x in recent[-3:-1])  # 2 red pullback candles
+      green_confirmation = (c["color"] == "Green") and (c["close"] > c["open"]) and (c["close"] >= self.support_lvl)
 
-      if was_below_support and seller_pullback and buyer_green_confirmation:
+      if crossed_below and crossed_above and seller_pullback_reds and green_confirmation:
         sl = round(self.support_lvl - (1.2 * atr), dec)
         tp1 = round(c["close"] + (1.2 * atr), dec)
         tp2 = round(c["close"] + (2.5 * atr), dec)
         tp3 = round(c["close"] + (4.0 * atr), dec)
 
-        buy_signals_history.append({
+        buy_signals.append({
             "Asset": self.symbol,
             "Time": c["time"],
             "Candle #": c["id"],
-            "Setup": "Support Cross -> Pullback -> Green Candle Long",
+            "Setup": "Support Cross -> Pullback Red -> Green Confirm Long",
             "Action": "Buy / Long (B) 🟢",
             "Entry Price": round(c["close"], dec),
             "Stop Loss (SL)": sl,
@@ -271,25 +273,27 @@ class TWTExactEngine:
             "Is_Within_1hr": c["is_within_1hr"],
         })
 
-      # --- SELL / SHORT RULE ---
-      # 1. Price crossed above resistance earlier, then sellers pushed below resistance
-      # 2. Buyer retest pullback happened (e.g. 2-3 green candles)
-      # 3. Current candle is Red confirming the rejection
-      was_above_resistance = any(x["high"] > self.resistance_lvl for x in recent[:3])
-      buyer_pullback = all(x["color"] == "Green" for x in recent[-3:-1])  # 2 green candles retest
-      seller_red_confirmation = (c["color"] == "Red") and (c["close"] < c["open"]) and (c["close"] < self.resistance_lvl)
+      # --- SELL / SHORT STRICT RULE ---
+      # 1. Price went above resistance recently
+      # 2. Sellers pushed price below resistance
+      # 3. Buyer retest pullback happened (at least 2 consecutive Green candles pulling up)
+      # 4. Current candle is Red confirming the rejection
+      crossed_above_res = any(x["high"] > self.resistance_lvl for x in recent[:4])
+      crossed_below_res = any(x["close"] < self.resistance_lvl for x in recent[3:6])
+      buyer_pullback_greens = all(x["color"] == "Green" for x in recent[-3:-1])  # 2 green pullback candles
+      red_confirmation = (c["color"] == "Red") and (c["close"] < c["open"]) and (c["close"] <= self.resistance_lvl)
 
-      if was_above_resistance and buyer_pullback and seller_red_confirmation:
+      if crossed_above_res and crossed_below_res and buyer_pullback_greens and red_confirmation:
         sl = round(self.resistance_lvl + (1.2 * atr), dec)
         tp1 = round(c["close"] - (1.2 * atr), dec)
         tp2 = round(c["close"] - (2.5 * atr), dec)
         tp3 = round(c["close"] - (3.8 * atr), dec)
 
-        sell_signals_history.append({
+        sell_signals.append({
             "Asset": self.symbol,
             "Time": c["time"],
             "Candle #": c["id"],
-            "Setup": "Resistance Cross -> Retest -> Red Candle Short",
+            "Setup": "Resistance Cross -> Retest Green -> Red Confirm Short",
             "Action": "Sell / Short (S) 🔴",
             "Entry Price": round(c["close"], dec),
             "Stop Loss (SL)": sl,
@@ -299,11 +303,11 @@ class TWTExactEngine:
             "Is_Within_1hr": c["is_within_1hr"],
         })
 
-    # Keep best historical points so history table and chart show them nicely
-    if buy_signals_history:
-      self.signals.extend(buy_signals_history[-2:])  # keep recent buyer entries
-    if sell_signals_history:
-      self.signals.extend(sell_signals_history[-2:])  # keep recent seller entries
+    # Keep valid signals for history table and chart rendering
+    if buy_signals:
+      self.signals.extend(buy_signals[-2:])
+    if sell_signals:
+      self.signals.extend(sell_signals[-2:])
 
 
 # ---------------------------------------------------------
@@ -319,7 +323,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTExactEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTStrictSequenceEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -327,7 +331,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets with exact pullback rules..."):
+with st.spinner("⚡ Scanning all 20 assets with exact strict rule sequence..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -340,13 +344,13 @@ with st.spinner("⚡ Scanning all 20 assets with exact pullback rules..."):
         master_signals.append(latest)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} active exact setup(s)!")
+  st.success(f"✅ Found {len(master_signals)} active strict setup(s)!")
   df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active exact setups in the last 1 hour. Checking historical points...")
+  st.info("ℹ️ No active strict setups in the last 1 hour. Waiting for exact rule match...")
 
 # ---------------------------------------------------------
 # MANUAL ASSET SELECTOR & CHART VIEWER
@@ -364,7 +368,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTExactEngine(df_5, df_4, df_6, selected_symbol, active_tz)
+  bot = TWTStrictSequenceEngine(df_5, df_4, df_6, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -380,7 +384,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Exact Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Strict Sequence Active")
 
   recent_signals = [s for s in bot.signals if s.get("Is_Within_1hr", False)]
 
@@ -394,37 +398,37 @@ if bot.df_5 is not None and not bot.df_5.empty:
 
     if is_buy:
       st.success(
-          f"🟢 **TWT EXACT SETUP: {latest_sig['Action']}**\n\n"
+          f"🟢 **TWT STRICT SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Support cross -> Seller pullback -> Green Candle Confirmation!"
+          "📌 *Instructions:* Support Cross -> Seller Pullback Red Candles -> Green Candle Confirmation!"
       )
     else:
       st.error(
-          f"🔴 **TWT EXACT SETUP: {latest_sig['Action']}**\n\n"
+          f"🔴 **TWT STRICT SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Resistance cross -> Buyer retest pullback -> Red Candle Confirmation!"
+          "📌 *Instructions:* Resistance Cross -> Buyer Retest Green Candles -> Red Candle Confirmation!"
       )
   else:
     st.warning(
-        "🟡 **STATUS: WAITING FOR EXACT RULE SETUP**\n\n"
-        "📌 *Instructions:* Monitoring support cross + pullback for Buyer, and resistance cross + retest for Seller."
+        "🟡 **STATUS: WAITING FOR EXACT SEQUENCE SETUP**\n\n"
+        "📌 *Instructions:* Monitoring precise support cross + pullback red candles for Buy, and resistance cross + retest green candles for Sell."
     )
 
-  # Complete Signal History (Old & New Entries Table)
+  # Complete Signal History Table
   if bot.signals:
     st.markdown("---")
     st.subheader(
-        f"📋 Complete Signal History for {selected_symbol} (Buyer & Seller Entries)"
+        f"📋 Complete Signal History for {selected_symbol} (Strict Sequence)"
     )
     df_history = pd.DataFrame(bot.signals).drop(
         columns=["Is_Within_1hr"], errors="ignore"
@@ -505,7 +509,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Exact Engine ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Strict Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
