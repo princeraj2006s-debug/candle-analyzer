@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Advanced Retest & Zone Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Precision Retest & Pullback Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -91,7 +91,7 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
-st.sidebar.text("Logic            : Support/Resistance Retest + Pullback + Zone Logic")
+st.sidebar.text("Logic            : Double Retest + Pullback + Zone Logic")
 st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss        : ATR Managed")
 
@@ -154,7 +154,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTAdvancedEngine:
+class TWTPrecisionEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -229,7 +229,7 @@ class TWTAdvancedEngine:
       })
 
     # =========================================================
-    # ADVANCED RULE ENGINE (Retest, Pullback & Zone Logic)
+    # EXACT PRECISION RULE ENGINE (Double Retest + Pullback)
     # =========================================================
     buy_signals = []
     sell_signals = []
@@ -243,14 +243,17 @@ class TWTAdvancedEngine:
       dec = get_decimals(c["close"])
       recent = self.candles[i - 8:i]
 
-      # --- BUY / LONG LOGIC ---
-      # Rule: Lower wick touch support -> Bounce up -> Seller push down above support -> 2 green candles crossing -> Red pullback -> Entry
-      support_touch = any(x["low"] <= self.support_lvl + (0.5 * atr) for x in recent[:4])
-      buyer_push = any(x["color"] == "Green" and x["close"] > self.support_lvl for x in recent[2:5])
-      momentum_cross = any(x["color"] == "Green" for x in recent[-3:-1])
-      red_pullback = recent[-1]["color"] == "Red" and c["color"] == "Green"  # pullback then green entry
+      # --- BUY / LONG PRECISION RULE ---
+      # 1. Lower wick touch support (Retest 1)
+      # 2. Buyer push up, seller push down above support
+      # 3. 2nd time green candles cross previous down side
+      # 4. Wait for red pullback candle, then entry on green confirmation
+      support_wick_touch = any(x["low"] <= self.support_lvl + (0.6 * atr) for x in recent[:4])
+      retest_push = any(x["color"] == "Green" and x["close"] > self.support_lvl for x in recent[2:6])
+      strong_greens = sum(1 for x in recent[-4:] if x["color"] == "Green") >= 2
+      red_pullback_then_green = recent[-1]["color"] == "Red" and c["color"] == "Green"
 
-      if support_touch and buyer_push and momentum_cross and red_pullback:
+      if support_wick_touch and retest_push and strong_greens and red_pullback_then_green:
         sl = round(self.support_lvl - (1.2 * atr), dec)
         tp1 = round(c["close"] + (1.2 * atr), dec)
         tp2 = round(c["close"] + (2.5 * atr), dec)
@@ -260,7 +263,7 @@ class TWTAdvancedEngine:
             "Asset": self.symbol,
             "Time": c["time"],
             "Candle #": c["id"],
-            "Setup": "Support Retest + Pullback Long",
+            "Setup": "Support Double Retest + Pullback Long",
             "Action": "Buy / Long (B) 🟢",
             "Entry Price": round(c["close"], dec),
             "Stop Loss (SL)": sl,
@@ -270,13 +273,16 @@ class TWTAdvancedEngine:
             "Is_Within_1hr": c["is_within_1hr"],
         })
 
-      # --- SELL / SHORT LOGIC ---
-      # Rule: Resistance wick touch -> Failed buyer push -> Red candle / Retest 1 -> Bigger green candles or rejection weak candle + Pullback -> Sell Entry
-      res_wick_touch = any(x["high"] >= self.resistance_lvl - (0.5 * atr) for x in recent[:5])
-      failed_push = any(x["high"] < self.resistance_lvl for x in recent[-4:-1])
-      green_pullback = recent[-1]["color"] == "Green" and c["color"] == "Red"  # green pullback then red rejection entry
+      # --- SELL / SHORT PRECISION RULE ---
+      # 1. Lower wick touch resistance & go down (Retest 1)
+      # 2. Buyer come push price up but can't cross resistance level
+      # 3. 2nd time candles bigger in length or rejection weak candle + green pullback
+      # 4. Entry on red rejection confirmation
+      res_wick_touch = any(x["high"] >= self.resistance_lvl - (0.6 * atr) for x in recent[:5])
+      failed_buyer_push = any(x["high"] < self.resistance_lvl for x in recent[-4:-1])
+      green_pullback_then_red = recent[-1]["color"] == "Green" and c["color"] == "Red"
 
-      if res_wick_touch and failed_push and green_pullback:
+      if res_wick_touch and failed_buyer_push and green_pullback_then_red:
         sl = round(self.resistance_lvl + (1.2 * atr), dec)
         tp1 = round(c["close"] - (1.2 * atr), dec)
         tp2 = round(c["close"] - (2.5 * atr), dec)
@@ -286,7 +292,7 @@ class TWTAdvancedEngine:
             "Asset": self.symbol,
             "Time": c["time"],
             "Candle #": c["id"],
-            "Setup": "Resistance Rejection + Pullback Short",
+            "Setup": "Resistance Double Retest + Pullback Short",
             "Action": "Sell / Short (S) 🔴",
             "Entry Price": round(c["close"], dec),
             "Stop Loss (SL)": sl,
@@ -315,7 +321,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTAdvancedEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTPrecisionEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -323,7 +329,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets with advanced retest & pullback rules..."):
+with st.spinner("⚡ Scanning all 20 assets with precision retest rules..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -336,13 +342,13 @@ with st.spinner("⚡ Scanning all 20 assets with advanced retest & pullback rule
         master_signals.append(latest)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} active advanced setup(s)!")
+  st.success(f"✅ Found {len(master_signals)} active precision setup(s)!")
   df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active setups in the last 1 hour. Waiting for exact retest & pullback sequence...")
+  st.info("ℹ️ No active setups in the last 1 hour. Waiting for exact double retest & pullback sequence...")
 
 # ---------------------------------------------------------
 # MANUAL ASSET SELECTOR & CHART VIEWER
@@ -360,7 +366,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTAdvancedEngine(df_5, df_4, df_6, selected_symbol, active_tz)
+  bot = TWTPrecisionEngine(df_5, df_4, df_6, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -376,7 +382,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Advanced Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Precision Engine Active")
 
   recent_signals = [s for s in bot.signals if s.get("Is_Within_1hr", False)]
 
@@ -390,37 +396,37 @@ if bot.df_5 is not None and not bot.df_5.empty:
 
     if is_buy:
       st.success(
-          f"🟢 **TWT ADVANCED SETUP: {latest_sig['Action']}**\n\n"
+          f"🟢 **TWT PRECISION SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Support Retest + Pullback + Confirmation Verified!"
+          "📌 *Instructions:* Support Double Retest + Red Pullback + Green Confirmation Verified!"
       )
     else:
       st.error(
-          f"🔴 **TWT ADVANCED SETUP: {latest_sig['Action']}**\n\n"
+          f"🔴 **TWT PRECISION SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Resistance Rejection + Pullback + Rejection Candle Confirmed!"
+          "📌 *Instructions:* Resistance Double Retest + Green Pullback + Red Rejection Confirmed!"
       )
   else:
     st.warning(
-        "🟡 **STATUS: WAITING FOR ADVANCED SETUP**\n\n"
-        "📌 *Instructions:* Monitoring retests, pullbacks, and zone confirmations."
+        "🟡 **STATUS: WAITING FOR PRECISION SETUP**\n\n"
+        "📌 *Instructions:* Monitoring double retests, pullbacks, and zone confirmations."
     )
 
   # Complete Signal History Table
   if bot.signals:
     st.markdown("---")
     st.subheader(
-        f"📋 Complete Signal History for {selected_symbol} (Advanced Engine)"
+        f"📋 Complete Signal History for {selected_symbol} (Precision Engine)"
     )
     df_history = pd.DataFrame(bot.signals).drop(
         columns=["Is_Within_1hr"], errors="ignore"
@@ -501,7 +507,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Advanced Engine ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Precision Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
