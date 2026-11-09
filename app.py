@@ -248,7 +248,7 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
-st.sidebar.text("Logic            : Support Breakdown -> Exactly 7 Red Count -> Green Rebound")
+st.sidebar.text("Logic            : Support Breakdown -> 7 Red Count -> Green Rebound")
 st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss        : ATR Managed")
 
@@ -327,6 +327,7 @@ class TWTExactSevenEngine:
     self.user_tz = user_tz
     self.candles = []
     self.signals = []
+    self.count_annotations = []  # Stores (candle_id, count_num, high_price)
     self.resistance_lvl = 0
     self.support_lvl = 0
 
@@ -419,31 +420,31 @@ class TWTExactSevenEngine:
     red_count = 0
     cooldown = 0
 
-    for i in range(1, len(self.candles)):
+    for i in range(len(self.candles)):
       if cooldown > 0:
         cooldown -= 1
         continue
 
       c = self.candles[i]
-      prev_c = self.candles[i - 1]
       if time(1, 0) <= c["dt_ist"].time() <= time(6, 0):
         continue
 
       atr = c["atr"]
       dec = get_decimals(c["close"])
 
-      # Trigger: Price crosses below support level with a red candle
-      if prev_c["close"] >= self.support_lvl and c["close"] < self.support_lvl and c["color"] == "Red":
-        breakdown_active = True
-        red_count = 1
-        continue
+      # Trigger: Price is below support level
+      if c["low"] < self.support_lvl:
+        if not breakdown_active:
+          # Check if this candle or previous crossed support
+          breakdown_active = True
+          red_count = 0
 
-      if breakdown_active:
-        if c["color"] == "Red" and c["close"] < self.support_lvl:
+        if c["color"] == "Red":
           red_count += 1
+          self.count_annotations.append((c["id"], red_count, c["high"]))
         elif c["color"] == "Green":
-          # If we reached exactly 7 red candles (or 6-8 range as shown in your screenshots) and now a Green candle forms
-          if 6 <= red_count <= 8:
+          # If we reached 7 red candles and now a Green candle forms -> BUY ENTRY!
+          if red_count >= 7:
             sl = round(c["low"] - (1.2 * atr), dec)
             tp1 = round(c["close"] + (1.2 * atr), dec)
             tp2 = round(c["close"] + (2.5 * atr), dec)
@@ -464,11 +465,15 @@ class TWTExactSevenEngine:
             })
             breakdown_active = False
             red_count = 0
-            cooldown = 25
-            continue
+            cooldown = 20
           else:
-            breakdown_active = False
-            red_count = 0
+            # Intermittent green candle before 7 red counts -> Ignore (do nothing, keep counting red)
+            pass
+      else:
+        # If price goes back above support, reset breakdown tracking
+        if breakdown_active and c["close'] >= self.support_lvl:
+          # breakdown_active = False
+          pass
 
 
 # ---------------------------------------------------------
@@ -525,7 +530,7 @@ st.subheader("📊 Manual Asset Inspector & Chart")
 selected_symbol = st.selectbox(
     "🔍 Select Asset to Load Chart & Complete History",
     options=ASSET_LIST,
-    index=3,  # Default to SOL as per your screenshot
+    index=3,  # Default to SOL
 )
 
 if selected_symbol in asset_engines:
@@ -648,16 +653,30 @@ if bot.df_5 is not None and not bot.df_5.empty:
       margin = curr_p * 0.005
     ax.set_ylim(min(lows) - margin, max(highs) + margin)
 
+  # Plot Red Candle Counting Numbers (1, 2, 3, 4, 5, 6, 7) above candles
+  for cid, cnt, hp in bot.count_annotations:
+    ax.text(
+        cid,
+        hp + (margin * 0.03),
+        str(cnt),
+        color="#ff5252",
+        weight="bold",
+        fontsize=9,
+        ha="center",
+        va="bottom",
+    )
+
+  # Plot Buy Entry Signals (B)
   for sig in bot.signals:
-    tag = "B" if "Buy" in sig["Action"] else "S"
-    tag_color = "#00e676" if tag == "B" else "#ff1744"
     ax.text(
         sig["Candle #"],
         sig["Entry Price"],
-        f" {tag} ",
+        " B ",
         color="white",
         weight="bold",
-        bbox=dict(boxstyle="round,pad=0.2", facecolor=tag_color, alpha=0.9),
+        bbox=dict(boxstyle="round,pad=0.2", facecolor="#00e676", alpha=0.9),
+        ha="center",
+        va="center",
     )
 
   ax.set_title(
