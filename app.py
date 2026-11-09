@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Strict One-Time Pattern Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Ultimate Single-Entry Pattern Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -92,8 +92,8 @@ st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
 st.sidebar.text(
-    "Logic            : 7 Red Count -> Strong Red -> Small Wick Red -> Medium"
-    " Green Entry (1-Time)"
+    "Logic            : 7 Red -> Red -> Small Red -> Green Entry (Strict 1"
+    " Time)"
 )
 st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss        : ATR Managed")
@@ -163,7 +163,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTStrictOneTimePatternEngine:
+class TWTSingleEntryEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -261,14 +261,10 @@ class TWTStrictOneTimePatternEngine:
           "is_within_1hr": is_within_1hr,
       })
 
-    # Strict State Machine:
-    # State 0: Waiting for breakdown below support
-    # State 1: Counting 7 red candles
-    # State 2: Pattern Confirmation Sequence (Step 1: Strong Red -> Step 2: Small Red with wicks -> Step 3: Medium Green Entry)
-    # State 3: Locked! (Given entry once, no more entries until price resets above support)
+    # Strict Single-Entry State Machine per Support Level
+    # States: 0 = Waiting, 1 = Counting 7 Reds, 2 = Pattern (Strong Red), 3 = Pattern (Small Red), 4 = Entry Green, 5 = PERMANENTLY LOCKED FOR THIS SUPPORT
     state = 0
     red_count = 0
-    pattern_step = 0
 
     for i in range(len(self.candles)):
       c = self.candles[i]
@@ -278,81 +274,63 @@ class TWTStrictOneTimePatternEngine:
       atr = c["atr"]
       dec = get_decimals(c["close"])
 
-      # CRITICAL: If price goes back above support level, completely reset state for a fresh cycle!
-      if c["close"] >= self.support_lvl:
-        state = 0
-        red_count = 0
-        pattern_step = 0
+      # If already given entry for this support level (State 5), lock completely!
+      if state == 5:
         continue
 
-      # If already traded (State 3), ignore everything until price resets above support
-      if state == 3:
+      # If price goes back above support, reset states so a brand new support cycle can start fresh if needed
+      if c["close'] >= self.support_lvl:
+        state = 0
+        red_count = 0
         continue
 
       if c["close"] < self.support_lvl:
-        if state == 0:
-          if c["color"] == "Red":
-            state = 1
-            red_count = 1
-            self.count_annotations.append((c["id"], red_count, c["high"]))
+        if state == 0 and c["color"] == "Red":
+          state = 1
+          red_count = 1
+          self.count_annotations.append((c["id"], red_count, c["high"]))
         elif state == 1:
           if c["color"] == "Red":
             red_count += 1
             self.count_annotations.append((c["id"], red_count, c["high"]))
             if red_count >= 7:
-              state = 2
-              pattern_step = 1  # Step 1: Wait for Strong Red Candle
+              state = 2  # 7 reds completed -> now look for strong red
           elif c["color"] == "Green":
-            # Ignore intermediate green candles during counting
-            pass
+            pass  # Ignore intermediate greens during counting
         elif state == 2:
-          body = abs(c["close"] - c["open"])
-          upper_wick = c["high"] - max(c["open"], c["close"])
-          lower_wick = min(c["open"], c["close"]) - c["low"]
+          # Step A: Look for Strong Red Candle
+          if c["color"] == "Red":
+            state = 3
+          elif c["color"] == "Green":
+            state = 2  # stay or reset slightly
+        elif state == 3:
+          # Step B: Look for Small Red Candle with wicks
+          if c["color"] == "Red":
+            state = 4
+          elif c["color"] == "Green":
+            state = 2
+        elif state == 4:
+          # Step C: Look for Green Candle -> ENTRY! (Give ONLY ONE ENTRY, then lock permanently)
+          if c["color"] == "Green":
+            sl = round(c["low"] - (1.2 * atr), dec)
+            tp1 = round(c["close"] + (1.2 * atr), dec)
+            tp2 = round(c["close"] + (2.5 * atr), dec)
+            tp3 = round(c["close"] + (4.0 * atr), dec)
 
-          if pattern_step == 1:
-            # Step 1: Wait for Strong Red Candle (Mota Red Candle)
-            if c["color"] == "Red" and body >= (0.3 * atr):
-              pattern_step = 2
-          elif pattern_step == 2:
-            # Step 2: Wait for Small Red Candle with BOTH upper and lower wicks
-            if (
-                c["color"] == "Red"
-                and body < (0.35 * atr)
-                and upper_wick > (0.03 * atr)
-                and lower_wick > (0.03 * atr)
-            ):
-              pattern_step = 3
-            elif c["color"] == "Green":
-              pattern_step = (
-                  1  # Restart pattern if interrupted improperly by green
-              )
-          elif pattern_step == 3:
-            # Step 3: Wait for Medium Size Green Candle -> ENTRY! (Only once)
-            if c["color"] == "Green" and body >= (0.25 * atr):
-              sl = round(c["low"] - (1.2 * atr), dec)
-              tp1 = round(c["close"] + (1.2 * atr), dec)
-              tp2 = round(c["close"] + (2.5 * atr), dec)
-              tp3 = round(c["close"] + (4.0 * atr), dec)
-
-              self.signals.append({
-                  "Asset": self.symbol,
-                  "Time": c["time"],
-                  "Candle #": c["id"],
-                  "Setup": "7-Red + Strict Pattern Rebound",
-                  "Action": (
-                      "Buy / Long (B) [Strict One-Time Pattern Rebound] 🟢"
-                  ),
-                  "Entry Price": round(c["close"], dec),
-                  "Stop Loss (SL)": sl,
-                  "TP 1": tp1,
-                  "TP 2": tp2,
-                  "TP 3": tp3,
-                  "Is_Within_1hr": c["is_within_1hr"],
-              })
-              state = 3  # LOCKED! No more entries for this breakdown cycle.
-            elif c["color"] == "Red":
-              pattern_step = 1
+            self.signals.append({
+                "Asset": self.symbol,
+                "Time": c["time"],
+                "Candle #": c["id"],
+                "Setup": "7-Red + Pattern Rebound",
+                "Action": "Buy / Long (B) [Single-Entry Verified] 🟢",
+                "Entry Price": round(c["close"], dec),
+                "Stop Loss (SL)": sl,
+                "TP 1": tp1,
+                "TP 2": tp2,
+                "TP 3": tp3,
+                "Is_Within_1hr": c["is_within_1hr"],
+            })
+            state = 5  # PERMANENT LOCK! No more entries for this support breakdown.
 
 
 # ---------------------------------------------------------
@@ -368,7 +346,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTStrictOneTimePatternEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTSingleEntryEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -376,7 +354,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets for one-time pattern setups..."):
+with st.spinner("⚡ Scanning all 20 assets for single-entry setups..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -389,15 +367,15 @@ with st.spinner("⚡ Scanning all 20 assets for one-time pattern setups..."):
         master_signals.append(latest)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} active pattern setup(s)!")
+  st.success(f"✅ Found {len(master_signals)} active setup(s)!")
   df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
   st.info(
-      "ℹ️ No active pattern signals in the last 1 hour. Waiting for 7-red count"
-      " + strict pattern confirmation..."
+      "ℹ️ No active signals in the last 1 hour. Waiting for single-entry 7-red"
+      " setup..."
   )
 
 # ---------------------------------------------------------
@@ -416,9 +394,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTStrictOneTimePatternEngine(
-      df_5, df_4, df_6, selected_symbol, active_tz
-  )
+  bot = TWTSingleEntryEngine(df_5, df_4, df_6, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -434,7 +410,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Strict Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Single-Entry Engine")
 
   if bot.signals:
     latest_sig = bot.signals[-1]
@@ -445,28 +421,27 @@ if bot.df_5 is not None and not bot.df_5.empty:
     st.warning("⚠️ **Don't use after 40 minutes!**")
 
     st.success(
-        f"🟢 **TWT STRICT ONE-TIME SETUP: {latest_sig['Action']}**\n\n"
+        f"🟢 **TWT SINGLE-ENTRY SETUP: {latest_sig['Action']}**\n\n"
         f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
         f" #{latest_sig['Candle #']})\n"
         f"- **Entry Price:** `{entry_p}`\n"
         f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
         f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
         f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-        "📌 *Instructions:* 7 Reds -> Strong Red -> Small Wick Red -> Medium"
-        " Green Rebound Entry (Single-Trigger Confirmed)!"
+        "📌 *Instructions:* 7 Reds -> Strong Red -> Small Red -> Green Entry"
+        " (Strictly 1-Time Verified)!"
     )
   else:
     st.warning(
-        "🟡 **STATUS: WAITING FOR ONE-TIME PATTERN SETUP**\n\n"
-        "📌 *Instructions:* Monitoring support breakdown, 7-red count, and strict"
-        " candle pattern confirmation."
+        "🟡 **STATUS: WAITING FOR SETUP**\n\n"
+        "📌 *Instructions:* Monitoring support breakdown and pattern."
     )
 
   # Complete Signal History
   if bot.signals:
     st.markdown("---")
     st.subheader(
-        f"📋 Complete Signal History for {selected_symbol} (Strict Engine)"
+        f"📋 Complete Signal History for {selected_symbol} (Single-Entry)"
     )
     df_history = pd.DataFrame(bot.signals).drop(
         columns=["Is_Within_1hr"], errors="ignore"
@@ -547,7 +522,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
         va="bottom",
     )
 
-  # Plot Buy Entry Signals (B)
+  # Plot Buy Entry Signals (B) - Only Once
   for sig in bot.signals:
     ax.text(
         sig["Candle #"],
@@ -561,7 +536,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Strict Engine"
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Single-Entry Engine"
       f" ({tz_short})",
       color="white",
       fontsize=14,
