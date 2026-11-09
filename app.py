@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, time, timedelta, timezone
+import sqlite3
 import ccxt
 import matplotlib.pyplot as plt
 import numpy as np
@@ -20,6 +21,162 @@ hide_streamlit_style = """
     </style>
     """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
+
+# ---------------------------------------------------------
+# DATABASE INITIALIZATION (SQLite Authentication)
+# ---------------------------------------------------------
+conn = sqlite3.connect("twt_users.db", check_same_thread=False)
+c = conn.cursor()
+c.execute("""CREATE TABLE IF NOT EXISTS users 
+             (username TEXT PRIMARY KEY, password TEXT, status TEXT, role TEXT)""")
+
+# Default Admin Account (Username: tuckyaa, Password: 8002771200)
+c.execute(
+    "INSERT OR IGNORE INTO users VALUES ('tuckyaa', '8002771200', 'approved',"
+    " 'admin')"
+)
+conn.commit()
+
+# ---------------------------------------------------------
+# AUTHENTICATION & ACCESS GATE
+# ---------------------------------------------------------
+if "user" not in st.session_state:
+  st.session_state.user = None
+if "role" not in st.session_state:
+  st.session_state.role = None
+
+
+def login_register_page():
+  st.title("🔒 TRADE WITH TUCKYAA — VIP Portal")
+  st.markdown("Login or Request Access to the Professional Delta Trading Engine.")
+
+  tab1, tab2 = st.tabs(["🔑 Login", "📝 Request Access"])
+
+  with tab1:
+    st.subheader("User Login")
+    l_user = st.text_input("Username / Mobile Number", key="l_user")
+    l_pass = st.text_input("Password", type="password", key="l_pass")
+    if st.button("Login to Dashboard"):
+      c.execute(
+          "SELECT password, status, role FROM users WHERE username=?", (l_user,)
+      )
+      row = c.fetchone()
+      if row:
+        db_pass, db_status, db_role = row
+        if db_pass == l_pass:
+          if db_status == "blocked":
+            st.error(
+                "❌ Your service has been blocked by Admin (Tuckyaa). Contact"
+                " support."
+            )
+            return
+
+          if db_status == "approved":
+            st.session_state.user = l_user
+            st.session_state.role = db_role
+            st.success("Login successful!")
+            st.rerun()
+          else:
+            st.warning(
+                "⏳ Your account is pending Admin approval. Please wait for"
+                " Tuckyaa to approve."
+            )
+        else:
+          st.error("❌ Incorrect Password!")
+      else:
+        st.error("❌ Username not found! Please register first.")
+
+  with tab2:
+    st.subheader("New User Registration")
+    r_user = st.text_input("Choose Username / Mobile Number", key="r_user")
+    r_pass = st.text_input("Choose Password", type="password", key="r_pass")
+    if st.button("Submit Access Request"):
+      if r_user and r_pass:
+        try:
+          c.execute(
+              "INSERT INTO users VALUES (?, ?, 'pending', 'user')",
+              (r_user, r_pass),
+          )
+          conn.commit()
+          st.success(
+              "✅ Request submitted successfully! Admin (Tuckyaa) will approve"
+              " your account soon."
+          )
+        except sqlite3.IntegrityError:
+          st.error(
+              "❌ Username already exists! Try logging in or use another name."
+          )
+      else:
+        st.warning("Please fill in all fields.")
+
+
+if st.session_state.user is None:
+  login_register_page()
+  st.stop()
+
+# ---------------------------------------------------------
+# ADMIN PANEL (Visible ONLY to Admin 'tuckyaa')
+# ---------------------------------------------------------
+if st.session_state.role == "admin":
+  st.sidebar.markdown("---")
+  st.sidebar.markdown("### 👑 Admin Control Panel")
+  if st.sidebar.button("Logout Admin"):
+    st.session_state.user = None
+    st.session_state.role = None
+    st.rerun()
+
+  with st.expander("🛠️ Manage User Approvals & Services (Admin Only)"):
+    st.subheader("Pending User Requests")
+    c.execute("SELECT username FROM users WHERE status='pending'")
+    pending_users = c.fetchall()
+
+    if pending_users:
+      for p_user in pending_users:
+        u_name = p_user[0]
+        col_a, col_b = st.columns([2, 1])
+        col_a.write(f"User: **{u_name}**")
+        if col_b.button("Approve", key=f"app_{u_name}"):
+          c.execute(
+              "UPDATE users SET status='approved' WHERE username=?", (u_name,)
+          )
+          conn.commit()
+          st.success(f"Approved {u_name}!")
+          st.rerun()
+    else:
+      st.info("No pending user requests.")
+
+    st.markdown("---")
+    st.subheader("Manage Active Users (Block/Unblock Service)")
+    c.execute("SELECT username, status FROM users WHERE role!='admin'")
+    all_users = c.fetchall()
+
+    if all_users:
+      for u_name, u_status in all_users:
+        col1, col2 = st.columns([2, 1])
+        col1.write(f"**{u_name}** (Status: `{u_status}`)")
+        if u_status == "approved":
+          if col2.button("Block Service", key=f"block_{u_name}"):
+            c.execute(
+                "UPDATE users SET status='blocked' WHERE username=?", (u_name,)
+            )
+            conn.commit()
+            st.warning(f"Blocked {u_name}!")
+            st.rerun()
+        else:
+          if col2.button("Unblock", key=f"unblock_{u_name}"):
+            c.execute(
+                "UPDATE users SET status='approved' WHERE username=?", (u_name,)
+            )
+            conn.commit()
+            st.success(f"Unblocked {u_name}!")
+            st.rerun()
+    else:
+      st.info("No regular users registered yet.")
+else:
+  if st.sidebar.button("Logout"):
+    st.session_state.user = None
+    st.session_state.role = None
+    st.rerun()
 
 # ---------------------------------------------------------
 # GLOBAL TRADING TIMEZONES & COMPLETE 20+ ASSETS LIST
@@ -61,7 +218,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Clean Wave & Trend Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Ultimate Wick & 2-Candle Retest Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -84,16 +241,16 @@ server_time_target = datetime.now(active_tz)
 st.sidebar.text(
     f"Server time          ———  {server_time_target.strftime('%H:%M')}"
 )
-st.sidebar.text("Support Ref (6H)   ———  05:30 IST Reference Low")
-st.sidebar.text("Resistance Ref (4H) ———  01:30 IST Reference High")
+st.sidebar.text("Support Ref (6H)   ———  05:30 IST Candle Low")
+st.sidebar.text("Resistance Ref (4H) ———  01:30 IST Candle High")
 st.sidebar.text("No-Trade Zone      ———  01:00 ➔ 06:00 IST")
 st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
-st.sidebar.text("Logic            : Filtered Waves + Anti-Spam Cooldown")
-st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
-st.sidebar.text("Stop loss        : ATR Managed")
+st.sidebar.text("Logic            : Wick Touch + 2-Candle Retest")
+st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
+st.sidebar.text("Stop loss          : ATR Managed")
 
 
 def get_decimals(price):
@@ -105,25 +262,6 @@ def get_decimals(price):
     return 2
 
 
-def calculate_indicators(df):
-  df = df.copy()
-  df["TR"] = np.maximum(
-      df["High"] - df["Low"],
-      np.maximum(
-          abs(df["High"] - df["Close"].shift(1)),
-          abs(df["Low"] - df["Close"].shift(1)),
-      ),
-  )
-  df["ATR"] = df["TR"].rolling(14).mean()
-  df["EMA_Fast"] = df["Close"].ewm(span=9, adjust=False).mean()
-  df["EMA_Slow"] = df["Close"].ewm(span=21, adjust=False).mean()
-  
-  df["G_Mid"] = df["Close"].ewm(span=20, adjust=False).mean()
-  df["G_Upper"] = df["G_Mid"] + (df["ATR"] * 1.5)
-  df["G_Lower"] = df["G_Mid"] - (df["ATR"] * 1.5)
-  return df
-
-
 @st.cache_data(ttl=30)
 def fetch_twt_delta_data(symbol, tf):
   exchanges_to_try = [
@@ -132,6 +270,7 @@ def fetch_twt_delta_data(symbol, tf):
       (ccxt.kucoin, symbol),
   ]
 
+  # Fallback ticker mapping for RENDER or FIL if named differently on exchanges
   symbol_variants = [symbol]
   if symbol == "RENDER/USDT":
     symbol_variants = ["RENDER/USDT", "RENDERUSDT", "RNDR/USDT"]
@@ -144,28 +283,53 @@ def fetch_twt_delta_data(symbol, tf):
       exchange.load_markets()
       for sym in symbol_variants:
         if sym in exchange.markets:
-          ohlcv_tf = exchange.fetch_ohlcv(sym, timeframe=tf, limit=140)
+          ohlcv_tf = exchange.fetch_ohlcv(sym, timeframe=tf, limit=100)
           ohlcv_4h = exchange.fetch_ohlcv(sym, timeframe="4h", limit=25)
           ohlcv_6h = exchange.fetch_ohlcv(sym, timeframe="6h", limit=25)
 
           if ohlcv_tf and ohlcv_4h:
-            df_5 = pd.DataFrame(ohlcv_tf, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
+            df_5 = pd.DataFrame(
+                ohlcv_tf,
+                columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
+            )
             df_5["timestamp"] = pd.to_datetime(df_5["timestamp"], unit="ms")
             df_5 = df_5.set_index("timestamp")
 
-            df_4 = pd.DataFrame(ohlcv_4h, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
+            df_4 = pd.DataFrame(
+                ohlcv_4h,
+                columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
+            )
             df_4["timestamp"] = pd.to_datetime(df_4["timestamp"], unit="ms")
             df_4 = df_4.set_index("timestamp")
 
-            df_6 = pd.DataFrame(ohlcv_6h, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"]) if ohlcv_6h else df_4.copy()
+            df_6 = (
+                pd.DataFrame(
+                    ohlcv_6h,
+                    columns=[
+                        "timestamp",
+                        "Open",
+                        "High",
+                        "Low",
+                        "Close",
+                        "Volume",
+                    ],
+                )
+                if ohlcv_6h
+                else df_4.copy()
+            )
             df_6["timestamp"] = pd.to_datetime(df_6["timestamp"], unit="ms")
             df_6 = df_6.set_index("timestamp")
 
+            # --- REAL GOLD (XAUT) PRICE CALIBRATION ---
+            # Calibrating XAUT to perfectly align with spot gold scale if needed
             if symbol == "XAUT/USDT":
-              gold_mult = 1.0025
-              for d in [df_5, df_4, df_6]:
-                for col in ["Open", "High", "Low", "Close"]:
-                  d[col] *= gold_mult
+              gold_calibration_multiplier = (
+                  1.0025  # Fine-tuning offset calibration
+              )
+              for col in ["Open", "High", "Low", "Close"]:
+                df_5[col] = df_5[col] * gold_calibration_multiplier
+                df_4[col] = df_4[col] * gold_calibration_multiplier
+                df_6[col] = df_6[col] * gold_calibration_multiplier
 
             return df_5, df_4, df_6
     except Exception:
@@ -173,7 +337,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTCleanEngine:
+class TWTUltimateEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -193,21 +357,46 @@ class TWTCleanEngine:
     IST = timezone(timedelta(hours=5, minutes=30))
     current_utc_time = datetime.now(timezone.utc)
 
+    # 1. Calculate Key Levels
     if self.df_4 is not None and not self.df_4.empty:
-      idx_utc = self.df_4.index.tz_localize("UTC") if self.df_4.index.tz is None else self.df_4.index
+      idx_utc = (
+          self.df_4.index.tz_localize("UTC")
+          if self.df_4.index.tz is None
+          else self.df_4.index
+      )
       df_4_ist = idx_utc.tz_convert(IST)
       filtered_4h = self.df_4[df_4_ist.hour == 1]
-      self.resistance_lvl = float(filtered_4h["High"].iloc[-1]) if not filtered_4h.empty else float(self.df_4["High"].iloc[-1])
+      self.resistance_lvl = (
+          float(filtered_4h["High"].iloc[-1])
+          if not filtered_4h.empty
+          else float(self.df_4["High"].iloc[-1])
+      )
 
     if self.df_6 is not None and not self.df_6.empty:
-      idx_utc_6 = self.df_6.index.tz_localize("UTC") if self.df_6.index.tz is None else self.df_6.index
+      idx_utc_6 = (
+          self.df_6.index.tz_localize("UTC")
+          if self.df_6.index.tz is None
+          else self.df_6.index
+      )
       df_6_ist = idx_utc_6.tz_convert(IST)
       filtered_6h = self.df_6[df_6_ist.hour == 5]
-      self.support_lvl = float(filtered_6h["Low"].iloc[-1]) if not filtered_6h.empty else float(self.df_6["Low"].iloc[-1])
+      self.support_lvl = (
+          float(filtered_6h["Low"].iloc[-1])
+          if not filtered_6h.empty
+          else float(self.df_6["Low"].iloc[-1])
+      )
     elif self.df_4 is not None:
       self.support_lvl = float(self.df_4["Low"].iloc[-1])
 
-    self.df_5 = calculate_indicators(self.df_5)
+    # 2. Indicators Calculation
+    self.df_5["TR"] = np.maximum(
+        self.df_5["High"] - self.df_5["Low"],
+        np.maximum(
+            abs(self.df_5["High"] - self.df_5["Close"].shift(1)),
+            abs(self.df_5["Low"] - self.df_5["Close"].shift(1)),
+        ),
+    )
+    self.df_5["ATR"] = self.df_5["TR"].rolling(14).mean()
 
     for idx, row in enumerate(self.df_5.iterrows()):
       dt_utc = row[0]
@@ -218,10 +407,14 @@ class TWTCleanEngine:
       timestamp_str = dt_user_tz.strftime("%H:%M")
 
       r = row[1]
-      o, h, l, c, v = float(r["Open"]), float(r["High"]), float(r["Low"]), float(r["Close"]), float(r["Volume"])
+      o, h, l, c, v = (
+          float(r["Open"]),
+          float(r["High"]),
+          float(r["Low"]),
+          float(r["Close"]),
+          float(r["Volume"]),
+      )
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
-      ema_fast = float(r["EMA_Fast"]) if not pd.isna(r["EMA_Fast"]) else c
-      ema_slow = float(r["EMA_Slow"]) if not pd.isna(r["EMA_Slow"]) else c
 
       age_minutes = (current_utc_time - dt_utc).total_seconds() / 60.0
       is_within_1hr = age_minutes <= 60.0
@@ -238,104 +431,108 @@ class TWTCleanEngine:
           "close": c,
           "volume": v,
           "atr": atr,
-          "ema_fast": ema_fast,
-          "ema_slow": ema_slow,
           "is_within_1hr": is_within_1hr,
       })
 
-    # =========================================================
-    # CLEAN WAVE & DIRECTION ENGINE WITH ANTI-SPAM COOLDOWN
-    # =========================================================
-    cooldown = 0
+    res_wick_touched = False
+    res_inside_count = 0
+    res_ready_for_retest = False
 
-    for i in range(20, len(self.candles)):
-      if cooldown > 0:
-        cooldown -= 1
-        continue
+    sup_wick_touched = False
+    sup_inside_count = 0
+    sup_ready_for_retest = False
 
+    signal_given = False
+
+    for i in range(5, len(self.candles)):
       c = self.candles[i]
       if time(1, 0) <= c["dt_ist"].time() <= time(6, 0):
         continue
 
       atr = c["atr"]
       dec = get_decimals(c["close"])
-      recent_window = self.candles[i - 20:i]
 
-      # Trend bias from EMA
-      is_uptrend = c["ema_fast"] > c["ema_slow"]
-      is_downtrend = c["ema_fast"] < c["ema_slow"]
+      # --- SHORT LOGIC (RESISTANCE) ---
+      if c["high"] >= self.resistance_lvl - (0.4 * atr):
+        res_wick_touched = True
 
-      # --- 1. BUY / LONG SETUP ---
-      valleys = []
-      for j in range(1, len(recent_window) - 1):
-        if recent_window[j]["low"] < recent_window[j-1]["low"] and recent_window[j]["low"] < recent_window[j+1]["low"]:
-          valleys.append(recent_window[j])
+      if (
+          res_wick_touched
+          and c["close"] < self.resistance_lvl
+          and c["color"] == "Red"
+      ):
+        res_inside_count += 1
+        if res_inside_count >= 2:
+          res_ready_for_retest = True
 
-      if len(valleys) >= 2 and is_uptrend:
-        prev_c = self.candles[i - 1]
-        buyers_active = (c["color"] == "Green") and (c["close"] > prev_c["high"]) and (c["close"] > c["open"])
-        seller_fading = prev_c["low"] >= valleys[-1]["low"]
+      if (
+          res_ready_for_retest
+          and not signal_given
+          and c["color"] == "Green"
+          and c["high"] >= self.resistance_lvl - (0.8 * atr)
+      ):
+        signal_given = True
+        sl = round(c["high"] + (1.2 * atr), dec)
+        tp1 = round(c["close"] - (1.0 * atr), dec)
+        tp2 = round(c["close"] - (2.2 * atr), dec)
+        tp3 = round(c["close"] - (3.8 * atr), dec)
 
-        if buyers_active and seller_fading:
-          wave_num = len(valleys)
-          sl = round(valleys[-1]["low"] - (1.0 * atr), dec)
-          tp1 = round(c["close"] + (1.2 * atr), dec)
-          tp2 = round(c["close"] + (2.5 * atr), dec)
-          tp3 = round(c["close"] + (4.0 * atr), dec)
+        self.signals.append({
+            "Asset": self.symbol,
+            "Time": c["time"],
+            "Candle #": c["id"],
+            "Setup": "Resistance Wick + 2-Candle Retest Short",
+            "Action": "Sell / Short (S) [Confirmed Retest] 🔴",
+            "Entry Price": round(c["close"], dec),
+            "Stop Loss (SL)": sl,
+            "TP 1": tp1,
+            "TP 2": tp2,
+            "TP 3": tp3,
+            "Is_Within_1hr": c["is_within_1hr"],
+        })
 
-          self.signals.append({
-              "Asset": self.symbol,
-              "Time": c["time"],
-              "Candle #": c["id"],
-              "Setup": f"Wave {wave_num} Pullback Buy",
-              "Action": f"Buy / Long (B) [Wave {wave_num}] 🟢",
-              "Entry Price": round(c["close"], dec),
-              "Stop Loss (SL)": sl,
-              "TP 1": tp1,
-              "TP 2": tp2,
-              "TP 3": tp3,
-              "Is_Within_1hr": c["is_within_1hr"],
-          })
-          cooldown = 12  # Prevent spamming signals back-to-back
-          continue
+      # --- LONG LOGIC (SUPPORT) ---
+      if c["low"] <= self.support_lvl + (0.4 * atr):
+        sup_wick_touched = True
 
-      # --- 2. SELL / SHORT SETUP ---
-      peaks = []
-      for j in range(1, len(recent_window) - 1):
-        if recent_window[j]["high"] > recent_window[j-1]["high"] and recent_window[j]["high"] > recent_window[j+1]["high"]:
-          peaks.append(recent_window[j])
+      if (
+          sup_wick_touched
+          and c["close"] > self.support_lvl
+          and c["color"] == "Green"
+      ):
+        sup_inside_count += 1
+        if sup_inside_count >= 2:
+          sup_ready_for_retest = True
 
-      if len(peaks) >= 2 and is_downtrend:
-        prev_c = self.candles[i - 1]
-        sellers_active = (c["color"] == "Red") and (c["close"] < prev_c["low"]) and (c["close"] < c["open"])
-        buyer_fading = prev_c["high"] <= peaks[-1]["high"]
+      if (
+          sup_ready_for_retest
+          and not signal_given
+          and c["color"] == "Red"
+          and c["low"] <= self.support_lvl + (0.8 * atr)
+      ):
+        signal_given = True
+        sl = round(c["low"] - (1.2 * atr), dec)
+        tp1 = round(c["close"] + (1.0 * atr), dec)
+        tp2 = round(c["close"] + (2.2 * atr), dec)
+        tp3 = round(c["close"] + (3.8 * atr), dec)
 
-        if sellers_active and buyer_fading:
-          wave_num = len(peaks)
-          sl = round(peaks[-1]["high"] + (1.0 * atr), dec)
-          tp1 = round(c["close"] - (1.2 * atr), dec)
-          tp2 = round(c["close"] - (2.5 * atr), dec)
-          tp3 = round(c["close"] - (4.0 * atr), dec)
-
-          self.signals.append({
-              "Asset": self.symbol,
-              "Time": c["time"],
-              "Candle #": c["id"],
-              "Setup": f"Wave {wave_num} Pullback Sell",
-              "Action": f"Sell / Short (S) [Wave {wave_num}] 🔴",
-              "Entry Price": round(c["close"], dec),
-              "Stop Loss (SL)": sl,
-              "TP 1": tp1,
-              "TP 2": tp2,
-              "TP 3": tp3,
-              "Is_Within_1hr": c["is_within_1hr"],
-          })
-          cooldown = 12  # Prevent spamming signals back-to-back
-          continue
+        self.signals.append({
+            "Asset": self.symbol,
+            "Time": c["time"],
+            "Candle #": c["id"],
+            "Setup": "Support Wick + 2-Candle Retest Long",
+            "Action": "Buy / Long (B) [Confirmed Retest] 🟢",
+            "Entry Price": round(c["close"], dec),
+            "Stop Loss (SL)": sl,
+            "TP 1": tp1,
+            "TP 2": tp2,
+            "TP 3": tp3,
+            "Is_Within_1hr": c["is_within_1hr"],
+        })
 
 
 # ---------------------------------------------------------
-# MASTER SCANNER (Global Feed - Last 1 Hour)
+# MASTER SCANNER (Global Feed for Top Dashboard)
 # ---------------------------------------------------------
 st.markdown("---")
 st.subheader("🔥 TWT Master Live Signal Dashboard (Last 1 Hour)")
@@ -347,7 +544,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTCleanEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTUltimateEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -355,7 +552,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets with clean wave rules..."):
+with st.spinner("⚡ Scanning all 20 assets (including RENDER & FIL)..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -368,13 +565,16 @@ with st.spinner("⚡ Scanning all 20 assets with clean wave rules..."):
         master_signals.append(latest)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} active clean setup(s)!")
+  st.success(f"✅ Found {len(master_signals)} active ultimate setup(s)!")
   df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active setups in the last 1 hour. Waiting for clean wave setup...")
+  st.info(
+      "ℹ️ No active ultimate signals in the last 1 hour. Waiting for wick touch"
+      " & 2-candle retest..."
+  )
 
 # ---------------------------------------------------------
 # MANUAL ASSET SELECTOR & CHART VIEWER
@@ -392,7 +592,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTCleanEngine(df_5, df_4, df_6, selected_symbol, active_tz)
+  bot = TWTUltimateEngine(df_5, df_4, df_6, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -400,18 +600,18 @@ if bot.df_5 is not None and not bot.df_5.empty:
 
   col1, col2, col3, col4 = st.columns(4)
   with col1:
-    st.metric(label="4H Reference High", value=f"{bot.resistance_lvl:.2f}")
+    st.metric(
+        label="4H Resistance (01:30 High)", value=f"{bot.resistance_lvl:.2f}"
+    )
   with col2:
-    st.metric(label="6H Reference Low", value=f"{bot.support_lvl:.2f}")
+    st.metric(label="6H Support (05:30 Low)", value=f"{bot.support_lvl:.2f}")
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Clean Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Ultimate Active")
 
-  recent_signals = [s for s in bot.signals if s.get("Is_Within_1hr", False)]
-
-  if recent_signals:
-    latest_sig = recent_signals[-1]
+  if bot.signals:
+    latest_sig = bot.signals[-1]
     is_buy = "Buy" in latest_sig["Action"]
     entry_p = latest_sig["Entry Price"]
     signal_time = latest_sig["Time"]
@@ -420,42 +620,47 @@ if bot.df_5 is not None and not bot.df_5.empty:
 
     if is_buy:
       st.success(
-          f"🟢 **TWT SETUP: {latest_sig['Action']}**\n\n"
+          f"🟢 **TWT ULTIMATE SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Clean Wave Pullback + Trend Confirmed!"
+          "📌 *Instructions:* Support wick touch -> 2 Candles above -> Retest"
+          " pullback -> Buyer confirmed!"
       )
     else:
       st.error(
-          f"🔴 **TWT SETUP: {latest_sig['Action']}**\n\n"
+          f"🔴 **TWT ULTIMATE SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Clean Wave Pullback + Trend Confirmed!"
+          "📌 *Instructions:* Resistance wick touch -> 2 Candles inside -> Retest"
+          " pullback -> Seller confirmed!"
       )
   else:
     st.warning(
-        "🟡 **STATUS: WAITING FOR CLEAN WAVE SETUP**\n\n"
-        "📌 *Instructions:* Monitoring filtered trend waves."
+        "🟡 **STATUS: WAITING FOR WICK TOUCH & 2-CANDLE RETEST**\n\n"
+        "📌 *Instructions:* Monitoring wick touches and multi-candle"
+        " confirmations."
     )
 
+  # Complete Signal History
   if bot.signals:
     st.markdown("---")
     st.subheader(
-        f"📋 Complete Signal History for {selected_symbol} (Old & New Entries)"
+        f"📋 Complete Signal History for {selected_symbol} (Old & New)"
     )
     df_history = pd.DataFrame(bot.signals).drop(
         columns=["Is_Within_1hr"], errors="ignore"
     )
     st.dataframe(df_history, width="stretch")
 
+  # Chart Rendering
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
   for c in bot.candles:
     col = "#26a69a" if c["color"] == "Green" else "#ef5350"
@@ -471,46 +676,17 @@ if bot.df_5 is not None and not bot.df_5.empty:
     ax.bar(c["id"], plot_height, bottom=plot_bottom, color=col, width=0.7)
     ax.vlines(c["id"], c["low"], c["high"], color="#b2b5be", linewidth=1.3)
 
-  if "G_Upper" in bot.df_5.columns:
-    ax.plot(
-        range(1, len(bot.df_5) + 1),
-        bot.df_5["G_Upper"],
-        color="#ff5252",
-        linestyle="-",
-        linewidth=1,
-        alpha=0.7,
-        label="G Upper",
-    )
-    ax.plot(
-        range(1, len(bot.df_5) + 1),
-        bot.df_5["G_Lower"],
-        color="#00e676",
-        linestyle="-",
-        linewidth=1,
-        alpha=0.7,
-        label="G Lower",
-    )
-    ax.plot(
-        range(1, len(bot.df_5) + 1),
-        bot.df_5["G_Mid"],
-        color="#ffeb3b",
-        linestyle="--",
-        linewidth=0.8,
-        alpha=0.6,
-        label="G Baseline",
-    )
-
   ax.axhline(
       bot.resistance_lvl,
       color="#ffeb3b",
       linestyle="--",
       linewidth=2,
-      label="4H Reference High",
+      label="4H Resistance",
   )
   ax.text(
       2,
       bot.resistance_lvl,
-      f"  4H Ref High ({bot.resistance_lvl:.1f})",
+      f"  4H Resistance ({bot.resistance_lvl:.1f})",
       color="#ffeb3b",
       weight="bold",
       fontsize=10,
@@ -521,12 +697,12 @@ if bot.df_5 is not None and not bot.df_5.empty:
       color="#26a69a",
       linestyle="--",
       linewidth=2,
-      label="6H Reference Low",
+      label="6H Support",
   )
   ax.text(
       2,
       bot.support_lvl,
-      f"  6H Ref Low ({bot.support_lvl:.1f})",
+      f"  6H Support ({bot.support_lvl:.1f})",
       color="#26a69a",
       weight="bold",
       fontsize=10,
@@ -558,7 +734,8 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Clean Engine ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Ultimate Engine"
+      f" ({tz_short})",
       color="white",
       fontsize=14,
   )
