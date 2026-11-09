@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Perfect 4,3,2,1 Resistance Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — D, C, B, A Resistance Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -92,7 +92,7 @@ st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
 st.sidebar.text("Buy Logic        : 5 Red -> Green -> Red -> Green Wick Entry")
-st.sidebar.text("Sell Logic       : Candle touching/crossing Resistance is 4 -> Downward 3,2,1 -> #3 Low Break -> Green -> Red Short")
+st.sidebar.text("Sell Logic       : D(Resistance) -> C -> B -> A -> Red breaks B low -> Green -> Red crosses A & B -> Short Entry")
 st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss        : ATR Managed")
 
@@ -161,7 +161,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTPureExactResistanceEngine:
+class TWTDCCBAEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -172,7 +172,7 @@ class TWTPureExactResistanceEngine:
     self.candles = []
     self.signals = []
     self.buy_annotations = []   # Stores (candle_id, count_num, high_price)
-    self.sell_annotations = []  # Stores (candle_id, count_num, high_price)
+    self.sell_annotations = []  # Stores (candle_id, label_str, price)
     self.resistance_lvl = 0
     self.support_lvl = 0
 
@@ -265,9 +265,13 @@ class TWTPureExactResistanceEngine:
     buy_red_count = 0
     ref_red_wick = 0.0
 
-    # --- SELL STATE MACHINE ---
+    # --- SELL STATE MACHINE (D, C, B, A) ---
     sell_state = 0
-    target_candle_3_low = 0.0
+    c_b = None
+    c_a = None
+    target_b_low = 0.0
+    level_a_ref = 0.0
+    level_b_ref = 0.0
 
     for i in range(len(self.candles)):
       c = self.candles[i]
@@ -331,44 +335,48 @@ class TWTPureExactResistanceEngine:
             buy_state = 5
 
       # ---------------------------------------------------------
-      # SELL ENGINE PROCESSING (Exact Resistance 4, then downward 3, 2, 1)
+      # SELL ENGINE PROCESSING (D -> C -> B -> A Setup)
       # ---------------------------------------------------------
       if sell_state != 5 and c["close"] <= self.resistance_lvl - (atr * 2.0):
         sell_state = 0
 
       if sell_state != 5:
         if sell_state == 0:
-          # Step 1: Green candle that touches or crosses Resistance is #4
+          # Step 1: Candle touching/crossing resistance is 'D' (Green)
           if (c["high"] >= self.resistance_lvl or c["close"] >= self.resistance_lvl) and c["color"] == "Green":
-            self.sell_annotations.append((c["id"], 4, c["high"]))
+            self.sell_annotations.append((c["id"], "D", c["high"]))
             sell_state = 1
         elif sell_state == 1:
-          # Step 2: Next downward Green candle is #3
+          # Step 2: Next downward green candle is 'C'
           if c["color"] == "Green":
-            self.sell_annotations.append((c["id"], 3, c["high"]))
-            target_candle_3_low = c["low"]  # Save #3 low for breakout
+            self.sell_annotations.append((c["id"], "C", c["high"]))
             sell_state = 2
         elif sell_state == 2:
-          # Step 3: Next downward Green candle is #2
+          # Step 3: Next downward green candle is 'B'
           if c["color"] == "Green":
-            self.sell_annotations.append((c["id"], 2, c["high"]))
+            c_b = c
+            self.sell_annotations.append((c_b["id"], "B", c_b["high"]))
+            target_b_low = c_b["low"]      # Lower wick / low of B
+            level_b_ref = c_b["high"]     # Reference level for B
             sell_state = 3
         elif sell_state == 3:
-          # Step 4: Next downward Green candle is #1
+          # Step 4: Next downward green candle is 'A'
           if c["color"] == "Green":
-            self.sell_annotations.append((c["id"], 1, c["high"]))
-            sell_state = 4  # Sequence 4,3,2,1 complete below resistance!
+            c_a = c
+            self.sell_annotations.append((c_a["id"], "A", c_a["high"]))
+            level_a_ref = c_a["high"]     # Reference level for A
+            sell_state = 4  # Sequence D, C, B, A complete!
         elif sell_state == 4:
-          # Wait for a Red candle whose low breaks below #3 green candle's low
-          if c["color"] == "Red" and c["low"] < target_candle_3_low:
-            sell_state = 5  # #3 low broken, now wait for Green then Red entry
+          # Step 5: Wait for Red candle to break B's lower wick
+          if c["color"] == "Red" and c["low"] < target_b_low:
+            sell_state = 5  # B broken, now wait for Green candle
         elif sell_state == 5:
-          # Wait for 1 Green candle after breakdown
+          # Step 6: Wait for 1 Green candle to form after the breakdown
           if c["color"] == "Green":
             sell_state = 6
         elif sell_state == 6:
-          # Next Red candle gives Sell / Short Entry!
-          if c["color"] == "Red":
+          # Step 7: Next Red candle that crosses/closes below A and B levels gives SELL ENTRY!
+          if c["color"] == "Red" and (c["close"] < level_a_ref or c["close"] < level_b_ref):
             sl = round(c["high"] + (1.2 * atr), dec)
             tp1 = round(c["close"] - (1.2 * atr), dec)
             tp2 = round(c["close"] - (2.5 * atr), dec)
@@ -379,8 +387,8 @@ class TWTPureExactResistanceEngine:
                 "Time": c["time"],
                 "Candle #": c["id"],
                 "Type": "SELL 🔴",
-                "Setup": "Resistance #4 -> Downward #3,#2,#1 -> #3 Low Break -> Green -> Red Short Entry",
-                "Action": "Sell / Short (S) [Resistance #3 Breakout Reversal] 🔴",
+                "Setup": "D->C->B->A -> B Low Break -> Green -> Red Crosses A & B Short Entry",
+                "Action": "Sell / Short (S) [D-C-B-A Reversal] 🔴",
                 "Entry Price": round(c["close"], dec),
                 "Stop Loss (SL)": sl,
                 "TP 1": tp1,
@@ -388,7 +396,7 @@ class TWTPureExactResistanceEngine:
                 "TP 3": tp3,
                 "Is_Within_1hr": c["is_within_1hr"],
             })
-            sell_state = 5  # LOCKED for resistance cycle
+            sell_state = 7  # LOCKED for resistance cycle
 
 
 # ---------------------------------------------------------
@@ -404,7 +412,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTPureExactResistanceEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTDCCBAEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -451,7 +459,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTPureExactResistanceEngine(df_5, df_4, df_6, selected_symbol, active_tz)
+  bot = TWTDCCBAEngine(df_5, df_4, df_6, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -467,7 +475,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Pure Resistance Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="D,C,B,A Engine Active")
 
   if bot.signals:
     latest_sig = bot.signals[-1]
@@ -503,7 +511,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   if bot.signals:
     st.markdown("---")
     st.subheader(
-        f"📋 Complete Signal History for {selected_symbol} (Pure Engine)"
+        f"📋 Complete Signal History for {selected_symbol} (D,C,B,A Engine)"
     )
     df_history = pd.DataFrame(bot.signals).drop(
         columns=["Is_Within_1hr"], errors="ignore"
@@ -584,12 +592,12 @@ if bot.df_5 is not None and not bot.df_5.empty:
         va="bottom",
     )
 
-  # Plot Sell Count Numbers (4 at resistance touch, then downward 3, 2, 1)
-  for cid, cnt, hp in bot.sell_annotations:
+  # Plot Sell Labels (D, C, B, A below resistance)
+  for cid, label_str, hp in bot.sell_annotations:
     ax.text(
         cid,
         hp + (margin * 0.03),
-        str(cnt),
+        label_str,
         color="#00e676",
         weight="bold",
         fontsize=9,
@@ -614,7 +622,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Pure Resistance Engine ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA D,C,B,A Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
