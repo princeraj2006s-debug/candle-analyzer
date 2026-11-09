@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Direct Pullback & Zone Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Dynamic Price Action & Wave Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -84,16 +84,16 @@ server_time_target = datetime.now(active_tz)
 st.sidebar.text(
     f"Server time          ———  {server_time_target.strftime('%H:%M')}"
 )
-st.sidebar.text("Support Ref (6H)   ———  05:30 IST Candle Low (Buy Only)")
-st.sidebar.text("Resistance Ref (4H) ———  01:30 IST Candle High (Sell Only)")
+st.sidebar.text("Support Ref (6H)   ———  05:30 IST Reference Low")
+st.sidebar.text("Resistance Ref (4H) ———  01:30 IST Reference High")
 st.sidebar.text("No-Trade Zone      ———  01:00 ➔ 06:00 IST")
 st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
-st.sidebar.text("Support Zone     : ONLY BUY (Long Setup)")
-st.sidebar.text("Resistance Zone  : ONLY SELL (Short Setup)")
-st.sidebar.text("Logic            : Swing Pullback + Candle Confirmation")
+st.sidebar.text("Logic            : Multi-Pullback Wave + Candle Direction")
+st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
+st.sidebar.text("Stop loss        : ATR Managed")
 
 
 def get_decimals(price):
@@ -173,7 +173,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTDirectEngine:
+class TWTynamicEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -193,7 +193,7 @@ class TWTDirectEngine:
     IST = timezone(timedelta(hours=5, minutes=30))
     current_utc_time = datetime.now(timezone.utc)
 
-    # Key Levels from 4H and 6H
+    # Reference Levels
     if self.df_4 is not None and not self.df_4.empty:
       idx_utc = self.df_4.index.tz_localize("UTC") if self.df_4.index.tz is None else self.df_4.index
       df_4_ist = idx_utc.tz_convert(IST)
@@ -241,71 +241,83 @@ class TWTDirectEngine:
       })
 
     # =========================================================
-    # DIRECT PULLBACK & ZONE ENTRY LOGIC
+    # DYNAMIC MULTI-PULLBACK WAVE & CANDLE DIRECTION ENGINE
     # =========================================================
-    for i in range(10, len(self.candles)):
+    for i in range(20, len(self.candles)):
       c = self.candles[i]
       if time(1, 0) <= c["dt_ist"].time() <= time(6, 0):
         continue
 
       atr = c["ATR"] if "ATR" in c else c["atr"]
       dec = get_decimals(c["close"])
+      recent_window = self.candles[i - 20:i]
 
-      # --- ZONE 1: SUPPORT ZONE (BUY / LONG ONLY) ---
-      if c["close"] >= self.support_lvl and c["close"] < (self.support_lvl + (self.resistance_lvl - self.support_lvl) * 0.5):
-        recent_window = self.candles[max(0, i - 12):i]
-        swing_low = min([x["low"] for x in recent_window])
+      # --- 1. BUY / LONG SETUP (Dynamic Wave Pullback + Candle Direction) ---
+      valleys = []
+      for j in range(1, len(recent_window) - 1):
+        if recent_window[j]["low"] < recent_window[j-1]["low"] and recent_window[j]["low"] < recent_window[j+1]["low"]:
+          valleys.append(recent_window[j])
 
-        # Check if price pulled back near swing low / support and bouncing with a green candle
-        if c["low"] <= swing_low + (1.2 * atr) or c["low"] <= self.support_lvl + (1.5 * atr):
-          prev_c = self.candles[i - 1]
-          if c["color"] == "Green" and c["close"] > prev_c["high"] and c["close"] > c["open"]:
-            sl = round(swing_low - (1.0 * atr), dec)
-            tp1 = round(c["close"] + (1.2 * atr), dec)
-            tp2 = round(c["close"] + (2.5 * atr), dec)
-            tp3 = round(c["close"] + (4.0 * atr), dec)
+      if len(valleys) >= 2:
+        prev_c = self.candles[i - 1]
+        # Skip 1st pullback, check 2nd/3rd wave where buyers bounce and break previous high
+        buyers_active = (c["color"] == "Green") and (c["close"] > prev_c["high"]) and (c["close"] > c["open"])
+        seller_fading = prev_c["low"] >= valleys[-1]["low"]
 
-            self.signals.append({
-                "Asset": self.symbol,
-                "Time": c["time"],
-                "Candle #": c["id"],
-                "Setup": "Support Pullback Buy",
-                "Action": "Buy / Long (B) 🟢",
-                "Entry Price": round(c["close"], dec),
-                "Stop Loss (SL)": sl,
-                "TP 1": tp1,
-                "TP 2": tp2,
-                "TP 3": tp3,
-                "Is_Within_1hr": c["is_within_1hr"],
-            })
+        if buyers_active and seller_fading:
+          wave_num = len(valleys)
+          sl = round(valleys[-1]["low"] - (1.0 * atr), dec)
+          tp1 = round(c["close"] + (1.2 * atr), dec)
+          tp2 = round(c["close"] + (2.5 * atr), dec)
+          tp3 = round(c["close"] + (4.0 * atr), dec)
 
-      # --- ZONE 2: RESISTANCE ZONE (SELL / SHORT ONLY) ---
-      if c["close"] <= self.resistance_lvl and c["close"] > (self.resistance_lvl - (self.resistance_lvl - self.support_lvl) * 0.5):
-        recent_window = self.candles[max(0, i - 12):i]
-        swing_high = max([x["high"] for x in recent_window])
+          self.signals.append({
+              "Asset": self.symbol,
+              "Time": c["time"],
+              "Candle #": c["id"],
+              "Setup": f"Wave {wave_num} Pullback Buy Setup",
+              "Action": f"Buy / Long (B) [Wave {wave_num}] 🟢",
+              "Entry Price": round(c["close"], dec),
+              "Stop Loss (SL)": sl,
+              "TP 1": tp1,
+              "TP 2": tp2,
+              "TP 3": tp3,
+              "Is_Within_1hr": c["is_within_1hr"],
+          })
+          continue  # Prevent overlapping duplicate triggers on same candle
 
-        # Check if price pulled back near swing high / resistance and rejecting with a red candle
-        if c["high"] >= swing_high - (1.2 * atr) or c["high"] >= self.resistance_lvl - (1.5 * atr):
-          prev_c = self.candles[i - 1]
-          if c["color"] == "Red" and c["close"] < prev_c["low"] and c["close"] < c["open"]:
-            sl = round(swing_high + (1.0 * atr), dec)
-            tp1 = round(c["close"] - (1.2 * atr), dec)
-            tp2 = round(c["close"] - (2.5 * atr), dec)
-            tp3 = round(c["close"] - (4.0 * atr), dec)
+      # --- 2. SELL / SHORT SETUP (Dynamic Wave Pullback + Candle Direction) ---
+      peaks = []
+      for j in range(1, len(recent_window) - 1):
+        if recent_window[j]["high"] > recent_window[j-1]["high"] and recent_window[j]["high"] > recent_window[j+1]["high"]:
+          peaks.append(recent_window[j])
 
-            self.signals.append({
-                "Asset": self.symbol,
-                "Time": c["time"],
-                "Candle #": c["id"],
-                "Setup": "Resistance Pullback Sell",
-                "Action": "Sell / Short (S) 🔴",
-                "Entry Price": round(c["close"], dec),
-                "Stop Loss (SL)": sl,
-                "TP 1": tp1,
-                "TP 2": tp2,
-                "TP 3": tp3,
-                "Is_Within_1hr": c["is_within_1hr"],
-            })
+      if len(peaks) >= 2:
+        prev_c = self.candles[i - 1]
+        # Skip 1st pullback, check 2nd/3rd wave where sellers reject and break previous low
+        sellers_active = (c["color"] == "Red") and (c["close"] < prev_c["low"]) and (c["close"] < c["open"])
+        buyer_fading = prev_c["high"] <= peaks[-1]["high"]
+
+        if sellers_active and buyer_fading:
+          wave_num = len(peaks)
+          sl = round(peaks[-1]["high"] + (1.0 * atr), dec)
+          tp1 = round(c["close"] - (1.2 * atr), dec)
+          tp2 = round(c["close"] - (2.5 * atr), dec)
+          tp3 = round(c["close"] - (4.0 * atr), dec)
+
+          self.signals.append({
+              "Asset": self.symbol,
+              "Time": c["time"],
+              "Candle #": c["id"],
+              "Setup": f"Wave {wave_num} Pullback Sell Setup",
+              "Action": f"Sell / Short (S) [Wave {wave_num}] 🔴",
+              "Entry Price": round(c["close"], dec),
+              "Stop Loss (SL)": sl,
+              "TP 1": tp1,
+              "TP 2": tp2,
+              "TP 3": tp3,
+              "Is_Within_1hr": c["is_within_1hr"],
+          })
 
 
 # ---------------------------------------------------------
@@ -321,7 +333,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTDirectEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTynamicEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -329,7 +341,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets with direct pullback rules..."):
+with st.spinner("⚡ Scanning all 20 assets with dynamic wave rules..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -342,13 +354,13 @@ with st.spinner("⚡ Scanning all 20 assets with direct pullback rules..."):
         master_signals.append(latest)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} active setup(s)!")
+  st.success(f"✅ Found {len(master_signals)} active dynamic setup(s)!")
   df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active setups in the last 1 hour. Waiting for pullback confirmation...")
+  st.info("ℹ️ No active setups in the last 1 hour. Waiting for wave pullback confirmation...")
 
 # ---------------------------------------------------------
 # MANUAL ASSET SELECTOR & CHART VIEWER
@@ -366,7 +378,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTDirectEngine(df_5, df_4, df_6, selected_symbol, active_tz)
+  bot = TWTynamicEngine(df_5, df_4, df_6, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -374,15 +386,13 @@ if bot.df_5 is not None and not bot.df_5.empty:
 
   col1, col2, col3, col4 = st.columns(4)
   with col1:
-    st.metric(
-        label="4H Resistance (01:30 High)", value=f"{bot.resistance_lvl:.2f}"
-    )
+    st.metric(label="4H Reference High", value=f"{bot.resistance_lvl:.2f}")
   with col2:
-    st.metric(label="6H Support (05:30 Low)", value=f"{bot.support_lvl:.2f}")
+    st.metric(label="6H Reference Low", value=f"{bot.support_lvl:.2f}")
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Direct Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Dynamic Active")
 
   recent_signals = [s for s in bot.signals if s.get("Is_Within_1hr", False)]
 
@@ -396,30 +406,30 @@ if bot.df_5 is not None and not bot.df_5.empty:
 
     if is_buy:
       st.success(
-          f"🟢 **TWT SETUP: {latest_sig['Action']}**\n\n"
+          f"🟢 **TWT DYNAMIC SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Support Zone Pullback + Strong Green Candle Confirmed!"
+          "📌 *Instructions:* Wave Pullback + Candle Direction Confirmed!"
       )
     else:
       st.error(
-          f"🔴 **TWT SETUP: {latest_sig['Action']}**\n\n"
+          f"🔴 **TWT DYNAMIC SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Resistance Zone Pullback + Strong Red Candle Confirmed!"
+          "📌 *Instructions:* Wave Pullback + Candle Direction Confirmed!"
       )
   else:
     st.warning(
-        "🟡 **STATUS: WAITING FOR PULLBACK CONFIRMATION**\n\n"
-        "📌 *Instructions:* Support = Buy only, Resistance = Sell only."
+        "🟡 **STATUS: WAITING FOR WAVE PULLBACK CONFIRMATION**\n\n"
+        "📌 *Instructions:* Monitoring multi-pullback waves across price action."
     )
 
   # Complete Signal History (All past entries shown clearly)
@@ -483,12 +493,12 @@ if bot.df_5 is not None and not bot.df_5.empty:
       color="#ffeb3b",
       linestyle="--",
       linewidth=2,
-      label="4H Resistance",
+      label="4H Reference High",
   )
   ax.text(
       2,
       bot.resistance_lvl,
-      f"  4H Resistance ({bot.resistance_lvl:.1f})",
+      f"  4H Ref High ({bot.resistance_lvl:.1f})",
       color="#ffeb3b",
       weight="bold",
       fontsize=10,
@@ -499,12 +509,12 @@ if bot.df_5 is not None and not bot.df_5.empty:
       color="#26a69a",
       linestyle="--",
       linewidth=2,
-      label="6H Support",
+      label="6H Reference Low",
   )
   ax.text(
       2,
       bot.support_lvl,
-      f"  6H Support ({bot.support_lvl:.1f})",
+      f"  6H Ref Low ({bot.support_lvl:.1f})",
       color="#26a69a",
       weight="bold",
       fontsize=10,
@@ -537,7 +547,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Direct Engine ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Dynamic Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
