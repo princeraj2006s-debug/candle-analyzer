@@ -433,7 +433,7 @@ class TWTFreshBreakdownEngine:
       dec = get_decimals(c["close"])
 
       # Step 1: Detect fresh support breakdown (price crosses below support level)
-      if prev_c["close'] >= self.support_lvl and c["close"] < self.support_lvl and c["color"] == "Red":
+      if prev_c["close"] >= self.support_lvl and c["close"] < self.support_lvl and c["color"] == "Red":
         breakdown_active = True
         fresh_red_count = 1  # Start counting fresh from here!
         continue
