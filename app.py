@@ -284,7 +284,7 @@ class TWTUltimateEngine:
 
     signal_given = False
 
-    # Default Proximity Status (for when no recent signal is triggered)
+    # Proximity & Probability checking for dashboard
     last_c = self.candles[-1] if self.candles else None
     if last_c:
       dist_to_res = abs(last_c["close"] - self.resistance_lvl)
@@ -486,7 +486,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
       f"⏱️ **Expected Entry Timing / Probability:** `{bot.est_time}`"
   )
 
-  # STRICT FILTER: Only consider signals that occurred within the last 1 hour
+  # STRICT FILTER: Only consider signals that occurred within the last 1 hour for active card display
   recent_signals = [s for s in bot.signals if s.get("Is_Within_1hr", False)]
 
   if recent_signals:
@@ -525,12 +525,12 @@ if bot.df_5 is not None and not bot.df_5.empty:
     st.warning(
         "🟡 **STATUS: WAITING FOR CONFIRMATION (No recent signal in the last 1"
         " hour)**\n\n"
-        "📌 *Instructions:* Engine will only trigger an active trade box when"
-        " a fresh signal is confirmed within the last 1 hour. Currently"
-        " scanning price action."
+        "📌 *Instructions:* Engine will only trigger an active trade box with"
+        " Entry and SL when a fresh signal is confirmed within the last 1"
+        " hour. Currently scanning price action."
     )
 
-  # Complete Signal History (Shows all old and new history in table below)
+  # Complete Signal History table below
   if bot.signals:
     st.markdown("---")
     st.subheader(
