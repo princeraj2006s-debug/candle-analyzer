@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Pullback Single-Entry Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — 5-Red Wick Breakout Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -92,7 +92,7 @@ st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
 st.sidebar.text(
-    "Logic            : 7 Red -> 1 Green -> 2 Red Pullback -> Green Entry"
+    "Logic            : 5 Red -> Green -> Red -> Green Crosses Red Wick Entry"
     " (1-Time)"
 )
 st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
@@ -163,7 +163,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTPullbackSingleEntryEngine:
+class TWTWickBreakoutEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -262,14 +262,14 @@ class TWTPullbackSingleEntryEngine:
       })
 
     # State Machine:
-    # 0 = Waiting for 7 red candles below support
-    # 1 = Waiting for 1st Green candle after 7 reds
-    # 2 = Waiting for 2 Red pullback candles
-    # 3 = Waiting for next Green candle -> ENTRY (Strictly 1-Time)
+    # 0 = Waiting for 5 red candles below support
+    # 1 = Waiting for Green candle after 5 reds
+    # 2 = Waiting for Red candle (save its high/upper wick as ref_red_wick)
+    # 3 = Waiting for Green candle to cross ref_red_wick -> ENTRY (1-Time)
     # 4 = Permanently Locked for this support cycle
     state = 0
     red_count = 0
-    pullback_reds = 0
+    ref_red_wick = 0.0
 
     for i in range(len(self.candles)):
       c = self.candles[i]
@@ -283,7 +283,7 @@ class TWTPullbackSingleEntryEngine:
       if c["close"] >= self.support_lvl:
         state = 0
         red_count = 0
-        pullback_reds = 0
+        ref_red_wick = 0.0
         continue
 
       if state == 4:
@@ -294,24 +294,26 @@ class TWTPullbackSingleEntryEngine:
           if c["color"] == "Red":
             red_count += 1
             self.count_annotations.append((c["id"], red_count, c["high"]))
-            if red_count >= 7:
-              state = 1  # 7 reds done, now looking for 1st green candle
+            if red_count >= 5:
+              state = 1  # 5 reds done, now looking for a Green candle
         elif state == 1:
           if c["color"] == "Green":
-            pullback_reds = 0
-            state = 2  # 1st green found, now waiting for 2 red pullbacks
+            state = 2  # Green candle found, now waiting for the next Red candle
           elif c["color"] == "Red":
-            pass  # Keep waiting for 1st green after 7 reds
+            pass
         elif state == 2:
           if c["color"] == "Red":
-            pullback_reds += 1
-            if pullback_reds >= 2:
-              state = 3  # 2 red pullbacks done, ready for entry on next green
+            ref_red_wick = c[
+                "high"
+            ]  # Save upper wick (high) of this red candle
+            state = (
+                3  # Now wait for Green candle to cross this red candle's wick
+            )
           elif c["color"] == "Green":
-            pullback_reds = 0  # Reset pullback count if green appears early
+            state = 2
         elif state == 3:
-          if c["color"] == "Green":
-            # ENTRY TRIGGERED on this green candle after 2 red pullbacks! (Strictly 1-Time Only)
+          if c["color"] == "Green" and c["close"] > ref_red_wick:
+            # ENTRY TRIGGERED (Strictly 1-Time Only)
             sl = round(c["low"] - (1.2 * atr), dec)
             tp1 = round(c["close"] + (1.2 * atr), dec)
             tp2 = round(c["close"] + (2.5 * atr), dec)
@@ -322,9 +324,11 @@ class TWTPullbackSingleEntryEngine:
                 "Time": c["time"],
                 "Candle #": c["id"],
                 "Setup": (
-                    "7-Red -> 1st Green -> 2 Red Pullback -> Green Entry"
+                    "5-Red -> Green -> Red Pullback -> Wick Breakout Entry"
                 ),
-                "Action": "Buy / Long (B) [Pullback Entry Verified] 🟢",
+                "Action": (
+                    "Buy / Long (B) [5-Red Wick Breakout Single-Entry] 🟢"
+                ),
                 "Entry Price": round(c["close"], dec),
                 "Stop Loss (SL)": sl,
                 "TP 1": tp1,
@@ -348,7 +352,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTPullbackSingleEntryEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTWickBreakoutEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -356,7 +360,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets for pullback single-entry setups..."):
+with st.spinner("⚡ Scanning all 20 assets for wick breakout setups..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -376,8 +380,8 @@ if master_signals:
   st.dataframe(df_display, width="stretch")
 else:
   st.info(
-      "ℹ️ No active signals in the last 1 hour. Waiting for 7-red + pullback"
-      " sequence..."
+      "ℹ️ No active signals in the last 1 hour. Waiting for 5-red + wick"
+      " breakout sequence..."
   )
 
 # ---------------------------------------------------------
@@ -396,9 +400,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTPullbackSingleEntryEngine(
-      df_5, df_4, df_6, selected_symbol, active_tz
-  )
+  bot = TWTWickBreakoutEngine(df_5, df_4, df_6, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -414,7 +416,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Pullback Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Wick Engine Active")
 
   if bot.signals:
     latest_sig = bot.signals[-1]
@@ -425,28 +427,28 @@ if bot.df_5 is not None and not bot.df_5.empty:
     st.warning("⚠️ **Don't use after 40 minutes!**")
 
     st.success(
-        f"🟢 **TWT PULLBACK SETUP: {latest_sig['Action']}**\n\n"
+        f"🟢 **TWT WICK BREAKOUT SETUP: {latest_sig['Action']}**\n\n"
         f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
         f" #{latest_sig['Candle #']})\n"
         f"- **Entry Price:** `{entry_p}`\n"
         f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
         f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
         f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-        "📌 *Instructions:* 7 Reds -> 1st Green -> 2 Red Pullbacks -> Green Entry"
+        "📌 *Instructions:* 5 Reds -> Green -> Red -> Green crossing Red wick"
         " (Strictly 1-Time Verified)!"
     )
   else:
     st.warning(
-        "🟡 **STATUS: WAITING FOR PULLBACK SETUP**\n\n"
-        "📌 *Instructions:* Monitoring support breakdown, 7-red count, and"
-        " pullback sequence."
+        "🟡 **STATUS: WAITING FOR WICK SETUP**\n\n"
+        "📌 *Instructions:* Monitoring support breakdown, 5-red count, and wick"
+        " breakout sequence."
     )
 
   # Complete Signal History
   if bot.signals:
     st.markdown("---")
     st.subheader(
-        f"📋 Complete Signal History for {selected_symbol} (Pullback Engine)"
+        f"📋 Complete Signal History for {selected_symbol} (Wick Engine)"
     )
     df_history = pd.DataFrame(bot.signals).drop(
         columns=["Is_Within_1hr"], errors="ignore"
@@ -514,7 +516,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
       margin = curr_p * 0.005
     ax.set_ylim(min(lows) - margin, max(highs) + margin)
 
-  # Plot Red Candle Counting Numbers (1 to 7) strictly below support
+  # Plot Red Candle Counting Numbers (1 to 5) strictly below support
   for cid, cnt, hp in bot.count_annotations:
     ax.text(
         cid,
@@ -541,8 +543,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Pullback Engine"
-      f" ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Wick Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
