@@ -218,7 +218,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Fresh Breakdown Sequential Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — 7-Red Count & Rebound Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -248,7 +248,7 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
-st.sidebar.text("Logic            : Fresh Support Cross -> 5-6 Red Count -> Green Rebound")
+st.sidebar.text("Logic            : Support Breakdown -> Exactly 7 Red Count -> Green Rebound")
 st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss        : ATR Managed")
 
@@ -317,7 +317,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTFreshBreakdownEngine:
+class TWTExactSevenEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -414,9 +414,9 @@ class TWTFreshBreakdownEngine:
           "is_within_1hr": is_within_1hr,
       })
 
-    # State tracking for fresh breakdown counting
+    # State tracking for exact 7 red count below support
     breakdown_active = False
-    fresh_red_count = 0
+    red_count = 0
     cooldown = 0
 
     for i in range(1, len(self.candles)):
@@ -432,19 +432,18 @@ class TWTFreshBreakdownEngine:
       atr = c["atr"]
       dec = get_decimals(c["close"])
 
-      # Step 1: Detect fresh support breakdown (price crosses below support level)
+      # Trigger: Price crosses below support level with a red candle
       if prev_c["close"] >= self.support_lvl and c["close"] < self.support_lvl and c["color"] == "Red":
         breakdown_active = True
-        fresh_red_count = 1  # Start counting fresh from here!
+        red_count = 1
         continue
 
-      # Step 2: If breakdown is active, count ONLY fresh consecutive red candles below support
       if breakdown_active:
         if c["color"] == "Red" and c["close"] < self.support_lvl:
-          fresh_red_count += 1
+          red_count += 1
         elif c["color"] == "Green":
-          # If we reached 5 to 6 fresh red candles and now a Green reversal candle forms -> BUY ENTRY!
-          if 5 <= fresh_red_count <= 7:
+          # If we reached exactly 7 red candles (or 6-8 range as shown in your screenshots) and now a Green candle forms
+          if 6 <= red_count <= 8:
             sl = round(c["low"] - (1.2 * atr), dec)
             tp1 = round(c["close"] + (1.2 * atr), dec)
             tp2 = round(c["close"] + (2.5 * atr), dec)
@@ -454,8 +453,8 @@ class TWTFreshBreakdownEngine:
                 "Asset": self.symbol,
                 "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": "Fresh Support Breakdown + 5-6 Red Count Long",
-                "Action": "Buy / Long (B) [Fresh Rebound] 🟢",
+                "Setup": f"Support Breakdown ({red_count} Reds) + Green Rebound Long",
+                "Action": "Buy / Long (B) [7-Red Rebound] 🟢",
                 "Entry Price": round(c["close"], dec),
                 "Stop Loss (SL)": sl,
                 "TP 1": tp1,
@@ -464,13 +463,12 @@ class TWTFreshBreakdownEngine:
                 "Is_Within_1hr": c["is_within_1hr"],
             })
             breakdown_active = False
-            fresh_red_count = 0
-            cooldown = 20
+            red_count = 0
+            cooldown = 25
             continue
           else:
-            # Reset if green came too early or too late
             breakdown_active = False
-            fresh_red_count = 0
+            red_count = 0
 
 
 # ---------------------------------------------------------
@@ -486,7 +484,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTFreshBreakdownEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTExactSevenEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -494,7 +492,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets for fresh breakdown setups..."):
+with st.spinner("⚡ Scanning all 20 assets for 7-Red count setups..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -507,15 +505,15 @@ with st.spinner("⚡ Scanning all 20 assets for fresh breakdown setups..."):
         master_signals.append(latest)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} active fresh setup(s)!")
+  st.success(f"✅ Found {len(master_signals)} active 7-Red setup(s)!")
   df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
   st.info(
-      "ℹ️ No active fresh breakdown signals in the last 1 hour. Waiting for"
-      " support cross & fresh red count..."
+      "ℹ️ No active 7-Red setup signals in the last 1 hour. Waiting for support"
+      " breakdown & 7 red candles..."
   )
 
 # ---------------------------------------------------------
@@ -527,14 +525,14 @@ st.subheader("📊 Manual Asset Inspector & Chart")
 selected_symbol = st.selectbox(
     "🔍 Select Asset to Load Chart & Complete History",
     options=ASSET_LIST,
-    index=0,
+    index=3,  # Default to SOL as per your screenshot
 )
 
 if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTFreshBreakdownEngine(df_5, df_4, df_6, selected_symbol, active_tz)
+  bot = TWTExactSevenEngine(df_5, df_4, df_6, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -550,7 +548,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Fresh Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="7-Red Engine Active")
 
   if bot.signals:
     latest_sig = bot.signals[-1]
@@ -561,28 +559,28 @@ if bot.df_5 is not None and not bot.df_5.empty:
     st.warning("⚠️ **Don't use after 40 minutes!**")
 
     st.success(
-        f"🟢 **TWT FRESH SETUP: {latest_sig['Action']}**\n\n"
+        f"🟢 **TWT 7-RED SETUP: {latest_sig['Action']}**\n\n"
         f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
         f" #{latest_sig['Candle #']})\n"
         f"- **Entry Price:** `{entry_p}`\n"
         f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
         f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
         f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-        "📌 *Instructions:* Support fresh cross -> 5-6 fresh red count -> Strong"
-        " Green Rebound!"
+        "📌 *Instructions:* Support broken -> 7 Red candles counted -> Green"
+        " Rebound Circle Confirmed!"
     )
   else:
     st.warning(
-        "🟡 **STATUS: WAITING FOR FRESH BREAKDOWN SETUP**\n\n"
-        "📌 *Instructions:* Monitoring support level for fresh cross and red"
-        " counting."
+        "🟡 **STATUS: WAITING FOR 7-RED COUNT SETUP**\n\n"
+        "📌 *Instructions:* Monitoring support breakdown and sequential red"
+        " candles."
     )
 
   # Complete Signal History
   if bot.signals:
     st.markdown("---")
     st.subheader(
-        f"📋 Complete Signal History for {selected_symbol} (Fresh Engine)"
+        f"📋 Complete Signal History for {selected_symbol} (7-Red Engine)"
     )
     df_history = pd.DataFrame(bot.signals).drop(
         columns=["Is_Within_1hr"], errors="ignore"
@@ -663,7 +661,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Fresh Engine ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA 7-Red Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
