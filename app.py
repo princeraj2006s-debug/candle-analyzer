@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Corrected 4,3,2,1 Resistance Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Exact Drawing-Based Dual Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -92,7 +92,7 @@ st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
 st.sidebar.text("Buy Logic        : 5 Red -> Green -> Red -> Green Wick Entry")
-st.sidebar.text("Sell Logic       : Resistance Touch (4) -> Downward 3,2,1 -> Red breaks #3 Low -> Green -> Red Short")
+st.sidebar.text("Sell Logic       : Resistance (4) -> Downward (3,2,1) -> Red breaks #3 Low -> Green -> Red Short")
 st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss        : ATR Managed")
 
@@ -161,7 +161,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTTrainingCorrectedEngine:
+class TWTDrawingMatchEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -267,7 +267,10 @@ class TWTTrainingCorrectedEngine:
 
     # --- SELL STATE MACHINE ---
     sell_state = 0
-    recent_greens = []
+    c_4 = None
+    c_3 = None
+    c_2 = None
+    c_1 = None
     target_candle_3_low = 0.0
 
     for i in range(len(self.candles)):
@@ -332,35 +335,48 @@ class TWTTrainingCorrectedEngine:
             buy_state = 5
 
       # ---------------------------------------------------------
-      # SELL ENGINE PROCESSING (Resistance 4,3,2,1 Downward Setup)
+      # SELL ENGINE PROCESSING (Exact Drawing 4 -> 3 -> 2 -> 1 Downwards)
       # ---------------------------------------------------------
       if sell_state != 5 and c["close"] <= self.resistance_lvl - (atr * 1.5):
         sell_state = 0
-        recent_greens = []
+        c_4 = c_3 = c_2 = c_1 = None
 
       if sell_state != 5:
-        if c["high"] >= self.resistance_lvl or c["close"] >= self.resistance_lvl:
-          if c["color"] == "Green":
-            recent_greens.append(c)
-            if len(recent_greens) > 4:
-              recent_greens.pop(0)
-
-            if len(recent_greens) == 4:
-              self.sell_annotations.append((recent_greens[3]["id"], 4, recent_greens[3]["high"]))
-              self.sell_annotations.append((recent_greens[2]["id"], 3, recent_greens[2]["high"]))
-              self.sell_annotations.append((recent_greens[1]["id"], 2, recent_greens[1]["high"]))
-              self.sell_annotations.append((recent_greens[0]["id"], 1, recent_greens[0]["high"]))
-
-              target_candle_3_low = recent_greens[2]["low"]
-              sell_state = 1
-        
+        if sell_state == 0:
+          # Step A: Look for the candle touching/crossing resistance as #4 (must be Green)
+          if (c["high"] >= self.resistance_lvl or c["close"] >= self.resistance_lvl) and c["color"] == "Green":
+            c_4 = c
+            self.sell_annotations.append((c_4["id"], 4, c_4["high"]))
+            sell_state = 1
         elif sell_state == 1:
-          if c["color"] == "Red" and c["low"] < target_candle_3_low:
+          # Step B: Look backwards downwards for #3 green candle
+          if c["color"] == "Green":
+            c_3 = c
+            self.sell_annotations.append((c_3["id"], 3, c_3["high"]))
+            target_candle_3_low = c_3["low"]  # Low of #3 green candle
             sell_state = 2
         elif sell_state == 2:
+          # Step C: Look backwards downwards for #2 green candle
           if c["color"] == "Green":
+            c_2 = c
+            self.sell_annotations.append((c_2["id"], 2, c_2["high"]))
             sell_state = 3
         elif sell_state == 3:
+          # Step D: Look backwards downwards for #1 green candle (oldest in the sequence)
+          if c["color"] == "Green":
+            c_1 = c
+            self.sell_annotations.append((c_1["id"], 1, c_1["high"]))
+            sell_state = 4  # Now pattern 4,3,2,1 is fully formed! Ready for breakout wait.
+        elif sell_state == 4:
+          # Wait for a Red candle whose low breaks below #3 green candle's low
+          if c["color"] == "Red" and c["low"] < target_candle_3_low:
+            sell_state = 5  # #3 low broken, now wait for Green then Red entry
+        elif sell_state == 5:
+          # Wait for 1 Green candle after breakdown
+          if c["color"] == "Green":
+            sell_state = 6
+        elif sell_state == 6:
+          # Next Red candle gives Sell / Short Entry!
           if c["color"] == "Red":
             sl = round(c["high"] + (1.2 * atr), dec)
             tp1 = round(c["close"] - (1.2 * atr), dec)
@@ -381,7 +397,7 @@ class TWTTrainingCorrectedEngine:
                 "TP 3": tp3,
                 "Is_Within_1hr": c["is_within_1hr"],
             })
-            sell_state = 5
+            sell_state = 7  # LOCKED for resistance cycle
 
 
 # ---------------------------------------------------------
@@ -397,7 +413,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTTrainingCorrectedEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTDrawingMatchEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -444,7 +460,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTTrainingCorrectedEngine(df_5, df_4, df_6, selected_symbol, active_tz)
+  bot = TWTDrawingMatchEngine(df_5, df_4, df_6, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -460,7 +476,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Corrected Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Drawing Match Engine Active")
 
   if bot.signals:
     latest_sig = bot.signals[-1]
@@ -496,7 +512,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   if bot.signals:
     st.markdown("---")
     st.subheader(
-        f"📋 Complete Signal History for {selected_symbol} (Corrected Engine)"
+        f"📋 Complete Signal History for {selected_symbol} (Drawing Match Engine)"
     )
     df_history = pd.DataFrame(bot.signals).drop(
         columns=["Is_Within_1hr"], errors="ignore"
@@ -577,7 +593,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
         va="bottom",
     )
 
-  # Plot Sell Count Numbers (Green counting 4,3,2,1 downwards from resistance touch)
+  # Plot Sell Count Numbers (4 at resistance touch, then downwards 3, 2, 1)
   for cid, cnt, hp in bot.sell_annotations:
     ax.text(
         cid,
@@ -607,7 +623,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Corrected Engine ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Drawing Match Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
