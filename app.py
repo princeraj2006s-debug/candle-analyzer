@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Zone-Locked Multi-Pullback Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Direct Pullback & Zone Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -93,7 +93,7 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
 st.sidebar.text("Support Zone     : ONLY BUY (Long Setup)")
 st.sidebar.text("Resistance Zone  : ONLY SELL (Short Setup)")
-st.sidebar.text("Wave Logic       : Skip 1st Pullback, Trade 2nd/3rd Wave")
+st.sidebar.text("Logic            : Swing Pullback + Candle Confirmation")
 
 
 def get_decimals(price):
@@ -145,8 +145,6 @@ def fetch_twt_delta_data(symbol, tf):
       for sym in symbol_variants:
         if sym in exchange.markets:
           ohlcv_tf = exchange.fetch_ohlcv(sym, timeframe=tf, limit=140)
-          ohlcv_15m = exchange.fetch_ohlcv(sym, timeframe="15m", limit=60)
-          ohlcv_1h = exchange.fetch_ohlcv(sym, timeframe="1h", limit=50)
           ohlcv_4h = exchange.fetch_ohlcv(sym, timeframe="4h", limit=25)
           ohlcv_6h = exchange.fetch_ohlcv(sym, timeframe="6h", limit=25)
 
@@ -154,14 +152,6 @@ def fetch_twt_delta_data(symbol, tf):
             df_5 = pd.DataFrame(ohlcv_tf, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
             df_5["timestamp"] = pd.to_datetime(df_5["timestamp"], unit="ms")
             df_5 = df_5.set_index("timestamp")
-
-            df_15 = pd.DataFrame(ohlcv_15m, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"]) if ohlcv_15m else df_5.copy()
-            df_15["timestamp"] = pd.to_datetime(df_15["timestamp"], unit="ms")
-            df_15 = df_15.set_index("timestamp")
-
-            df_1h = pd.DataFrame(ohlcv_1h, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"]) if ohlcv_1h else df_5.copy()
-            df_1h["timestamp"] = pd.to_datetime(df_1h["timestamp"], unit="ms")
-            df_1h = df_1h.set_index("timestamp")
 
             df_4 = pd.DataFrame(ohlcv_4h, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
             df_4["timestamp"] = pd.to_datetime(df_4["timestamp"], unit="ms")
@@ -173,22 +163,20 @@ def fetch_twt_delta_data(symbol, tf):
 
             if symbol == "XAUT/USDT":
               gold_mult = 1.0025
-              for d in [df_5, df_15, df_1h, df_4, df_6]:
+              for d in [df_5, df_4, df_6]:
                 for col in ["Open", "High", "Low", "Close"]:
                   d[col] *= gold_mult
 
-            return df_5, df_15, df_1h, df_4, df_6
+            return df_5, df_4, df_6
     except Exception:
       continue
-  return None, None, None, None, None
+  return None, None, None
 
 
-class TWTZoneLockedEngine:
+class TWTDirectEngine:
 
-  def __init__(self, df_5, df_15, df_1h, df_4, df_6, symbol, user_tz):
+  def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
-    self.df_15 = df_15
-    self.df_1h = df_1h
     self.df_4 = df_4
     self.df_6 = df_6
     self.symbol = symbol
@@ -220,13 +208,7 @@ class TWTZoneLockedEngine:
     elif self.df_4 is not None:
       self.support_lvl = float(self.df_4["Low"].iloc[-1])
 
-    # Indicators & MTF Analysis
     self.df_5 = calculate_indicators(self.df_5)
-    self.df_15 = calculate_indicators(self.df_15)
-    self.df_1h = calculate_indicators(self.df_1h)
-
-    mtf_bullish = (self.df_15["Close"].iloc[-1] > self.df_15["EMA_Slow"].iloc[-1]) and (self.df_1h["Close"].iloc[-1] > self.df_1h["EMA_Slow"].iloc[-1])
-    mtf_bearish = (self.df_15["Close"].iloc[-1] < self.df_15["EMA_Slow"].iloc[-1]) and (self.df_1h["Close"].iloc[-1] < self.df_1h["EMA_Slow"].iloc[-1])
 
     for idx, row in enumerate(self.df_5.iterrows()):
       dt_utc = row[0]
@@ -259,11 +241,9 @@ class TWTZoneLockedEngine:
       })
 
     # =========================================================
-    # ZONE-LOCKED MULTI-PULLBACK WAVE ENGINE
+    # DIRECT PULLBACK & ZONE ENTRY LOGIC
     # =========================================================
-    signal_given = False
-
-    for i in range(20, len(self.candles)):
+    for i in range(10, len(self.candles)):
       c = self.candles[i]
       if time(1, 0) <= c["dt_ist"].time() <= time(6, 0):
         continue
@@ -271,27 +251,16 @@ class TWTZoneLockedEngine:
       atr = c["ATR"] if "ATR" in c else c["atr"]
       dec = get_decimals(c["close"])
 
-      # --- ZONE 1: SUPPORT ZONE (ONLY BUY / LONG) ---
-      # Price must be in lower half / near support
-      if c["close"] >= self.support_lvl and c["close"] < (self.support_lvl + (self.resistance_lvl - self.support_lvl) * 0.4):
-        recent_window = self.candles[i - 25:i]
-        
-        valleys = []
-        for j in range(1, len(recent_window) - 1):
-          if recent_window[j]["low"] < recent_window[j-1]["low"] and recent_window[j]["low"] < recent_window[j+1]["low"]:
-            valleys.append(recent_window[j])
+      # --- ZONE 1: SUPPORT ZONE (BUY / LONG ONLY) ---
+      if c["close"] >= self.support_lvl and c["close"] < (self.support_lvl + (self.resistance_lvl - self.support_lvl) * 0.5):
+        recent_window = self.candles[max(0, i - 12):i]
+        swing_low = min([x["low"] for x in recent_window])
 
-        # Skip 1st pullback wave, target 2nd or 3rd wave near support bounce
-        if len(valleys) >= 2 and not signal_given and mtf_bullish:
+        # Check if price pulled back near swing low / support and bouncing with a green candle
+        if c["low"] <= swing_low + (1.2 * atr) or c["low"] <= self.support_lvl + (1.5 * atr):
           prev_c = self.candles[i - 1]
-          
-          buyers_showing_strength = (c["color"] == "Green") and (c["close"] > prev_c["high"]) and (c["close"] > c["open"])
-          seller_momentum_fading = prev_c["low"] >= valleys[-1]["low"]
-
-          if buyers_showing_strength and seller_momentum_fading:
-            signal_given = True
-            wave_num = len(valleys)
-            sl = round(valleys[-1]["low"] - (1.0 * atr), dec)
+          if c["color"] == "Green" and c["close"] > prev_c["high"] and c["close"] > c["open"]:
+            sl = round(swing_low - (1.0 * atr), dec)
             tp1 = round(c["close"] + (1.2 * atr), dec)
             tp2 = round(c["close"] + (2.5 * atr), dec)
             tp3 = round(c["close"] + (4.0 * atr), dec)
@@ -300,8 +269,8 @@ class TWTZoneLockedEngine:
                 "Asset": self.symbol,
                 "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": f"Support Zone | Wave {wave_num} Pullback Long",
-                "Action": f"Buy / Long (B) [Wave {wave_num}] 🟢",
+                "Setup": "Support Pullback Buy",
+                "Action": "Buy / Long (B) 🟢",
                 "Entry Price": round(c["close"], dec),
                 "Stop Loss (SL)": sl,
                 "TP 1": tp1,
@@ -310,27 +279,16 @@ class TWTZoneLockedEngine:
                 "Is_Within_1hr": c["is_within_1hr"],
             })
 
-      # --- ZONE 2: RESISTANCE ZONE (ONLY SELL / SHORT) ---
-      # Price must be below resistance level
-      if c["close"] <= self.resistance_lvl and c["close"] > (self.resistance_lvl - (self.resistance_lvl - self.support_lvl) * 0.4):
-        recent_window = self.candles[i - 25:i]
-        
-        peaks = []
-        for j in range(1, len(recent_window) - 1):
-          if recent_window[j]["high"] > recent_window[j-1]["high"] and recent_window[j]["high"] > recent_window[j+1]["high"]:
-            peaks.append(recent_window[j])
+      # --- ZONE 2: RESISTANCE ZONE (SELL / SHORT ONLY) ---
+      if c["close"] <= self.resistance_lvl and c["close"] > (self.resistance_lvl - (self.resistance_lvl - self.support_lvl) * 0.5):
+        recent_window = self.candles[max(0, i - 12):i]
+        swing_high = max([x["high"] for x in recent_window])
 
-        # Skip 1st pullback wave, target 2nd or 3rd wave near resistance rejection
-        if len(peaks) >= 2 and not signal_given and mtf_bearish:
+        # Check if price pulled back near swing high / resistance and rejecting with a red candle
+        if c["high"] >= swing_high - (1.2 * atr) or c["high"] >= self.resistance_lvl - (1.5 * atr):
           prev_c = self.candles[i - 1]
-          
-          sellers_showing_strength = (c["color"] == "Red") and (c["close"] < prev_c["low"]) and (c["close"] < c["open"])
-          buyer_momentum_fading = prev_c["high"] <= peaks[-1]["high"]
-
-          if sellers_showing_strength and buyer_momentum_fading:
-            signal_given = True
-            wave_num = len(peaks)
-            sl = round(peaks[-1]["high"] + (1.0 * atr), dec)
+          if c["color"] == "Red" and c["close"] < prev_c["low"] and c["close"] < c["open"]:
+            sl = round(swing_high + (1.0 * atr), dec)
             tp1 = round(c["close"] - (1.2 * atr), dec)
             tp2 = round(c["close"] - (2.5 * atr), dec)
             tp3 = round(c["close"] - (4.0 * atr), dec)
@@ -339,8 +297,8 @@ class TWTZoneLockedEngine:
                 "Asset": self.symbol,
                 "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": f"Resistance Zone | Wave {wave_num} Pullback Short",
-                "Action": f"Sell / Short (S) [Wave {wave_num}] 🔴",
+                "Setup": "Resistance Pullback Sell",
+                "Action": "Sell / Short (S) 🔴",
                 "Entry Price": round(c["close"], dec),
                 "Stop Loss (SL)": sl,
                 "TP 1": tp1,
@@ -361,9 +319,9 @@ asset_engines = {}
 
 
 def scan_single_asset(sym):
-  df_5, df_15, df_1h, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
+  df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTZoneLockedEngine(df_5, df_15, df_1h, df_4, df_6, sym, active_tz)
+    engine = TWTDirectEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -371,7 +329,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets with Zone-Locked rules..."):
+with st.spinner("⚡ Scanning all 20 assets with direct pullback rules..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -384,16 +342,13 @@ with st.spinner("⚡ Scanning all 20 assets with Zone-Locked rules..."):
         master_signals.append(latest)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} active zone-locked setup(s)!")
+  st.success(f"✅ Found {len(master_signals)} active setup(s)!")
   df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
-  st.info(
-      "ℹ️ No active setups in the last 1 hour. Waiting for precise zone"
-      " validation & 2nd/3rd wave pullback..."
-  )
+  st.info("ℹ️ No active setups in the last 1 hour. Waiting for pullback confirmation...")
 
 # ---------------------------------------------------------
 # MANUAL ASSET SELECTOR & CHART VIEWER
@@ -410,8 +365,8 @@ selected_symbol = st.selectbox(
 if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
-  df_5, df_15, df_1h, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTZoneLockedEngine(df_5, df_15, df_1h, df_4, df_6, selected_symbol, active_tz)
+  df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
+  bot = TWTDirectEngine(df_5, df_4, df_6, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -427,7 +382,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Zone Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Direct Engine Active")
 
   recent_signals = [s for s in bot.signals if s.get("Is_Within_1hr", False)]
 
@@ -441,33 +396,30 @@ if bot.df_5 is not None and not bot.df_5.empty:
 
     if is_buy:
       st.success(
-          f"🟢 **TWT ZONE SETUP: {latest_sig['Action']}**\n\n"
+          f"🟢 **TWT SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Support Zone Buy Setup -> 2nd/3rd Wave pullback +"
-          " Momentum confirmed!"
+          "📌 *Instructions:* Support Zone Pullback + Strong Green Candle Confirmed!"
       )
     else:
       st.error(
-          f"🔴 **TWT ZONE SETUP: {latest_sig['Action']}**\n\n"
+          f"🔴 **TWT SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Resistance Zone Sell Setup -> 2nd/3rd Wave"
-          " pullback + Momentum confirmed!"
+          "📌 *Instructions:* Resistance Zone Pullback + Strong Red Candle Confirmed!"
       )
   else:
     st.warning(
-        "🟡 **STATUS: WAITING FOR ZONE VALIDATION & WAVE PULLBACK**\n\n"
-        "📌 *Instructions:* Support = Buy only, Resistance = Sell only. Waiting"
-        " for 2nd/3rd wave."
+        "🟡 **STATUS: WAITING FOR PULLBACK CONFIRMATION**\n\n"
+        "📌 *Instructions:* Support = Buy only, Resistance = Sell only."
     )
 
   # Complete Signal History (All past entries shown clearly)
@@ -585,7 +537,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Zone Engine ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Direct Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
