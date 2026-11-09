@@ -218,7 +218,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Wick Touch & Rejection Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Strict Wick Touch Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -248,9 +248,9 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
-st.sidebar.text("Logic            : Support Wick Test + Green Rebound")
-st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
-st.sidebar.text("Stop loss          : ATR Managed")
+st.sidebar.text("Logic            : Support Wick Lower Mark + Touch + Green Rebound")
+st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
+st.sidebar.text("Stop loss        : ATR Managed")
 
 
 def get_decimals(price):
@@ -317,7 +317,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTWickTestEngine:
+class TWTVeryStrictEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -414,15 +414,12 @@ class TWTWickTestEngine:
           "is_within_1hr": is_within_1hr,
       })
 
-    marked_support_wick_low = None
-    marked_resistance_wick_high = None
-    cooldown = 0
+    marked_support_lower_wick = None
+    marked_resistance_upper_wick = None
+    signal_given_buy = False
+    signal_given_sell = False
 
     for i in range(5, len(self.candles)):
-      if cooldown > 0:
-        cooldown -= 1
-        continue
-
       c = self.candles[i]
       if time(1, 0) <= c["dt_ist"].time() <= time(6, 0):
         continue
@@ -430,18 +427,20 @@ class TWTWickTestEngine:
       atr = c["atr"]
       dec = get_decimals(c["close"])
 
-      # --- BUY / LONG LOGIC (Support Wick Test) ---
-      # 1. Price goes below support and forms a green candle -> Mark its lower wick
+      # --- BUY / LONG STRICT LOGIC ---
+      # 1. Red/Green candle goes below support and forms a green candle -> Mark its lower wick
       if c["low"] < self.support_lvl and c["color"] == "Green":
-        marked_support_wick_low = c["low"]
+        marked_support_lower_wick = c["low"]
+        signal_given_buy = False  # Reset for new setup
 
-      # 2. Wait for price to test/touch that marked lower wick, followed by a Green confirmation candle
-      if marked_support_wick_low is not None:
+      # 2. Wait for price to touch the marked lower wick, then next candle must be Green -> SINGLE ENTRY
+      if marked_support_lower_wick is not None and not signal_given_buy:
         if (
-            c["low"] <= marked_support_wick_low + (0.3 * atr)
+            c["low"] <= marked_support_lower_wick + (0.2 * atr)
             and c["color"] == "Green"
             and c["close"] > c["open"]
         ):
+          signal_given_buy = True
           sl = round(c["low"] - (1.2 * atr), dec)
           tp1 = round(c["close"] + (1.2 * atr), dec)
           tp2 = round(c["close"] + (2.5 * atr), dec)
@@ -451,8 +450,8 @@ class TWTWickTestEngine:
               "Asset": self.symbol,
               "Time": c["time"],
               "Candle #": c["id"],
-              "Setup": "Support Wick Test & Rebound Long",
-              "Action": "Buy / Long (B) [Wick Touch Rebound] 🟢",
+              "Setup": "Support Lower Wick Touch & Green Rebound Long",
+              "Action": "Buy / Long (B) [Strict Wick Test] 🟢",
               "Entry Price": round(c["close"], dec),
               "Stop Loss (SL)": sl,
               "TP 1": tp1,
@@ -460,23 +459,26 @@ class TWTWickTestEngine:
               "TP 3": tp3,
               "Is_Within_1hr": c["is_within_1hr"],
           })
-          marked_support_wick_low = None  # Reset after entry
-          cooldown = 8
-          continue
 
-      # --- SELL / SHORT LOGIC (Resistance Wick Test & Rejection) ---
-      # 1. Price touches resistance -> Mark upper wick
+      # --- SELL / SHORT STRICT LOGIC ---
+      # 1. Price near resistance -> Mark upper wick
       if c["high"] >= self.resistance_lvl - (0.4 * atr):
-        marked_resistance_wick_high = c["high"]
+        marked_resistance_upper_wick = c["high"]
+        signal_given_sell = False
 
-      # 2. Entry only if green candles fail to cross the marked upper wick and red rejection candle forms
-      if marked_resistance_wick_high is not None:
-        if (
+      # 2. If green candle crosses the upper wick, DO NOT give seller entry.
+      # Give seller entry only if green does NOT cross upper wick and red rejection forms.
+      if marked_resistance_upper_wick is not None and not signal_given_sell:
+        if c["color"] == "Green" and c["high"] > marked_resistance_upper_wick:
+          # Green crossed upper wick -> Cancel/Invalidate seller entry
+          marked_resistance_upper_wick = None
+        elif (
             c["color"] == "Red"
-            and c["high"] <= marked_resistance_wick_high
+            and c["high"] <= marked_resistance_upper_wick
             and c["close"] < c["open"]
         ):
-          sl = round(marked_resistance_wick_high + (1.2 * atr), dec)
+          signal_given_sell = True
+          sl = round(marked_resistance_upper_wick + (1.2 * atr), dec)
           tp1 = round(c["close"] - (1.2 * atr), dec)
           tp2 = round(c["close"] - (2.5 * atr), dec)
           tp3 = round(c["close"] - (3.8 * atr), dec)
@@ -485,8 +487,8 @@ class TWTWickTestEngine:
               "Asset": self.symbol,
               "Time": c["time"],
               "Candle #": c["id"],
-              "Setup": "Resistance Wick Rejection Short",
-              "Action": "Sell / Short (S) [Wick Rejection] 🔴",
+              "Setup": "Resistance Upper Wick Rejection Short",
+              "Action": "Sell / Short (S) [Strict Wick Rejection] 🔴",
               "Entry Price": round(c["close"], dec),
               "Stop Loss (SL)": sl,
               "TP 1": tp1,
@@ -494,9 +496,6 @@ class TWTWickTestEngine:
               "TP 3": tp3,
               "Is_Within_1hr": c["is_within_1hr"],
           })
-          marked_resistance_wick_high = None  # Reset after entry
-          cooldown = 8
-          continue
 
 
 # ---------------------------------------------------------
@@ -512,7 +511,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTWickTestEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTVeryStrictEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -520,7 +519,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets for wick test setups..."):
+with st.spinner("⚡ Scanning all 20 assets with strict wick rules..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -533,15 +532,15 @@ with st.spinner("⚡ Scanning all 20 assets for wick test setups..."):
         master_signals.append(latest)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} active wick test setup(s)!")
+  st.success(f"✅ Found {len(master_signals)} active strict setup(s)!")
   df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
   st.info(
-      "ℹ️ No active wick test signals in the last 1 hour. Waiting for support"
-      " wick test..."
+      "ℹ️ No active strict signals in the last 1 hour. Waiting for exact wick"
+      " touch setup..."
   )
 
 # ---------------------------------------------------------
@@ -560,7 +559,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTWickTestEngine(df_5, df_4, df_6, selected_symbol, active_tz)
+  bot = TWTVeryStrictEngine(df_5, df_4, df_6, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -576,7 +575,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Wick Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Strict Engine Active")
 
   if bot.signals:
     latest_sig = bot.signals[-1]
@@ -588,33 +587,33 @@ if bot.df_5 is not None and not bot.df_5.empty:
 
     if is_buy:
       st.success(
-          f"🟢 **TWT WICK TEST SETUP: {latest_sig['Action']}**\n\n"
+          f"🟢 **TWT STRICT SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Support lower wick test -> Green rebound"
-          " confirmed!"
+          "📌 *Instructions:* Support lower wick marked -> Wick touch -> Green"
+          " confirmation!"
       )
     else:
       st.error(
-          f"🔴 **TWT WICK TEST SETUP: {latest_sig['Action']}**\n\n"
+          f"🔴 **TWT STRICT SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Resistance upper wick test -> Red rejection"
-          " confirmed!"
+          "📌 *Instructions:* Resistance upper wick marked -> Failed green"
+          " cross -> Red rejection!"
       )
   else:
     st.warning(
-        "🟡 **STATUS: WAITING FOR WICK TEST SETUP**\n\n"
-        "📌 *Instructions:* Monitoring support lower wick retests and"
-        " resistance rejections."
+        "🟡 **STATUS: WAITING FOR STRICT WICK SETUP**\n\n"
+        "📌 *Instructions:* Monitoring support lower wick touches and"
+        " resistance upper wick rejections."
     )
 
   # Complete Signal History
@@ -702,7 +701,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Wick Engine ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Strict Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
