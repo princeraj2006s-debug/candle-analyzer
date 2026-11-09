@@ -188,7 +188,7 @@ class TWTUltimateEngine:
     self.resistance_lvl = 0
     self.support_lvl = 0
     self.market_status = "Scanning Market..."
-    self.est_time = "~10-15 mins (Wait for confirmation)"
+    self.est_time = "~10-20 mins (Scanning)"
 
   def calculate_and_scan(self):
     if self.df_5 is None or self.df_5.empty:
@@ -284,24 +284,25 @@ class TWTUltimateEngine:
 
     signal_given = False
 
-    # Proximity & Probability checking for dashboard
+    # Probability timing estimation based on distance to key levels
     last_c = self.candles[-1] if self.candles else None
     if last_c:
       dist_to_res = abs(last_c["close"] - self.resistance_lvl)
       dist_to_sup = abs(last_c["close"] - self.support_lvl)
       atr_val = last_c["atr"]
 
-      if dist_to_res <= (1.5 * atr_val):
-        self.market_status = (
-            "⚠️ Approaching Resistance (Short Setup Expected)"
-        )
-        self.est_time = "~5 mins (Wait for confirmation)"
-      elif dist_to_sup <= (1.5 * atr_val):
-        self.market_status = "⚠️ Approaching Support (Long Setup Expected)"
-        self.est_time = "~5 mins (Wait for confirmation)"
+      if dist_to_res <= (1.0 * atr_val):
+        self.market_status = "Near Resistance (Short Setup Imminent)"
+        self.est_time = "~5 mins"
+      elif dist_to_sup <= (1.0 * atr_val):
+        self.market_status = "Near Support (Long Setup Imminent)"
+        self.est_time = "~5 mins"
+      elif dist_to_res <= (2.5 * atr_val) or dist_to_sup <= (2.5 * atr_val):
+        self.market_status = "Approaching Key Level"
+        self.est_time = "~10 to 15 mins"
       else:
-        self.market_status = "🟡 In Range (Consolidating / Scanning)"
-        self.est_time = "~10 to 20 mins (Waiting for wick touch)"
+        self.market_status = "Consolidating in Range"
+        self.est_time = "~30 mins"
 
     for i in range(5, len(self.candles)):
       c = self.candles[i]
@@ -335,10 +336,6 @@ class TWTUltimateEngine:
         tp1 = round(c["close"] - (1.0 * atr), dec)
         tp2 = round(c["close"] - (2.2 * atr), dec)
         tp3 = round(c["close"] - (3.8 * atr), dec)
-
-        if c["is_within_1hr"]:
-          self.market_status = "🔴 Confirmed Short Setup Triggered"
-          self.est_time = "Active Now"
 
         self.signals.append({
             "Asset": self.symbol,
@@ -379,10 +376,6 @@ class TWTUltimateEngine:
         tp2 = round(c["close"] + (2.2 * atr), dec)
         tp3 = round(c["close"] + (3.8 * atr), dec)
 
-        if c["is_within_1hr"]:
-          self.market_status = "🟢 Confirmed Long Setup Triggered"
-          self.est_time = "Active Now"
-
         self.signals.append({
             "Asset": self.symbol,
             "Time": c["time"],
@@ -399,11 +392,11 @@ class TWTUltimateEngine:
 
 
 # ---------------------------------------------------------
-# MASTER SCANNER (Global Feed for Top Dashboard)
+# MASTER SCANNER (Global Feed with Probability Timing Column)
 # ---------------------------------------------------------
 st.markdown("---")
 st.subheader(
-    "🔥 TWT Master Live Signal Dashboard (All 20 Assets & Probability Timing)"
+    "🔥 TWT Master Live Signal Dashboard (All 20 Assets & Setup Probability)"
 )
 
 master_summary = []
@@ -419,9 +412,7 @@ def scan_single_asset(sym):
   return sym, None
 
 
-with st.spinner(
-    "⚡ Scanning all 20 assets for probability & setup timing..."
-):
+with st.spinner("⚡ Scanning all 20 assets & calculating probabilities..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -436,8 +427,8 @@ with st.spinner(
         master_summary.append({
             "Asset": sym,
             "Current Price": curr_price,
-            "Market Status": engine.market_status,
-            "Expected Entry Timing": engine.est_time,
+            "Market Condition": engine.market_status,
+            "Expected Setup Probability Timing": engine.est_time,
         })
 
 if master_summary:
@@ -447,13 +438,13 @@ else:
   st.warning("⚠️ Could not load scanner feed at the moment.")
 
 # ---------------------------------------------------------
-# MANUAL ASSET SELECTOR & CHART VIEWER
+# MANUAL ASSET SELECTOR & CHART VIEWER (With Entry & SL Box)
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("📊 Manual Asset Inspector & Chart")
+st.subheader("📊 Manual Asset Inspector & Active Setup Box")
 
 selected_symbol = st.selectbox(
-    "🔍 Select Asset to Load Detailed Chart & History",
+    "🔍 Select Asset to Load Detailed Chart & Entry Box",
     options=ASSET_LIST,
     index=0,
 )
@@ -478,15 +469,9 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Live Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Engine Active")
 
-  # Detailed Status & Probability info for selected asset
-  st.info(
-      f"🤖 **AI Analysis for {selected_symbol}:** `{bot.market_status}`\n"
-      f"⏱️ **Expected Entry Timing / Probability:** `{bot.est_time}`"
-  )
-
-  # STRICT FILTER: Only consider signals that occurred within the last 1 hour for active card display
+  # STRICT FILTER: Only show active entry/SL box if signal occurred in last 1 hour
   recent_signals = [s for s in bot.signals if s.get("Is_Within_1hr", False)]
 
   if recent_signals:
@@ -525,9 +510,8 @@ if bot.df_5 is not None and not bot.df_5.empty:
     st.warning(
         "🟡 **STATUS: WAITING FOR CONFIRMATION (No recent signal in the last 1"
         " hour)**\n\n"
-        "📌 *Instructions:* Engine will only trigger an active trade box with"
-        " Entry and SL when a fresh signal is confirmed within the last 1"
-        " hour. Currently scanning price action."
+        "📌 *Instructions:* Entry, SL, and Targets will appear here automatically"
+        " once candles fully confirm the retest setup."
     )
 
   # Complete Signal History table below
