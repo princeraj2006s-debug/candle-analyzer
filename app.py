@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Ultimate Retest & Probability Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Ultimate Wick & 2-Candle Retest Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -91,9 +91,9 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
-st.sidebar.text("Logic            : Strict Confirmation + Probability Timing")
-st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
-st.sidebar.text("Stop loss        : ATR Managed")
+st.sidebar.text("Logic            : Wick Touch + 2-Candle Retest")
+st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
+st.sidebar.text("Stop loss          : ATR Managed")
 
 
 def get_decimals(price):
@@ -113,6 +113,7 @@ def fetch_twt_delta_data(symbol, tf):
       (ccxt.kucoin, symbol),
   ]
 
+  # Fallback ticker mapping for RENDER or FIL if named differently on exchanges
   symbol_variants = [symbol]
   if symbol == "RENDER/USDT":
     symbol_variants = ["RENDER/USDT", "RENDERUSDT", "RNDR/USDT"]
@@ -162,8 +163,12 @@ def fetch_twt_delta_data(symbol, tf):
             df_6["timestamp"] = pd.to_datetime(df_6["timestamp"], unit="ms")
             df_6 = df_6.set_index("timestamp")
 
+            # --- REAL GOLD (XAUT) PRICE CALIBRATION ---
+            # Calibrating XAUT to perfectly align with spot gold scale if needed
             if symbol == "XAUT/USDT":
-              gold_calibration_multiplier = 1.0025
+              gold_calibration_multiplier = (
+                  1.0025  # Fine-tuning offset calibration
+              )
               for col in ["Open", "High", "Low", "Close"]:
                 df_5[col] = df_5[col] * gold_calibration_multiplier
                 df_4[col] = df_4[col] * gold_calibration_multiplier
@@ -187,8 +192,6 @@ class TWTUltimateEngine:
     self.signals = []
     self.resistance_lvl = 0
     self.support_lvl = 0
-    self.market_status = "Scanning Market..."
-    self.est_time = "~10-20 mins (Scanning)"
 
   def calculate_and_scan(self):
     if self.df_5 is None or self.df_5.empty:
@@ -284,26 +287,6 @@ class TWTUltimateEngine:
 
     signal_given = False
 
-    # Probability timing estimation based on distance to key levels
-    last_c = self.candles[-1] if self.candles else None
-    if last_c:
-      dist_to_res = abs(last_c["close"] - self.resistance_lvl)
-      dist_to_sup = abs(last_c["close"] - self.support_lvl)
-      atr_val = last_c["atr"]
-
-      if dist_to_res <= (1.0 * atr_val):
-        self.market_status = "Near Resistance (Short Setup Imminent)"
-        self.est_time = "~5 mins"
-      elif dist_to_sup <= (1.0 * atr_val):
-        self.market_status = "Near Support (Long Setup Imminent)"
-        self.est_time = "~5 mins"
-      elif dist_to_res <= (2.5 * atr_val) or dist_to_sup <= (2.5 * atr_val):
-        self.market_status = "Approaching Key Level"
-        self.est_time = "~10 to 15 mins"
-      else:
-        self.market_status = "Consolidating in Range"
-        self.est_time = "~30 mins"
-
     for i in range(5, len(self.candles)):
       c = self.candles[i]
       if time(1, 0) <= c["dt_ist"].time() <= time(6, 0):
@@ -341,8 +324,8 @@ class TWTUltimateEngine:
             "Asset": self.symbol,
             "Time": c["time"],
             "Candle #": c["id"],
-            "Setup": "Resistance Retest Short",
-            "Action": "Sell / Short (S) 🔴",
+            "Setup": "Resistance Wick + 2-Candle Retest Short",
+            "Action": "Sell / Short (S) [Confirmed Retest] 🔴",
             "Entry Price": round(c["close"], dec),
             "Stop Loss (SL)": sl,
             "TP 1": tp1,
@@ -380,8 +363,8 @@ class TWTUltimateEngine:
             "Asset": self.symbol,
             "Time": c["time"],
             "Candle #": c["id"],
-            "Setup": "Support Retest Long",
-            "Action": "Buy / Long (B) 🟢",
+            "Setup": "Support Wick + 2-Candle Retest Long",
+            "Action": "Buy / Long (B) [Confirmed Retest] 🟢",
             "Entry Price": round(c["close"], dec),
             "Stop Loss (SL)": sl,
             "TP 1": tp1,
@@ -392,14 +375,12 @@ class TWTUltimateEngine:
 
 
 # ---------------------------------------------------------
-# MASTER SCANNER (Global Feed with Probability Timing Column)
+# MASTER SCANNER (Global Feed for Top Dashboard)
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader(
-    "🔥 TWT Master Live Signal Dashboard (All 20 Assets & Setup Probability)"
-)
+st.subheader("🔥 TWT Master Live Signal Dashboard (Last 1 Hour)")
 
-master_summary = []
+master_signals = []
 asset_engines = {}
 
 
@@ -408,43 +389,44 @@ def scan_single_asset(sym):
   if df_5 is not None and not df_5.empty:
     engine = TWTUltimateEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
-    return sym, engine
-  return sym, None
+    recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
+    latest = recent_sigs[-1] if recent_sigs else None
+    return sym, engine, latest
+  return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets & calculating probabilities..."):
+with st.spinner("⚡ Scanning all 20 assets (including RENDER & FIL)..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
     }
     for future in as_completed(futures):
-      sym, engine = future.result()
+      sym, engine, latest = future.result()
       if engine:
         asset_engines[sym] = engine
-        curr_price = (
-            engine.candles[-1]["close"] if engine.candles else 0.0
-        )
-        master_summary.append({
-            "Asset": sym,
-            "Current Price": curr_price,
-            "Market Condition": engine.market_status,
-            "Expected Setup Probability Timing": engine.est_time,
-        })
+      if latest:
+        master_signals.append(latest)
 
-if master_summary:
-  df_summary = pd.DataFrame(master_summary)
-  st.dataframe(df_summary, width="stretch", hide_index=True)
+if master_signals:
+  st.success(f"✅ Found {len(master_signals)} active ultimate setup(s)!")
+  df_display = pd.DataFrame(master_signals).drop(
+      columns=["Is_Within_1hr"], errors="ignore"
+  )
+  st.dataframe(df_display, width="stretch")
 else:
-  st.warning("⚠️ Could not load scanner feed at the moment.")
+  st.info(
+      "ℹ️ No active ultimate signals in the last 1 hour. Waiting for wick touch"
+      " & 2-candle retest..."
+  )
 
 # ---------------------------------------------------------
-# MANUAL ASSET SELECTOR & CHART VIEWER (With Entry & SL Box)
+# MANUAL ASSET SELECTOR & CHART VIEWER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("📊 Manual Asset Inspector & Active Setup Box")
+st.subheader("📊 Manual Asset Inspector & Chart")
 
 selected_symbol = st.selectbox(
-    "🔍 Select Asset to Load Detailed Chart & Entry Box",
+    "🔍 Select Asset to Load Chart & Complete History",
     options=ASSET_LIST,
     index=0,
 )
@@ -469,13 +451,10 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Ultimate Active")
 
-  # STRICT FILTER: Only show active entry/SL box if signal occurred in last 1 hour
-  recent_signals = [s for s in bot.signals if s.get("Is_Within_1hr", False)]
-
-  if recent_signals:
-    latest_sig = recent_signals[-1]
+  if bot.signals:
+    latest_sig = bot.signals[-1]
     is_buy = "Buy" in latest_sig["Action"]
     entry_p = latest_sig["Entry Price"]
     signal_time = latest_sig["Time"]
@@ -491,8 +470,8 @@ if bot.df_5 is not None and not bot.df_5.empty:
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Support retest & candles confirmed -> Buyer"
-          " strength verified!"
+          "📌 *Instructions:* Support wick touch -> 2 Candles above -> Retest"
+          " pullback -> Buyer confirmed!"
       )
     else:
       st.error(
@@ -503,18 +482,17 @@ if bot.df_5 is not None and not bot.df_5.empty:
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Resistance retest & candles confirmed -> Seller"
-          " strength verified!"
+          "📌 *Instructions:* Resistance wick touch -> 2 Candles inside -> Retest"
+          " pullback -> Seller confirmed!"
       )
   else:
     st.warning(
-        "🟡 **STATUS: WAITING FOR CONFIRMATION (No recent signal in the last 1"
-        " hour)**\n\n"
-        "📌 *Instructions:* Entry, SL, and Targets will appear here automatically"
-        " once candles fully confirm the retest setup."
+        "🟡 **STATUS: WAITING FOR WICK TOUCH & 2-CANDLE RETEST**\n\n"
+        "📌 *Instructions:* Monitoring wick touches and multi-candle"
+        " confirmations."
     )
 
-  # Complete Signal History table below
+  # Complete Signal History
   if bot.signals:
     st.markdown("---")
     st.subheader(
