@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Strict Retest & Pullback Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Precision Pullback & MTF Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -91,7 +91,7 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
-st.sidebar.text("Logic            : Strict Double Retest + Pullback Confirmation")
+st.sidebar.text("Logic            : True Swing Pullback + MTF Confirmation")
 st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss        : ATR Managed")
 
@@ -105,20 +105,24 @@ def get_decimals(price):
     return 2
 
 
-def calculate_g_channel(df, period=20, multiplier=1.5):
-  """Calculates G Channel Trend indicator (Baseline, Upper Band, Lower Band)."""
+def calculate_indicators(df):
+  """Calculates G-Channel, EMA filters and Momentum strength metrics."""
   df = df.copy()
-  df["TR_g"] = np.maximum(
+  df["TR"] = np.maximum(
       df["High"] - df["Low"],
       np.maximum(
           abs(df["High"] - df["Close"].shift(1)),
           abs(df["Low"] - df["Close"].shift(1)),
       ),
   )
-  df["ATR_g"] = df["TR_g"].rolling(period).mean()
-  df["G_Mid"] = df["Close"].ewm(span=period, adjust=False).mean()
-  df["G_Upper"] = df["G_Mid"] + (df["ATR_g"] * multiplier)
-  df["G_Lower"] = df["G_Mid"] - (df["ATR_g"] * multiplier)
+  df["ATR"] = df["TR"].rolling(14).mean()
+  df["EMA_Fast"] = df["Close"].ewm(span=9, adjust=False).mean()
+  df["EMA_Slow"] = df["Close"].ewm(span=21, adjust=False).mean()
+  
+  # G-Channel
+  df["G_Mid"] = df["Close"].ewm(span=20, adjust=False).mean()
+  df["G_Upper"] = df["G_Mid"] + (df["ATR"] * 1.5)
+  df["G_Lower"] = df["G_Mid"] - (df["ATR"] * 1.5)
   return df
 
 
@@ -142,62 +146,49 @@ def fetch_twt_delta_data(symbol, tf):
       exchange.load_markets()
       for sym in symbol_variants:
         if sym in exchange.markets:
-          ohlcv_tf = exchange.fetch_ohlcv(sym, timeframe=tf, limit=100)
+          ohlcv_tf = exchange.fetch_ohlcv(sym, timeframe=tf, limit=120)
           ohlcv_4h = exchange.fetch_ohlcv(sym, timeframe="4h", limit=25)
           ohlcv_6h = exchange.fetch_ohlcv(sym, timeframe="6h", limit=25)
+          ohlcv_15m = exchange.fetch_ohlcv(sym, timeframe="15m", limit=50)
 
           if ohlcv_tf and ohlcv_4h:
-            df_5 = pd.DataFrame(
-                ohlcv_tf,
-                columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
-            )
+            df_5 = pd.DataFrame(ohlcv_tf, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
             df_5["timestamp"] = pd.to_datetime(df_5["timestamp"], unit="ms")
             df_5 = df_5.set_index("timestamp")
 
-            df_4 = pd.DataFrame(
-                ohlcv_4h,
-                columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
-            )
+            df_4 = pd.DataFrame(ohlcv_4h, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
             df_4["timestamp"] = pd.to_datetime(df_4["timestamp"], unit="ms")
             df_4 = df_4.set_index("timestamp")
 
-            df_6 = (
-                pd.DataFrame(
-                    ohlcv_6h,
-                    columns=[
-                        "timestamp",
-                        "Open",
-                        "High",
-                        "Low",
-                        "Close",
-                        "Volume",
-                    ],
-                )
-                if ohlcv_6h
-                else df_4.copy()
-            )
+            df_6 = pd.DataFrame(ohlcv_6h, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"]) if ohlcv_6h else df_4.copy()
             df_6["timestamp"] = pd.to_datetime(df_6["timestamp"], unit="ms")
             df_6 = df_6.set_index("timestamp")
 
-            if symbol == "XAUT/USDT":
-              gold_calibration_multiplier = 1.0025
-              for col in ["Open", "High", "Low", "Close"]:
-                df_5[col] = df_5[col] * gold_calibration_multiplier
-                df_4[col] = df_4[col] * gold_calibration_multiplier
-                df_6[col] = df_6[col] * gold_calibration_multiplier
+            df_15 = pd.DataFrame(ohlcv_15m, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"]) if ohlcv_15m else df_5.copy()
+            df_15["timestamp"] = pd.to_datetime(df_15["timestamp"], unit="ms")
+            df_15 = df_15.set_index("timestamp")
 
-            return df_5, df_4, df_6
+            if symbol == "XAUT/USDT":
+              gold_mult = 1.0025
+              for col in ["Open", "High", "Low", "Close"]:
+                df_5[col] *= gold_mult
+                df_4[col] *= gold_mult
+                df_6[col] *= gold_mult
+                df_15[col] *= gold_mult
+
+            return df_5, df_4, df_6, df_15
     except Exception:
       continue
-  return None, None, None
+  return None, None, None, None
 
 
-class TWTUltimateEngine:
+class TWTPrecisionEngine:
 
-  def __init__(self, df_5, df_4, df_6, symbol, user_tz):
+  def __init__(self, df_5, df_4, df_6, df_15, symbol, user_tz):
     self.df_5 = df_5
     self.df_4 = df_4
     self.df_6 = df_6
+    self.df_15 = df_15
     self.symbol = symbol
     self.user_tz = user_tz
     self.candles = []
@@ -212,47 +203,27 @@ class TWTUltimateEngine:
     IST = timezone(timedelta(hours=5, minutes=30))
     current_utc_time = datetime.now(timezone.utc)
 
-    # 1. Calculate Key Levels
+    # 1. Key Levels from Higher Timeframes
     if self.df_4 is not None and not self.df_4.empty:
-      idx_utc = (
-          self.df_4.index.tz_localize("UTC")
-          if self.df_4.index.tz is None
-          else self.df_4.index
-      )
+      idx_utc = self.df_4.index.tz_localize("UTC") if self.df_4.index.tz is None else self.df_4.index
       df_4_ist = idx_utc.tz_convert(IST)
       filtered_4h = self.df_4[df_4_ist.hour == 1]
-      self.resistance_lvl = (
-          float(filtered_4h["High"].iloc[-1])
-          if not filtered_4h.empty
-          else float(self.df_4["High"].iloc[-1])
-      )
+      self.resistance_lvl = float(filtered_4h["High"].iloc[-1]) if not filtered_4h.empty else float(self.df_4["High"].iloc[-1])
 
     if self.df_6 is not None and not self.df_6.empty:
-      idx_utc_6 = (
-          self.df_6.index.tz_localize("UTC")
-          if self.df_6.index.tz is None
-          else self.df_6.index
-      )
+      idx_utc_6 = self.df_6.index.tz_localize("UTC") if self.df_6.index.tz is None else self.df_6.index
       df_6_ist = idx_utc_6.tz_convert(IST)
       filtered_6h = self.df_6[df_6_ist.hour == 5]
-      self.support_lvl = (
-          float(filtered_6h["Low"].iloc[-1])
-          if not filtered_6h.empty
-          else float(self.df_6["Low"].iloc[-1])
-      )
+      self.support_lvl = float(filtered_6h["Low"].iloc[-1]) if not filtered_6h.empty else float(self.df_6["Low"].iloc[-1])
     elif self.df_4 is not None:
       self.support_lvl = float(self.df_4["Low"].iloc[-1])
 
-    # 2. Indicators Calculation
-    self.df_5["TR"] = np.maximum(
-        self.df_5["High"] - self.df_5["Low"],
-        np.maximum(
-            abs(self.df_5["High"] - self.df_5["Close"].shift(1)),
-            abs(self.df_5["Low"] - self.df_5["Close"].shift(1)),
-        ),
-    )
-    self.df_5["ATR"] = self.df_5["TR"].rolling(14).mean()
-    self.df_5 = calculate_g_channel(self.df_5, period=20, multiplier=1.5)
+    # 2. Indicators & MTF Trend Direction
+    self.df_5 = calculate_indicators(self.df_5)
+    self.df_15 = calculate_indicators(self.df_15)
+    
+    mtf_trend_bullish = self.df_15["Close"].iloc[-1] > self.df_15["EMA_Slow"].iloc[-1]
+    mtf_trend_bearish = self.df_15["Close"].iloc[-1] < self.df_15["EMA_Slow"].iloc[-1]
 
     for idx, row in enumerate(self.df_5.iterrows()):
       dt_utc = row[0]
@@ -263,14 +234,9 @@ class TWTUltimateEngine:
       timestamp_str = dt_user_tz.strftime("%H:%M")
 
       r = row[1]
-      o, h, l, c, v = (
-          float(r["Open"]),
-          float(r["High"]),
-          float(r["Low"]),
-          float(r["Close"]),
-          float(r["Volume"]),
-      )
+      o, h, l, c, v = float(r["Open"]), float(r["High"]), float(r["Low"]), float(r["Close"]), float(r["Volume"])
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
+      ema_fast = float(r["EMA_Fast"]) if not pd.isna(r["EMA_Fast"]) else c
 
       age_minutes = (current_utc_time - dt_utc).total_seconds() / 60.0
       is_within_1hr = age_minutes <= 60.0
@@ -287,15 +253,16 @@ class TWTUltimateEngine:
           "close": c,
           "volume": v,
           "atr": atr,
+          "ema_fast": ema_fast,
           "is_within_1hr": is_within_1hr,
       })
 
     # =========================================================
-    # STRICT DOUBLE RETEST + PULLBACK + CANDLE BREAKOUT LOGIC
+    # STRICT TRUE SWING / 50% PULLBACK + MTF CONFIRMATION ENGINE
     # =========================================================
     signal_given = False
 
-    for i in range(10, len(self.candles)):
+    for i in range(12, len(self.candles)):
       c = self.candles[i]
       if time(1, 0) <= c["dt_ist"].time() <= time(6, 0):
         continue
@@ -303,30 +270,40 @@ class TWTUltimateEngine:
       atr = c["atr"]
       dec = get_decimals(c["close"])
 
-      # --- 1. BUY / LONG LOGIC (Above 6H Support after Pullback & Double Retest) ---
+      # --- BUY / LONG SETUP ---
+      # Price must respect Support Zone (above 6H Support)
       if c["close"] >= self.support_lvl:
-        # Check recent candles for double touch/retest near 6H Support
-        support_touches = 0
-        for j in range(max(0, i - 15), i):
-          if self.candles[j]["low"] <= self.support_lvl + (0.8 * atr):
-            support_touches += 1
+        # Identify true swing low in recent 15 candles where price bounced
+        recent_window = self.candles[i - 15:i]
+        swing_lows = [candle["low"] for candle in recent_window]
+        true_support_level = min(swing_lows) if swing_lows else self.support_lvl
 
-        if support_touches >= 2 and not signal_given:
+        # Check if price pulled back precisely to the swing low area OR within its 50% retracement boundary
+        pulled_back_to_level = (c["low"] <= true_support_level + (0.5 * atr)) or (c["low"] <= self.support_lvl + (1.2 * atr))
+
+        if pulled_back_to_level and not signal_given and mtf_trend_bullish:
           prev_c = self.candles[i - 1]
-          # Pullback & Confirmation: Current candle must be Green, closing higher than previous candle's high
-          if c["color"] == "Green" and c["close"] > prev_c["high"] and c["close"] > c["open"]:
+          prev_prev_c = self.candles[i - 2]
+          
+          # Strong Confirmation Candle check: Current candle is Green, body is strong, and crosses previous candle high
+          body_size = abs(c["close"] - c["open"])
+          avg_body = np.mean([abs(x["close"] - x["open"]) for x in recent_window])
+          
+          is_strong_green = (c["color"] == "Green") and (c["close"] > prev_c["high"]) and (body_size >= 0.7 * avg_body)
+
+          if is_strong_green:
             signal_given = True
-            sl = round(self.support_lvl - (1.2 * atr), dec)
-            tp1 = round(c["close"] + (1.0 * atr), dec)
-            tp2 = round(c["close"] + (2.2 * atr), dec)
-            tp3 = round(c["close"] + (3.8 * atr), dec)
+            sl = round(true_support_level - (1.0 * atr), dec)
+            tp1 = round(c["close"] + (1.2 * atr), dec)
+            tp2 = round(c["close"] + (2.5 * atr), dec)
+            tp3 = round(c["close"] + (4.0 * atr), dec)
 
             self.signals.append({
                 "Asset": self.symbol,
                 "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": "Support Double Retest + Pullback Long",
-                "Action": "Buy / Long (B) [Confirmed Retest] 🟢",
+                "Setup": "True Swing Pullback + MTF Long",
+                "Action": "Buy / Long (B) [Strong Bounce] 🟢",
                 "Entry Price": round(c["close"], dec),
                 "Stop Loss (SL)": sl,
                 "TP 1": tp1,
@@ -335,30 +312,35 @@ class TWTUltimateEngine:
                 "Is_Within_1hr": c["is_within_1hr"],
             })
 
-      # --- 2. SELL / SHORT LOGIC (Below 4H Resistance after Pullback & Double Retest) ---
+      # --- SELL / SHORT SETUP ---
+      # Price must respect Resistance Zone (below 4H Resistance)
       if c["close"] <= self.resistance_lvl:
-        # Check recent candles for double touch/retest near 4H Resistance
-        resistance_touches = 0
-        for j in range(max(0, i - 15), i):
-          if self.candles[j]["high"] >= self.resistance_lvl - (0.8 * atr):
-            resistance_touches += 1
+        recent_window = self.candles[i - 15:i]
+        swing_highs = [candle["high"] for candle in recent_window]
+        true_resistance_level = max(swing_highs) if swing_highs else self.resistance_lvl
 
-        if resistance_touches >= 2 and not signal_given:
+        pulled_back_to_res = (c["high"] >= true_resistance_level - (0.5 * atr)) or (c["high"] >= self.resistance_lvl - (1.2 * atr))
+
+        if pulled_back_to_res and not signal_given and mtf_trend_bearish:
           prev_c = self.candles[i - 1]
-          # Pullback & Confirmation: Current candle must be Red, closing lower than previous candle's low
-          if c["color"] == "Red" and c["close"] < prev_c["low"] and c["close"] < c["open"]:
+          body_size = abs(c["close"] - c["open"])
+          avg_body = np.mean([abs(x["close"] - x["open"]) for x in recent_window])
+
+          is_strong_red = (c["color"] == "Red") and (c["close"] < prev_c["low"]) and (body_size >= 0.7 * avg_body)
+
+          if is_strong_red:
             signal_given = True
-            sl = round(self.resistance_lvl + (1.2 * atr), dec)
-            tp1 = round(c["close"] - (1.0 * atr), dec)
-            tp2 = round(c["close"] - (2.2 * atr), dec)
-            tp3 = round(c["close"] - (3.8 * atr), dec)
+            sl = round(true_resistance_level + (1.0 * atr), dec)
+            tp1 = round(c["close"] - (1.2 * atr), dec)
+            tp2 = round(c["close"] - (2.5 * atr), dec)
+            tp3 = round(c["close"] - (4.0 * atr), dec)
 
             self.signals.append({
                 "Asset": self.symbol,
                 "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": "Resistance Double Retest + Pullback Short",
-                "Action": "Sell / Short (S) [Confirmed Retest] 🔴",
+                "Setup": "True Swing Pullback + MTF Short",
+                "Action": "Sell / Short (S) [Strong Rejection] 🔴",
                 "Entry Price": round(c["close"], dec),
                 "Stop Loss (SL)": sl,
                 "TP 1": tp1,
@@ -369,7 +351,7 @@ class TWTUltimateEngine:
 
 
 # ---------------------------------------------------------
-# MASTER SCANNER (Global Feed for Top Dashboard - Last 1 Hour)
+# MASTER SCANNER (Global Feed - Last 1 Hour)
 # ---------------------------------------------------------
 st.markdown("---")
 st.subheader("🔥 TWT Master Live Signal Dashboard (Last 1 Hour)")
@@ -379,9 +361,9 @@ asset_engines = {}
 
 
 def scan_single_asset(sym):
-  df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
+  df_5, df_4, df_6, df_15 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTUltimateEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTPrecisionEngine(df_5, df_4, df_6, df_15, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -389,7 +371,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets with strict pullback retest rules..."):
+with st.spinner("⚡ Scanning all 20 assets with precise swing pullback rules..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -402,15 +384,15 @@ with st.spinner("⚡ Scanning all 20 assets with strict pullback retest rules...
         master_signals.append(latest)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} active strict setup(s)!")
+  st.success(f"✅ Found {len(master_signals)} active precision setup(s)!")
   df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
   st.info(
-      "ℹ️ No active strict setups in the last 1 hour. Waiting for precise"
-      " double retest & pullback confirmation..."
+      "ℹ️ No active precision setups in the last 1 hour. Waiting for exact"
+      " swing pullback & strong confirmation..."
   )
 
 # ---------------------------------------------------------
@@ -428,8 +410,8 @@ selected_symbol = st.selectbox(
 if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
-  df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTUltimateEngine(df_5, df_4, df_6, selected_symbol, active_tz)
+  df_5, df_4, df_6, df_15 = fetch_twt_delta_data(selected_symbol, selected_tf)
+  bot = TWTPrecisionEngine(df_5, df_4, df_6, df_15, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -445,7 +427,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Strict Active")
+    st.metric(label="Timezone", value=tz_short, delta="Precision Active")
 
   recent_signals = [s for s in bot.signals if s.get("Is_Within_1hr", False)]
 
@@ -459,33 +441,33 @@ if bot.df_5 is not None and not bot.df_5.empty:
 
     if is_buy:
       st.success(
-          f"🟢 **TWT STRICT SETUP: {latest_sig['Action']}**\n\n"
+          f"🟢 **TWT PRECISION SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Support double retest + pullback completed ->"
-          " Strong Green breakout confirmed!"
+          "📌 *Instructions:* Precise swing pullback + MTF Trend + Strong"
+          " Candle Confirmation verified!"
       )
     else:
       st.error(
-          f"🔴 **TWT STRICT SETUP: {latest_sig['Action']}**\n\n"
+          f"🔴 **TWT PRECISION SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Resistance double retest + pullback completed ->"
-          " Strong Red breakdown confirmed!"
+          "📌 *Instructions:* Precise swing pullback + MTF Trend + Strong"
+          " Candle Confirmation verified!"
       )
   else:
     st.warning(
-        "🟡 **STATUS: WAITING FOR DOUBLE RETEST & PULLBACK CONFIRMATION**\n\n"
-        "📌 *Instructions:* Monitoring precise pullbacks at support/resistance"
-        " levels."
+        "🟡 **STATUS: WAITING FOR TRUE SWING PULLBACK & CONFIRMATION**\n\n"
+        "📌 *Instructions:* Monitoring exact swing lows/highs and strong body"
+        " candles."
     )
 
   # Complete Signal History
@@ -602,7 +584,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Strict Pullback Engine"
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Precision Engine"
       f" ({tz_short})",
       color="white",
       fontsize=14,
