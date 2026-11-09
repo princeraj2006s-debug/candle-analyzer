@@ -238,7 +238,7 @@ class TWTTrainingCorrectedEngine:
           float(r["High"]),
           float(r["Low"]),
           float(r["Close"]),
-          float(r["Volume"],
+          float(r["Volume"]),
       )
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
 
@@ -345,27 +345,22 @@ class TWTTrainingCorrectedEngine:
             if len(recent_greens) > 4:
               recent_greens.pop(0)
 
-            # When 4 consecutive green candles leading to resistance are formed
             if len(recent_greens) == 4:
-              # Numbering as per user request: #4 is the resistance touch/cross, and downwards #3, #2, #1
               self.sell_annotations.append((recent_greens[3]["id"], 4, recent_greens[3]["high"]))
               self.sell_annotations.append((recent_greens[2]["id"], 3, recent_greens[2]["high"]))
               self.sell_annotations.append((recent_greens[1]["id"], 2, recent_greens[1]["high"]))
               self.sell_annotations.append((recent_greens[0]["id"], 1, recent_greens[0]["high"]))
 
-              target_candle_3_low = recent_greens[2]["low"]  # Low of #3 green candle (index 2)
-              sell_state = 1  # Waiting for red candle to break #3 low
+              target_candle_3_low = recent_greens[2]["low"]
+              sell_state = 1
         
         elif sell_state == 1:
-          # Wait for a red candle whose low breaks below #3 green candle's low
           if c["color"] == "Red" and c["low"] < target_candle_3_low:
-            sell_state = 2  # #3 low broken by red, now wait for 1 green candle
+            sell_state = 2
         elif sell_state == 2:
-          # Wait for 1 green candle after the breakdown red candle
           if c["color"] == "Green":
-            sell_state = 3  # 1 green candle formed, now next red candle gives Sell Entry!
+            sell_state = 3
         elif sell_state == 3:
-          # Next red candle gives Sell/Short Entry!
           if c["color"] == "Red":
             sl = round(c["high"] + (1.2 * atr), dec)
             tp1 = round(c["close"] - (1.2 * atr), dec)
@@ -386,7 +381,7 @@ class TWTTrainingCorrectedEngine:
                 "TP 3": tp3,
                 "Is_Within_1hr": c["is_within_1hr"],
             })
-            sell_state = 5  # LOCKED for resistance cycle
+            sell_state = 5
 
 
 # ---------------------------------------------------------
