@@ -1,6 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, time, timedelta, timezone
-import sqlite3
 import ccxt
 import matplotlib.pyplot as plt
 import numpy as np
@@ -21,162 +20,6 @@ hide_streamlit_style = """
     </style>
     """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
-
-# ---------------------------------------------------------
-# DATABASE INITIALIZATION (SQLite Authentication)
-# ---------------------------------------------------------
-conn = sqlite3.connect("twt_users.db", check_same_thread=False)
-c = conn.cursor()
-c.execute("""CREATE TABLE IF NOT EXISTS users 
-             (username TEXT PRIMARY KEY, password TEXT, status TEXT, role TEXT)""")
-
-# Default Admin Account (Username: tuckyaa, Password: 8002771200)
-c.execute(
-    "INSERT OR IGNORE INTO users VALUES ('tuckyaa', '8002771200', 'approved',"
-    " 'admin')"
-)
-conn.commit()
-
-# ---------------------------------------------------------
-# AUTHENTICATION & ACCESS GATE
-# ---------------------------------------------------------
-if "user" not in st.session_state:
-  st.session_state.user = None
-if "role" not in st.session_state:
-  st.session_state.role = None
-
-
-def login_register_page():
-  st.title("🔒 TRADE WITH TUCKYAA — VIP Portal")
-  st.markdown("Login or Request Access to the Professional Delta Trading Engine.")
-
-  tab1, tab2 = st.tabs(["🔑 Login", "📝 Request Access"])
-
-  with tab1:
-    st.subheader("User Login")
-    l_user = st.text_input("Username / Mobile Number", key="l_user")
-    l_pass = st.text_input("Password", type="password", key="l_pass")
-    if st.button("Login to Dashboard"):
-      c.execute(
-          "SELECT password, status, role FROM users WHERE username=?", (l_user,)
-      )
-      row = c.fetchone()
-      if row:
-        db_pass, db_status, db_role = row
-        if db_pass == l_pass:
-          if db_status == "blocked":
-            st.error(
-                "❌ Your service has been blocked by Admin (Tuckyaa). Contact"
-                " support."
-            )
-            return
-
-          if db_status == "approved":
-            st.session_state.user = l_user
-            st.session_state.role = db_role
-            st.success("Login successful!")
-            st.rerun()
-          else:
-            st.warning(
-                "⏳ Your account is pending Admin approval. Please wait for"
-                " Tuckyaa to approve."
-            )
-        else:
-          st.error("❌ Incorrect Password!")
-      else:
-        st.error("❌ Username not found! Please register first.")
-
-  with tab2:
-    st.subheader("New User Registration")
-    r_user = st.text_input("Choose Username / Mobile Number", key="r_user")
-    r_pass = st.text_input("Choose Password", type="password", key="r_pass")
-    if st.button("Submit Access Request"):
-      if r_user and r_pass:
-        try:
-          c.execute(
-              "INSERT INTO users VALUES (?, ?, 'pending', 'user')",
-              (r_user, r_pass),
-          )
-          conn.commit()
-          st.success(
-              "✅ Request submitted successfully! Admin (Tuckyaa) will approve"
-              " your account soon."
-          )
-        except sqlite3.IntegrityError:
-          st.error(
-              "❌ Username already exists! Try logging in or use another name."
-          )
-      else:
-        st.warning("Please fill in all fields.")
-
-
-if st.session_state.user is None:
-  login_register_page()
-  st.stop()
-
-# ---------------------------------------------------------
-# ADMIN PANEL (Visible ONLY to Admin 'tuckyaa')
-# ---------------------------------------------------------
-if st.session_state.role == "admin":
-  st.sidebar.markdown("---")
-  st.sidebar.markdown("### 👑 Admin Control Panel")
-  if st.sidebar.button("Logout Admin"):
-    st.session_state.user = None
-    st.session_state.role = None
-    st.rerun()
-
-  with st.expander("🛠️ Manage User Approvals & Services (Admin Only)"):
-    st.subheader("Pending User Requests")
-    c.execute("SELECT username FROM users WHERE status='pending'")
-    pending_users = c.fetchall()
-
-    if pending_users:
-      for p_user in pending_users:
-        u_name = p_user[0]
-        col_a, col_b = st.columns([2, 1])
-        col_a.write(f"User: **{u_name}**")
-        if col_b.button("Approve", key=f"app_{u_name}"):
-          c.execute(
-              "UPDATE users SET status='approved' WHERE username=?", (u_name,)
-          )
-          conn.commit()
-          st.success(f"Approved {u_name}!")
-          st.rerun()
-    else:
-      st.info("No pending user requests.")
-
-    st.markdown("---")
-    st.subheader("Manage Active Users (Block/Unblock Service)")
-    c.execute("SELECT username, status FROM users WHERE role!='admin'")
-    all_users = c.fetchall()
-
-    if all_users:
-      for u_name, u_status in all_users:
-        col1, col2 = st.columns([2, 1])
-        col1.write(f"**{u_name}** (Status: `{u_status}`)")
-        if u_status == "approved":
-          if col2.button("Block Service", key=f"block_{u_name}"):
-            c.execute(
-                "UPDATE users SET status='blocked' WHERE username=?", (u_name,)
-            )
-            conn.commit()
-            st.warning(f"Blocked {u_name}!")
-            st.rerun()
-        else:
-          if col2.button("Unblock", key=f"unblock_{u_name}"):
-            c.execute(
-                "UPDATE users SET status='approved' WHERE username=?", (u_name,)
-            )
-            conn.commit()
-            st.success(f"Unblocked {u_name}!")
-            st.rerun()
-    else:
-      st.info("No regular users registered yet.")
-else:
-  if st.sidebar.button("Logout"):
-    st.session_state.user = None
-    st.session_state.role = None
-    st.rerun()
 
 # ---------------------------------------------------------
 # GLOBAL TRADING TIMEZONES & COMPLETE 20+ ASSETS LIST
@@ -435,7 +278,6 @@ class TWTExactSevenEngine:
       # Trigger: Price is below support level
       if c["low"] < self.support_lvl:
         if not breakdown_active:
-          # Check if this candle or previous crossed support
           breakdown_active = True
           red_count = 0
 
@@ -467,12 +309,9 @@ class TWTExactSevenEngine:
             red_count = 0
             cooldown = 20
           else:
-            # Intermittent green candle before 7 red counts -> Ignore (do nothing, keep counting red)
             pass
       else:
-        # If price goes back above support, reset breakdown tracking
-        if breakdown_active and c["close'] >= self.support_lvl:
-          # breakdown_active = False
+        if breakdown_active and c["close"] >= self.support_lvl:
           pass
 
 
