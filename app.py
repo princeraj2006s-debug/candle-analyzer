@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Ultimate Wick & 2-Candle Retest Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Ultimate Retest & G-Channel Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -91,9 +91,9 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
-st.sidebar.text("Logic            : Wick Touch + 2-Candle Retest")
-st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
-st.sidebar.text("Stop loss          : ATR Managed")
+st.sidebar.text("Logic            : Strict Confirmation + G-Channel Bands")
+st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
+st.sidebar.text("Stop loss        : ATR Managed")
 
 
 def get_decimals(price):
@@ -105,6 +105,23 @@ def get_decimals(price):
     return 2
 
 
+def calculate_g_channel(df, period=20, multiplier=1.5):
+  """Calculates G Channel Trend indicator (Baseline, Upper Band, Lower Band)."""
+  df = df.copy()
+  df["TR_g"] = np.maximum(
+      df["High"] - df["Low"],
+      np.maximum(
+          abs(df["High"] - df["Close"].shift(1)),
+          abs(df["Low"] - df["Close"].shift(1)),
+      ),
+  )
+  df["ATR_g"] = df["TR_g"].rolling(period).mean()
+  df["G_Mid"] = df["Close"].ewm(span=period, adjust=False).mean()
+  df["G_Upper"] = df["G_Mid"] + (df["ATR_g"] * multiplier)
+  df["G_Lower"] = df["G_Mid"] - (df["ATR_g"] * multiplier)
+  return df
+
+
 @st.cache_data(ttl=30)
 def fetch_twt_delta_data(symbol, tf):
   exchanges_to_try = [
@@ -113,7 +130,6 @@ def fetch_twt_delta_data(symbol, tf):
       (ccxt.kucoin, symbol),
   ]
 
-  # Fallback ticker mapping for RENDER or FIL if named differently on exchanges
   symbol_variants = [symbol]
   if symbol == "RENDER/USDT":
     symbol_variants = ["RENDER/USDT", "RENDERUSDT", "RNDR/USDT"]
@@ -163,12 +179,8 @@ def fetch_twt_delta_data(symbol, tf):
             df_6["timestamp"] = pd.to_datetime(df_6["timestamp"], unit="ms")
             df_6 = df_6.set_index("timestamp")
 
-            # --- REAL GOLD (XAUT) PRICE CALIBRATION ---
-            # Calibrating XAUT to perfectly align with spot gold scale if needed
             if symbol == "XAUT/USDT":
-              gold_calibration_multiplier = (
-                  1.0025  # Fine-tuning offset calibration
-              )
+              gold_calibration_multiplier = 1.0025
               for col in ["Open", "High", "Low", "Close"]:
                 df_5[col] = df_5[col] * gold_calibration_multiplier
                 df_4[col] = df_4[col] * gold_calibration_multiplier
@@ -192,6 +204,8 @@ class TWTUltimateEngine:
     self.signals = []
     self.resistance_lvl = 0
     self.support_lvl = 0
+    self.market_status = "Scanning Market..."
+    self.est_time = "~10-20 mins (Scanning)"
 
   def calculate_and_scan(self):
     if self.df_5 is None or self.df_5.empty:
@@ -241,6 +255,9 @@ class TWTUltimateEngine:
     )
     self.df_5["ATR"] = self.df_5["TR"].rolling(14).mean()
 
+    # Calculate G Channel
+    self.df_5 = calculate_g_channel(self.df_5, period=20, multiplier=1.5)
+
     for idx, row in enumerate(self.df_5.iterrows()):
       dt_utc = row[0]
       if dt_utc.tzinfo is None:
@@ -287,6 +304,25 @@ class TWTUltimateEngine:
 
     signal_given = False
 
+    last_c = self.candles[-1] if self.candles else None
+    if last_c:
+      dist_to_res = abs(last_c["close"] - self.resistance_lvl)
+      dist_to_sup = abs(last_c["close"] - self.support_lvl)
+      atr_val = last_c["atr"]
+
+      if dist_to_res <= (1.0 * atr_val):
+        self.market_status = "Near Resistance (Short Setup Imminent)"
+        self.est_time = "~5 mins"
+      elif dist_to_sup <= (1.0 * atr_val):
+        self.market_status = "Near Support (Long Setup Imminent)"
+        self.est_time = "~5 mins"
+      elif dist_to_res <= (2.5 * atr_val) or dist_to_sup <= (2.5 * atr_val):
+        self.market_status = "Approaching Key Level"
+        self.est_time = "~10 to 15 mins"
+      else:
+        self.market_status = "Consolidating in Range"
+        self.est_time = "~30 mins"
+
     for i in range(5, len(self.candles)):
       c = self.candles[i]
       if time(1, 0) <= c["dt_ist"].time() <= time(6, 0):
@@ -324,8 +360,8 @@ class TWTUltimateEngine:
             "Asset": self.symbol,
             "Time": c["time"],
             "Candle #": c["id"],
-            "Setup": "Resistance Wick + 2-Candle Retest Short",
-            "Action": "Sell / Short (S) [Confirmed Retest] 🔴",
+            "Setup": "Resistance Retest Short",
+            "Action": "Sell / Short (S) 🔴",
             "Entry Price": round(c["close"], dec),
             "Stop Loss (SL)": sl,
             "TP 1": tp1,
@@ -363,8 +399,8 @@ class TWTUltimateEngine:
             "Asset": self.symbol,
             "Time": c["time"],
             "Candle #": c["id"],
-            "Setup": "Support Wick + 2-Candle Retest Long",
-            "Action": "Buy / Long (B) [Confirmed Retest] 🟢",
+            "Setup": "Support Retest Long",
+            "Action": "Buy / Long (B) 🟢",
             "Entry Price": round(c["close"], dec),
             "Stop Loss (SL)": sl,
             "TP 1": tp1,
@@ -375,12 +411,14 @@ class TWTUltimateEngine:
 
 
 # ---------------------------------------------------------
-# MASTER SCANNER (Global Feed for Top Dashboard)
+# MASTER SCANNER (Global Feed with Probability Timing Column)
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("🔥 TWT Master Live Signal Dashboard (Last 1 Hour)")
+st.subheader(
+    "🔥 TWT Master Live Signal Dashboard (All 20 Assets & Setup Probability)"
+)
 
-master_signals = []
+master_summary = []
 asset_engines = {}
 
 
@@ -389,44 +427,43 @@ def scan_single_asset(sym):
   if df_5 is not None and not df_5.empty:
     engine = TWTUltimateEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
-    recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
-    latest = recent_sigs[-1] if recent_sigs else None
-    return sym, engine, latest
-  return sym, None, None
+    return sym, engine
+  return sym, None
 
 
-with st.spinner("⚡ Scanning all 20 assets (including RENDER & FIL)..."):
+with st.spinner("⚡ Scanning all 20 assets & calculating probabilities..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
     }
     for future in as_completed(futures):
-      sym, engine, latest = future.result()
+      sym, engine = future.result()
       if engine:
         asset_engines[sym] = engine
-      if latest:
-        master_signals.append(latest)
+        curr_price = (
+            engine.candles[-1]["close"] if engine.candles else 0.0
+        )
+        master_summary.append({
+            "Asset": sym,
+            "Current Price": curr_price,
+            "Market Condition": engine.market_status,
+            "Expected Setup Probability Timing": engine.est_time,
+        })
 
-if master_signals:
-  st.success(f"✅ Found {len(master_signals)} active ultimate setup(s)!")
-  df_display = pd.DataFrame(master_signals).drop(
-      columns=["Is_Within_1hr"], errors="ignore"
-  )
-  st.dataframe(df_display, width="stretch")
+if master_summary:
+  df_summary = pd.DataFrame(master_summary)
+  st.dataframe(df_summary, width="stretch", hide_index=True)
 else:
-  st.info(
-      "ℹ️ No active ultimate signals in the last 1 hour. Waiting for wick touch"
-      " & 2-candle retest..."
-  )
+  st.warning("⚠️ Could not load scanner feed at the moment.")
 
 # ---------------------------------------------------------
-# MANUAL ASSET SELECTOR & CHART VIEWER
+# MANUAL ASSET SELECTOR & CHART VIEWER (With G-Channel & Entry Box)
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("📊 Manual Asset Inspector & Chart")
+st.subheader("📊 Manual Asset Inspector & Active Setup Box")
 
 selected_symbol = st.selectbox(
-    "🔍 Select Asset to Load Chart & Complete History",
+    "🔍 Select Asset to Load Detailed Chart & Entry Box",
     options=ASSET_LIST,
     index=0,
 )
@@ -451,10 +488,12 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Ultimate Active")
+    st.metric(label="Timezone", value=tz_short, delta="Engine Active")
 
-  if bot.signals:
-    latest_sig = bot.signals[-1]
+  recent_signals = [s for s in bot.signals if s.get("Is_Within_1hr", False)]
+
+  if recent_signals:
+    latest_sig = recent_signals[-1]
     is_buy = "Buy" in latest_sig["Action"]
     entry_p = latest_sig["Entry Price"]
     signal_time = latest_sig["Time"]
@@ -470,8 +509,8 @@ if bot.df_5 is not None and not bot.df_5.empty:
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Support wick touch -> 2 Candles above -> Retest"
-          " pullback -> Buyer confirmed!"
+          "📌 *Instructions:* Support retest & candles confirmed -> Buyer"
+          " strength verified!"
       )
     else:
       st.error(
@@ -482,17 +521,17 @@ if bot.df_5 is not None and not bot.df_5.empty:
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Resistance wick touch -> 2 Candles inside -> Retest"
-          " pullback -> Seller confirmed!"
+          "📌 *Instructions:* Resistance retest & candles confirmed -> Seller"
+          " strength verified!"
       )
   else:
     st.warning(
-        "🟡 **STATUS: WAITING FOR WICK TOUCH & 2-CANDLE RETEST**\n\n"
-        "📌 *Instructions:* Monitoring wick touches and multi-candle"
-        " confirmations."
+        "🟡 **STATUS: WAITING FOR CONFIRMATION (No recent signal in the last 1"
+        " hour)**\n\n"
+        "📌 *Instructions:* Entry, SL, and Targets will appear here automatically"
+        " once candles fully confirm the retest setup."
     )
 
-  # Complete Signal History
   if bot.signals:
     st.markdown("---")
     st.subheader(
@@ -503,7 +542,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
     st.dataframe(df_history, width="stretch")
 
-  # Chart Rendering
+  # Chart Rendering with G-Channel Overlay
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
   for c in bot.candles:
     col = "#26a69a" if c["color"] == "Green" else "#ef5350"
@@ -518,6 +557,36 @@ if bot.df_5 is not None and not bot.df_5.empty:
 
     ax.bar(c["id"], plot_height, bottom=plot_bottom, color=col, width=0.7)
     ax.vlines(c["id"], c["low"], c["high"], color="#b2b5be", linewidth=1.3)
+
+  # Plot G Channel Bands & Baseline
+  if "G_Upper" in bot.df_5.columns:
+    ax.plot(
+        range(1, len(bot.df_5) + 1),
+        bot.df_5["G_Upper"],
+        color="#ff5252",
+        linestyle="-",
+        linewidth=1,
+        alpha=0.7,
+        label="G Upper",
+    )
+    ax.plot(
+        range(1, len(bot.df_5) + 1),
+        bot.df_5["G_Lower"],
+        color="#00e676",
+        linestyle="-",
+        linewidth=1,
+        alpha=0.7,
+        label="G Lower",
+    )
+    ax.plot(
+        range(1, len(bot.df_5) + 1),
+        bot.df_5["G_Mid"],
+        color="#ffeb3b",
+        linestyle="--",
+        linewidth=0.8,
+        alpha=0.6,
+        label="G Baseline",
+    )
 
   ax.axhline(
       bot.resistance_lvl,
@@ -577,7 +646,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Ultimate Engine"
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA G-Channel Engine"
       f" ({tz_short})",
       color="white",
       fontsize=14,
