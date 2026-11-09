@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Continuous 7-Red Ignore-Green Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Perfect 7-Red Sequential Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -91,10 +91,7 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
-st.sidebar.text(
-    "Logic            : Below Support Close -> Continuous Red Count (Ignore"
-    " Green) -> 7th Red + Green Rebound Entry"
-)
+st.sidebar.text("Logic            : Below Support Close -> Continuous 7 Red Count -> Rebound Entry")
 st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss        : ATR Managed")
 
@@ -163,7 +160,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTContinuousEngine:
+class TWTTrainingPerfectEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -261,8 +258,8 @@ class TWTContinuousEngine:
           "is_within_1hr": is_within_1hr,
       })
 
-    # Continuous State Tracking
-    breakdown_active = False
+    # Perfect Non-Resetting Sequential Logic
+    in_breakdown_zone = False
     red_count = 0
     cooldown = 0
 
@@ -278,17 +275,17 @@ class TWTContinuousEngine:
       atr = c["atr"]
       dec = get_decimals(c["close"])
 
-      # Rule 1: Counting starts ONLY when candle CLOSE is STRICTLY BELOW Support Level
+      # If candle close is strictly below support level
       if c["close"] < self.support_lvl:
-        if not breakdown_active:
-          breakdown_active = True
+        if not in_breakdown_zone:
+          in_breakdown_zone = True
           red_count = 0
 
         if c["color"] == "Red":
           red_count += 1
           self.count_annotations.append((c["id"], red_count, c["high"]))
         elif c["color"] == "Green":
-          # If a green candle appears after we have accumulated 7 or more red counts below support
+          # If we have reached 7 or more red counts and a green confirmation candle appears
           if red_count >= 7:
             sl = round(c["low"] - (1.2 * atr), dec)
             tp1 = round(c["close"] + (1.2 * atr), dec)
@@ -302,7 +299,7 @@ class TWTContinuousEngine:
                 "Setup": (
                     f"Support Breakdown ({red_count} Reds) + Green Rebound Long"
                 ),
-                "Action": "Buy / Long (B) [7-Red Continuous Rebound] 🟢",
+                "Action": "Buy / Long (B) [Perfect 7-Red Rebound] 🟢",
                 "Entry Price": round(c["close"], dec),
                 "Stop Loss (SL)": sl,
                 "TP 1": tp1,
@@ -310,16 +307,16 @@ class TWTContinuousEngine:
                 "TP 3": tp3,
                 "Is_Within_1hr": c["is_within_1hr"],
             })
-            breakdown_active = False
+            in_breakdown_zone = False
             red_count = 0
             cooldown = 20
           else:
-            # Rule 2: If a green candle appears BEFORE 7 red counts, we IGNORE it (do NOT reset red_count, keep counting!)
+            # Interim green candle before 7 reds -> Ignore, do NOT reset red_count!
             pass
       else:
-        # If price closes back above support level, reset the sequence
-        if breakdown_active and c["close"] >= self.support_lvl:
-          breakdown_active = False
+        # If price goes back above or touches support, reset zone
+        if in_breakdown_zone and c["close"] >= self.support_lvl:
+          in_breakdown_zone = False
           red_count = 0
 
 
@@ -336,7 +333,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTContinuousEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTTrainingPerfectEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -344,7 +341,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets for continuous 7-red setups..."):
+with st.spinner("⚡ Scanning all 20 assets for perfect 7-red setups..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -357,15 +354,15 @@ with st.spinner("⚡ Scanning all 20 assets for continuous 7-red setups..."):
         master_signals.append(latest)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} active continuous setup(s)!")
+  st.success(f"✅ Found {len(master_signals)} active setup(s)!")
   df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
   st.info(
-      "ℹ️ No active continuous signals inama last 1 hour. Waiting for 7 red"
-      " closes below support..."
+      "ℹ️ No active signals in the last 1 hour. Waiting for strict below-support"
+      " 7-red sequence..."
   )
 
 # ---------------------------------------------------------
@@ -384,7 +381,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTContinuousEngine(df_5, df_4, df_6, selected_symbol, active_tz)
+  bot = TWTTrainingPerfectEngine(df_5, df_4, df_6, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -400,7 +397,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Continuous Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Perfect Engine Active")
 
   if bot.signals:
     latest_sig = bot.signals[-1]
@@ -411,27 +408,28 @@ if bot.df_5 is not None and not bot.df_5.empty:
     st.warning("⚠️ **Don't use after 40 minutes!**")
 
     st.success(
-        f"🟢 **TWT CONTINUOUS SETUP: {latest_sig['Action']}**\n\n"
+        f"🟢 **TWT PERFECT SETUP: {latest_sig['Action']}**\n\n"
         f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
         f" #{latest_sig['Candle #']})\n"
         f"- **Entry Price:** `{entry_p}`\n"
         f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
         f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
         f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-        "📌 *Instructions:* Below support close -> 7 Red counted (ignoring"
-        " interim green) -> Green Rebound Entry Confirmed!"
+        "📌 *Instructions:* Strict close below support -> Continuous 7 red"
+        " counted -> Green Rebound Entry Confirmed!"
     )
   else:
     st.warning(
-        "🟡 **STATUS: WAITING FOR 7-RED COUNT SETUP**\n\n"
-        "📌 *Instructions:* Monitoring continuous red closes below support."
+        "🟡 **STATUS: WAITING FOR 7-RED SETUP**\n\n"
+        "📌 *Instructions:* Monitoring strict closes below support for 7-red"
+        " sequential counting."
     )
 
   # Complete Signal History
   if bot.signals:
     st.markdown("---")
     st.subheader(
-        f"📋 Complete Signal History for {selected_symbol} (Continuous Engine)"
+        f"📋 Complete Signal History for {selected_symbol} (Perfect Engine)"
     )
     df_history = pd.DataFrame(bot.signals).drop(
         columns=["Is_Within_1hr"], errors="ignore"
@@ -499,7 +497,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
       margin = curr_p * 0.005
     ax.set_ylim(min(lows) - margin, max(highs) + margin)
 
-  # Plot Red Candle Counting Numbers (ignoring green candles in-between)
+  # Plot Red Candle Counting Numbers below support strictly
   for cid, cnt, hp in bot.count_annotations:
     ax.text(
         cid,
@@ -526,8 +524,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Continuous Engine"
-      f" ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Perfect Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
