@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Strict Sequential Retest & Pullback Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Flexible Price Action Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -84,14 +84,14 @@ server_time_target = datetime.now(active_tz)
 st.sidebar.text(
     f"Server time          ———  {server_time_target.strftime('%H:%M')}"
 )
-st.sidebar.text("Support Ref (6H)   ———  05:30 IST Candle Low")
-st.sidebar.text("Resistance Ref (4H) ———  01:30 IST Candle High")
+st.sidebar.text("Support Ref (6H)   ———  05:30 IST Reference Low")
+st.sidebar.text("Resistance Ref (4H) ———  01:30 IST Reference High")
 st.sidebar.text("No-Trade Zone      ———  01:00 ➔ 06:00 IST")
 st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
-st.sidebar.text("Logic            : 2 Retests -> Breakout -> Pullback -> Confirmation")
+st.sidebar.text("Logic            : Flexible Retest & Candle Direction")
 st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss        : ATR Managed")
 
@@ -126,7 +126,6 @@ def fetch_twt_delta_data(symbol, tf):
       for sym in symbol_variants:
         if sym in exchange.markets:
           ohlcv_tf = exchange.fetch_ohlcv(sym, timeframe=tf, limit=140)
-          ohlcv_15m = exchange.fetch_ohlcv(sym, timeframe="15m", limit=60)
           ohlcv_4h = exchange.fetch_ohlcv(sym, timeframe="4h", limit=25)
           ohlcv_6h = exchange.fetch_ohlcv(sym, timeframe="6h", limit=25)
 
@@ -134,10 +133,6 @@ def fetch_twt_delta_data(symbol, tf):
             df_5 = pd.DataFrame(ohlcv_tf, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
             df_5["timestamp"] = pd.to_datetime(df_5["timestamp"], unit="ms")
             df_5 = df_5.set_index("timestamp")
-
-            df_15 = pd.DataFrame(ohlcv_15m, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"]) if ohlcv_15m else df_5.copy()
-            df_15["timestamp"] = pd.to_datetime(df_15["timestamp"], unit="ms")
-            df_15 = df_15.set_index("timestamp")
 
             df_4 = pd.DataFrame(ohlcv_4h, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
             df_4["timestamp"] = pd.to_datetime(df_4["timestamp"], unit="ms")
@@ -149,21 +144,20 @@ def fetch_twt_delta_data(symbol, tf):
 
             if symbol == "XAUT/USDT":
               gold_mult = 1.0025
-              for d in [df_5, df_15, df_4, df_6]:
+              for d in [df_5, df_4, df_6]:
                 for col in ["Open", "High", "Low", "Close"]:
                   d[col] *= gold_mult
 
-            return df_5, df_15, df_4, df_6
+            return df_5, df_4, df_6
     except Exception:
       continue
-  return None, None, None, None
+  return None, None, None
 
 
-class TWTSequentialEngine:
+class TWTFlexibleEngine:
 
-  def __init__(self, df_5, df_15, df_4, df_6, symbol, user_tz):
+  def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
-    self.df_15 = df_15
     self.df_4 = df_4
     self.df_6 = df_6
     self.symbol = symbol
@@ -180,7 +174,6 @@ class TWTSequentialEngine:
     IST = timezone(timedelta(hours=5, minutes=30))
     current_utc_time = datetime.now(timezone.utc)
 
-    # Key Levels
     if self.df_4 is not None and not self.df_4.empty:
       idx_utc = self.df_4.index.tz_localize("UTC") if self.df_4.index.tz is None else self.df_4.index
       df_4_ist = idx_utc.tz_convert(IST)
@@ -236,112 +229,74 @@ class TWTSequentialEngine:
       })
 
     # =========================================================
-    # STRICT 4-STEP SEQUENTIAL STATE ENGINE
-    # Step 1: 2 Retests near Support/Resistance
-    # Step 2: Breakout from the level
-    # Step 3: Pullback back to the level range
-    # Step 4: 15m/5m Candle Confirmation (Wick weakness + Strong body)
+    # FLEXIBLE ENTRY ENGINE (Balanced Retest & Candle Direction)
     # =========================================================
-    signal_given = False
+    cooldown = 0
 
-    for i in range(20, len(self.candles)):
+    for i in range(10, len(self.candles)):
+      if cooldown > 0:
+        cooldown -= 1
+        continue
+
       c = self.candles[i]
       if time(1, 0) <= c["dt_ist"].time() <= time(6, 0):
         continue
 
       atr = c["atr"]
       dec = get_decimals(c["close"])
-      recent = self.candles[i - 20:i]
+      prev_c = self.candles[i - 1]
 
-      # --- BUY / LONG STRICT SEQUENCE ---
-      # 1. Check 2 Retests near support
-      support_retests = 0
-      retest_indices = []
-      for idx_r, candle in enumerate(recent[:-5]):
-        if candle["low"] <= self.support_lvl + (0.8 * atr):
-          support_retests += 1
-          retest_indices.append(idx_r)
+      # --- BUY / LONG SETUP (Support / Rebound Area) ---
+      near_support = c["low"] <= self.support_lvl + (1.5 * atr) or c["close"] >= self.support_lvl
+      buyer_momentum = (c["color"] == "Green") and (c["close"] > prev_c["high"]) and (c["close"] > c["open"])
 
-      if support_retests >= 2 and not signal_given:
-        # 2. Check Breakout (Price moved up significantly after retests)
-        breakout_happened = any(x["close"] > self.support_lvl + (2.5 * atr) for x in recent[retest_indices[-1]:-3])
+      if near_support and buyer_momentum:
+        sl = round(c["low"] - (1.2 * atr), dec)
+        tp1 = round(c["close"] + (1.2 * atr), dec)
+        tp2 = round(c["close"] + (2.5 * atr), dec)
+        tp3 = round(c["close"] + (4.0 * atr), dec)
 
-        if breakout_happened:
-          # 3. Check Pullback (Price pulled back closer to support range)
-          is_pullback_zone = c["low"] <= self.support_lvl + (1.5 * atr)
+        self.signals.append({
+            "Asset": self.symbol,
+            "Time": c["time"],
+            "Candle #": c["id"],
+            "Setup": "Flexible Support Rebound Long",
+            "Action": "Buy / Long (B) 🟢",
+            "Entry Price": round(c["close"], dec),
+            "Stop Loss (SL)": sl,
+            "TP 1": tp1,
+            "TP 2": tp2,
+            "TP 3": tp3,
+            "Is_Within_1hr": c["is_within_1hr"],
+        })
+        cooldown = 8  # Prevent spamming
+        continue
 
-          if is_pullback_zone:
-            prev_c = self.candles[i - 1]
-            # 4. Candle Confirmation: Green candle closing bullish + Seller upper wick weakness
-            is_green = c["color"] == "Green" and c["close"] > c["open"]
-            seller_upper_wick_weakness = (c["high"] - c["close"]) <= (0.3 * (c["high"] - c["low"]))
-            breakout_momentum = c["close"] > prev_c["high"]
+      # --- SELL / SHORT SETUP (Resistance / Rejection Area) ---
+      near_resistance = c["high"] >= self.resistance_lvl - (1.5 * atr) or c["close"] <= self.resistance_lvl
+      seller_momentum = (c["color"] == "Red") and (c["close"] < prev_c["low"]) and (c["close"] < c["open"])
 
-            if is_green and seller_upper_wick_weakness and breakout_momentum:
-              signal_given = True
-              sl = round(self.support_lvl - (1.2 * atr), dec)
-              tp1 = round(c["close"] + (1.2 * atr), dec)
-              tp2 = round(c["close"] + (2.5 * atr), dec)
-              tp3 = round(c["close"] + (4.0 * atr), dec)
+      if near_resistance and seller_momentum:
+        sl = round(c["high"] + (1.2 * atr), dec)
+        tp1 = round(c["close"] - (1.2 * atr), dec)
+        tp2 = round(c["close"] - (2.5 * atr), dec)
+        tp3 = round(c["close"] - (4.0 * atr), dec)
 
-              self.signals.append({
-                  "Asset": self.symbol,
-                  "Time": c["time"],
-                  "Candle #": c["id"],
-                  "Setup": "2-Retest + Breakout + Pullback Long",
-                  "Action": "Buy / Long (B) [Strict Confirmed] 🟢",
-                  "Entry Price": round(c["close"], dec),
-                  "Stop Loss (SL)": sl,
-                  "TP 1": tp1,
-                  "TP 2": tp2,
-                  "TP 3": tp3,
-                  "Is_Within_1hr": c["is_within_1hr"],
-              })
-
-      # --- SELL / SHORT STRICT SEQUENCE ---
-      # 1. Check 2 Retests near resistance
-      resistance_retests = 0
-      res_indices = []
-      for idx_r, candle in enumerate(recent[:-5]):
-        if candle["high"] >= self.resistance_lvl - (0.8 * atr):
-          resistance_retests += 1
-          res_indices.append(idx_r)
-
-      if resistance_retests >= 2 and not signal_given:
-        # 2. Check Breakout (Price moved down significantly after retests)
-        breakout_down = any(x["close"] < self.resistance_lvl - (2.5 * atr) for x in recent[res_indices[-1]:-3])
-
-        if breakout_down:
-          # 3. Check Pullback (Price pulled back closer to resistance range)
-          is_pullback_res = c["high"] >= self.resistance_lvl - (1.5 * atr)
-
-          if is_pullback_res:
-            prev_c = self.candles[i - 1]
-            # 4. Candle Confirmation: Red candle closing bearish + Buyer lower wick weakness
-            is_red = c["color"] == "Red" and c["close"] < c["open"]
-            buyer_lower_wick_weakness = (c["close"] - c["low"]) <= (0.3 * (c["high"] - c["low"]))
-            breakout_momentum = c["close"] < prev_c["low"]
-
-            if is_red and buyer_lower_wick_weakness and breakout_momentum:
-              signal_given = True
-              sl = round(self.resistance_lvl + (1.2 * atr), dec)
-              tp1 = round(c["close"] - (1.2 * atr), dec)
-              tp2 = round(c["close"] - (2.5 * atr), dec)
-              tp3 = round(c["close"] - (4.0 * atr), dec)
-
-              self.signals.append({
-                  "Asset": self.symbol,
-                  "Time": c["time"],
-                  "Candle #": c["id"],
-                  "Setup": "2-Retest + Breakout + Pullback Short",
-                  "Action": "Sell / Short (S) [Strict Confirmed] 🔴",
-                  "Entry Price": round(c["close"], dec),
-                  "Stop Loss (SL)": sl,
-                  "TP 1": tp1,
-                  "TP 2": tp2,
-                  "TP 3": tp3,
-                  "Is_Within_1hr": c["is_within_1hr"],
-              })
+        self.signals.append({
+            "Asset": self.symbol,
+            "Time": c["time"],
+            "Candle #": c["id"],
+            "Setup": "Flexible Resistance Rejection Short",
+            "Action": "Sell / Short (S) 🔴",
+            "Entry Price": round(c["close"], dec),
+            "Stop Loss (SL)": sl,
+            "TP 1": tp1,
+            "TP 2": tp2,
+            "TP 3": tp3,
+            "Is_Within_1hr": c["is_within_1hr"],
+        })
+        cooldown = 8  # Prevent spamming
+        continue
 
 
 # ---------------------------------------------------------
@@ -355,9 +310,9 @@ asset_engines = {}
 
 
 def scan_single_asset(sym):
-  df_5, df_15, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
+  df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTSequentialEngine(df_5, df_15, df_4, df_6, sym, active_tz)
+    engine = TWTFlexibleEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -365,7 +320,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets with strict sequential rules..."):
+with st.spinner("⚡ Scanning all 20 assets with flexible rules..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -378,16 +333,13 @@ with st.spinner("⚡ Scanning all 20 assets with strict sequential rules..."):
         master_signals.append(latest)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} active strict sequence setup(s)!")
+  st.success(f"✅ Found {len(master_signals)} active flexible setup(s)!")
   df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
-  st.info(
-      "ℹ️ No active strict setups in the last 1 hour. Waiting for complete"
-      " 2-retest, breakout, pullback & confirmation sequence..."
-  )
+  st.info("ℹ️ No active setups in the last 1 hour. Waiting for price action setup...")
 
 # ---------------------------------------------------------
 # MANUAL ASSET SELECTOR & CHART VIEWER
@@ -404,8 +356,8 @@ selected_symbol = st.selectbox(
 if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
-  df_5, df_15, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTSequentialEngine(df_5, df_15, df_4, df_6, selected_symbol, active_tz)
+  df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
+  bot = TWTFlexibleEngine(df_5, df_4, df_6, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -421,7 +373,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Sequential Active")
+    st.metric(label="Timezone", value=tz_short, delta="Flexible Active")
 
   recent_signals = [s for s in bot.signals if s.get("Is_Within_1hr", False)]
 
@@ -435,36 +387,33 @@ if bot.df_5 is not None and not bot.df_5.empty:
 
     if is_buy:
       st.success(
-          f"🟢 **TWT STRICT SETUP: {latest_sig['Action']}**\n\n"
+          f"🟢 **TWT SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* 2 Retests -> Breakout -> Pullback -> Green Candle"
-          " Confirmation verified!"
+          "📌 *Instructions:* Support Rebound + Green Candle Momentum Confirmed!"
       )
     else:
       st.error(
-          f"🔴 **TWT STRICT SETUP: {latest_sig['Action']}**\n\n"
+          f"🔴 **TWT SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* 2 Retests -> Breakout -> Pullback -> Red Candle"
-          " Confirmation verified!"
+          "📌 *Instructions:* Resistance Rejection + Red Candle Momentum Confirmed!"
       )
   else:
     st.warning(
-        "🟡 **STATUS: WAITING FOR COMPLETE SEQUENCE**\n\n"
-        "📌 *Instructions:* Waiting for 2 retests, breakout, pullback, and"
-        " candle confirmation."
+        "🟡 **STATUS: WAITING FOR MARKET SETUP**\n\n"
+        "📌 *Instructions:* Monitoring price action near support and resistance zones."
     )
 
-  # Complete Signal History
+  # Complete Signal History (Old & New entries)
   if bot.signals:
     st.markdown("---")
     st.subheader(
@@ -549,7 +498,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Sequential Engine"
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Flexible Engine"
       f" ({tz_short})",
       color="white",
       fontsize=14,
