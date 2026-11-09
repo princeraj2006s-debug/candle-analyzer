@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Ultimate Single-Entry Pattern Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Robust 7-Red Single-Entry Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -92,8 +92,8 @@ st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
 st.sidebar.text(
-    "Logic            : 7 Red -> Red -> Small Red -> Green Entry (Strict 1"
-    " Time)"
+    "Logic            : Support Breakdown -> 7 Red Count -> Green Rebound Entry"
+    " (1-Time)"
 )
 st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss        : ATR Managed")
@@ -163,7 +163,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTSingleEntryEngine:
+class TWTRobustEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -261,8 +261,11 @@ class TWTSingleEntryEngine:
           "is_within_1hr": is_within_1hr,
       })
 
-    # Strict Single-Entry State Machine per Support Level
-    # States: 0 = Waiting, 1 = Counting 7 Reds, 2 = Pattern (Strong Red), 3 = Pattern (Small Red), 4 = Entry Green, 5 = PERMANENTLY LOCKED FOR THIS SUPPORT
+    # Robust State Machine:
+    # State 0: Waiting for breakdown below support
+    # State 1: Counting 7 red candles below support
+    # State 2: Ready for Green Rebound Entry (1-Time Only)
+    # State 3: Permanently Locked for this cycle
     state = 0
     red_count = 0
 
@@ -274,14 +277,14 @@ class TWTSingleEntryEngine:
       atr = c["atr"]
       dec = get_decimals(c["close"])
 
-      # If already given entry for this support level (State 5), lock completely!
-      if state == 5:
-        continue
-
-      # If price goes back above support, reset states so a brand new support cycle can start fresh if needed
+      # If price goes back above support level, reset state for a fresh cycle
       if c["close"] >= self.support_lvl:
         state = 0
         red_count = 0
+        continue
+
+      # If already traded (State 3), ignore until price resets above support
+      if state == 3:
         continue
 
       if c["close"] < self.support_lvl:
@@ -294,23 +297,11 @@ class TWTSingleEntryEngine:
             red_count += 1
             self.count_annotations.append((c["id"], red_count, c["high"]))
             if red_count >= 7:
-              state = 2  # 7 reds completed -> now look for strong red
+              state = 2  # 7 reds reached, now ready for green rebound
           elif c["color"] == "Green":
-            pass  # Ignore intermediate greens during counting
+            pass  # Ignore interim green candles during counting
         elif state == 2:
-          # Step A: Look for Strong Red Candle
-          if c["color"] == "Red":
-            state = 3
-          elif c["color"] == "Green":
-            state = 2  # stay or reset slightly
-        elif state == 3:
-          # Step B: Look for Small Red Candle with wicks
-          if c["color"] == "Red":
-            state = 4
-          elif c["color"] == "Green":
-            state = 2
-        elif state == 4:
-          # Step C: Look for Green Candle -> ENTRY! (Give ONLY ONE ENTRY, then lock permanently)
+          # Immediate Green Rebound Entry after 7 red candles (Strictly 1-Time)
           if c["color"] == "Green":
             sl = round(c["low"] - (1.2 * atr), dec)
             tp1 = round(c["close"] + (1.2 * atr), dec)
@@ -321,8 +312,8 @@ class TWTSingleEntryEngine:
                 "Asset": self.symbol,
                 "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": "7-Red + Pattern Rebound",
-                "Action": "Buy / Long (B) [Single-Entry Verified] 🟢",
+                "Setup": "7-Red Breakdown + Green Rebound",
+                "Action": "Buy / Long (B) [Robust Single-Entry] 🟢",
                 "Entry Price": round(c["close"], dec),
                 "Stop Loss (SL)": sl,
                 "TP 1": tp1,
@@ -330,7 +321,7 @@ class TWTSingleEntryEngine:
                 "TP 3": tp3,
                 "Is_Within_1hr": c["is_within_1hr"],
             })
-            state = 5  # PERMANENT LOCK! No more entries for this support breakdown.
+            state = 3  # LOCKED! No more entries for this support breakdown.
 
 
 # ---------------------------------------------------------
@@ -346,7 +337,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTSingleEntryEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTRobustEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -354,7 +345,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets for single-entry setups..."):
+with st.spinner("⚡ Scanning all 20 assets for robust setups..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -374,7 +365,7 @@ if master_signals:
   st.dataframe(df_display, width="stretch")
 else:
   st.info(
-      "ℹ️ No active signals in the last 1 hour. Waiting for single-entry 7-red"
+      "ℹ️ No active signals in the last 1 hour. Waiting for 7-red breakdown"
       " setup..."
   )
 
@@ -394,7 +385,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTSingleEntryEngine(df_5, df_4, df_6, selected_symbol, active_tz)
+  bot = TWTRobustEngine(df_5, df_4, df_6, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -410,7 +401,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Single-Entry Engine")
+    st.metric(label="Timezone", value=tz_short, delta="Robust Engine Active")
 
   if bot.signals:
     latest_sig = bot.signals[-1]
@@ -421,27 +412,27 @@ if bot.df_5 is not None and not bot.df_5.empty:
     st.warning("⚠️ **Don't use after 40 minutes!**")
 
     st.success(
-        f"🟢 **TWT SINGLE-ENTRY SETUP: {latest_sig['Action']}**\n\n"
+        f"🟢 **TWT ROBUST SETUP: {latest_sig['Action']}**\n\n"
         f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
-        f" #{latest_sig['Candle #']})\n"
+        f" #{latest_sig['Candle #']})[span_0](start_span)[span_0](end_span)[span_1](start_span)[span_1](end_span)\n"
         f"- **Entry Price:** `{entry_p}`\n"
         f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
         f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
         f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-        "📌 *Instructions:* 7 Reds -> Strong Red -> Small Red -> Green Entry"
+        "📌 *Instructions:* Support broken -> 7 Red counted -> Green Rebound Entry"
         " (Strictly 1-Time Verified)!"
     )
   else:
     st.warning(
         "🟡 **STATUS: WAITING FOR SETUP**\n\n"
-        "📌 *Instructions:* Monitoring support breakdown and pattern."
+        "📌 *Instructions:* Monitoring support breakdown and 7-red count."
     )
 
   # Complete Signal History
   if bot.signals:
     st.markdown("---")
     st.subheader(
-        f"📋 Complete Signal History for {selected_symbol} (Single-Entry)"
+        f"📋 Complete Signal History for {selected_symbol} (Robust Engine)"
     )
     df_history = pd.DataFrame(bot.signals).drop(
         columns=["Is_Within_1hr"], errors="ignore"
@@ -536,8 +527,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Single-Entry Engine"
-      f" ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Robust Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
