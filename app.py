@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Robust D,C,B,A Resistance Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — 5-Red Wick Breakout Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -91,8 +91,10 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
-st.sidebar.text("Buy Logic        : 5 Red -> Green -> Red -> Green Wick Entry")
-st.sidebar.text("Sell Logic       : D->C->B->A (Ignoring Red gaps) -> B Low break -> Green -> Red crosses A & B Short")
+st.sidebar.text(
+    "Logic            : 5 Red -> Green -> Red -> Green Crosses Red Wick Entry"
+    " (1-Time)"
+)
 st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss        : ATR Managed")
 
@@ -161,7 +163,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTRobustDCBAEngine:
+class TWTWickBreakoutEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -171,8 +173,7 @@ class TWTRobustDCBAEngine:
     self.user_tz = user_tz
     self.candles = []
     self.signals = []
-    self.buy_annotations = []   # Stores (candle_id, count_num, high_price)
-    self.sell_annotations = []  # Stores (candle_id, label_str, price)
+    self.count_annotations = []  # Stores (candle_id, count_num, high_price)
     self.resistance_lvl = 0
     self.support_lvl = 0
 
@@ -260,57 +261,59 @@ class TWTRobustDCBAEngine:
           "is_within_1hr": is_within_1hr,
       })
 
-    # --- BUY STATE MACHINE ---
-    buy_state = 0
-    buy_red_count = 0
+    # State Machine:
+    # 0 = Waiting for 5 red candles below support
+    # 1 = Waiting for Green candle after 5 reds
+    # 2 = Waiting for Red candle (save its high/upper wick as ref_red_wick)
+    # 3 = Waiting for Green candle to cross ref_red_wick -> ENTRY (1-Time)
+    # 4 = Permanently Locked for this support cycle
+    state = 0
+    red_count = 0
     ref_red_wick = 0.0
-
-    # --- SELL STATE MACHINE (Robust D, C, B, A ignoring intervening reds) ---
-    sell_state = 0
-    target_b_low = 0.0
-    level_a_ref = 0.0
-    level_b_ref = 0.0
 
     for i in range(len(self.candles)):
       c = self.candles[i]
       if time(1, 0) <= c["dt_ist"].time() <= time(6, 0):
         continue
 
-      atr = c["atr"] if not np.isnan(c["atr"]) else (c["close"] * 0.002)
+      atr = c["atr"]
       dec = get_decimals(c["close"])
 
-      # ---------------------------------------------------------
-      # BUY ENGINE PROCESSING (Below Support)
-      # ---------------------------------------------------------
-      if buy_state != 5 and c["close"] >= self.support_lvl:
-        buy_state = 0
-        buy_red_count = 0
+      # If price goes back above support, reset cycle completely
+      if c["close"] >= self.support_lvl:
+        state = 0
+        red_count = 0
         ref_red_wick = 0.0
+        continue
 
-      if buy_state != 5 and c["close"] < self.support_lvl:
-        if buy_state == 0 and c["color"] == "Red":
-          buy_state = 1
-          buy_red_count = 1
-          self.buy_annotations.append((c["id"], buy_red_count, c["high"]))
-        elif buy_state == 1:
+      if state == 4:
+        continue  # Permanently locked for this support cycle
+
+      if c["close"] < self.support_lvl:
+        if state == 0:
           if c["color"] == "Red":
-            buy_red_count += 1
-            self.buy_annotations.append((c["id"], buy_red_count, c["high"]))
-            if buy_red_count >= 5:
-              buy_state = 2
-          elif c["color"] == "Green":
-            pass
-        elif buy_state == 2:
+            red_count += 1
+            self.count_annotations.append((c["id"], red_count, c["high"]))
+            if red_count >= 5:
+              state = 1  # 5 reds done, now looking for a Green candle
+        elif state == 1:
           if c["color"] == "Green":
-            buy_state = 3
-        elif buy_state == 3:
+            state = 2  # Green candle found, now waiting for the next Red candle
+          elif c["color"] == "Red":
+            pass
+        elif state == 2:
           if c["color"] == "Red":
-            ref_red_wick = c["high"]
-            buy_state = 4
+            ref_red_wick = c[
+                "high"
+            ]  # Save upper wick (high) of this red candle
+            state = (
+                3  # Now wait for Green candle to cross this red candle's wick
+            )
           elif c["color"] == "Green":
-            buy_state = 3
-        elif buy_state == 4:
+            state = 2
+        elif state == 3:
           if c["color"] == "Green" and c["close"] > ref_red_wick:
+            # ENTRY TRIGGERED (Strictly 1-Time Only)
             sl = round(c["low"] - (1.2 * atr), dec)
             tp1 = round(c["close"] + (1.2 * atr), dec)
             tp2 = round(c["close"] + (2.5 * atr), dec)
@@ -320,9 +323,12 @@ class TWTRobustDCBAEngine:
                 "Asset": self.symbol,
                 "Time": c["time"],
                 "Candle #": c["id"],
-                "Type": "BUY 🟢",
-                "Setup": "5-Red -> Green -> Red -> Wick Breakout",
-                "Action": "Buy / Long (B) [5-Red Wick Breakout] 🟢",
+                "Setup": (
+                    "5-Red -> Green -> Red Pullback -> Wick Breakout Entry"
+                ),
+                "Action": (
+                    "Buy / Long (B) [5-Red Wick Breakout Single-Entry] 🟢"
+                ),
                 "Entry Price": round(c["close"], dec),
                 "Stop Loss (SL)": sl,
                 "TP 1": tp1,
@@ -330,69 +336,7 @@ class TWTRobustDCBAEngine:
                 "TP 3": tp3,
                 "Is_Within_1hr": c["is_within_1hr"],
             })
-            buy_state = 5
-
-      # ---------------------------------------------------------
-      # SELL ENGINE PROCESSING (D -> C -> B -> A with Red Ignore)
-      # ---------------------------------------------------------
-      if sell_state != 5 and c["close"] <= self.resistance_lvl - (atr * 2.5):
-        sell_state = 0
-
-      if sell_state != 5:
-        if sell_state == 0:
-          # Step 1: Green candle touching/crossing resistance is 'D'
-          if (c["high"] >= self.resistance_lvl or c["close"] >= self.resistance_lvl) and c["color"] == "Green":
-            self.sell_annotations.append((c["id"], "D", c["high"]))
-            sell_state = 1
-        elif sell_state == 1:
-          # Step 2: Next Green candle downwards is 'C' (ignore any interim red candles)
-          if c["color"] == "Green":
-            self.sell_annotations.append((c["id"], "C", c["high"]))
-            sell_state = 2
-        elif sell_state == 2:
-          # Step 3: Next Green candle downwards is 'B' (ignore interim reds)
-          if c["color"] == "Green":
-            target_b_low = c["low"]
-            level_b_ref = c["high"]
-            self.sell_annotations.append((c["id"], "B", c["high"]))
-            sell_state = 3
-        elif sell_state == 3:
-          # Step 4: Next Green candle downwards is 'A' (ignore interim reds)
-          if c["color"] == "Green":
-            level_a_ref = c["high"]
-            self.sell_annotations.append((c["id"], "A", c["high"]))
-            sell_state = 4  # D, C, B, A fully mapped!
-        elif sell_state == 4:
-          # Step 5: Wait for a Red candle whose low breaks below 'B' lower wick
-          if c["color"] == "Red" and c["low"] < target_b_low:
-            sell_state = 5  # B broken, now wait for Green candle
-        elif sell_state == 5:
-          # Step 6: Wait for 1 Green candle to form after the breakdown
-          if c["color"] == "Green":
-            sell_state = 6
-        elif sell_state == 6:
-          # Step 7: Next Red candle that crosses/closes below A and B levels gives SELL ENTRY!
-          if c["color"] == "Red" and (c["close"] < level_a_ref or c["close"] < level_b_ref):
-            sl = round(c["high"] + (1.2 * atr), dec)
-            tp1 = round(c["close"] - (1.2 * atr), dec)
-            tp2 = round(c["close"] - (2.5 * atr), dec)
-            tp3 = round(c["close"] - (4.0 * atr), dec)
-
-            self.signals.append({
-                "Asset": self.symbol,
-                "Time": c["time"],
-                "Candle #": c["id"],
-                "Type": "SELL 🔴",
-                "Setup": "D->C->B->A (Red Ignored) -> B Low Break -> Green -> Red Crosses A & B Short Entry",
-                "Action": "Sell / Short (S) [Robust D-C-B-A Reversal] 🔴",
-                "Entry Price": round(c["close"], dec),
-                "Stop Loss (SL)": sl,
-                "TP 1": tp1,
-                "TP 2": tp2,
-                "TP 3": tp3,
-                "Is_Within_1hr": c["is_within_1hr"],
-            })
-            sell_state = 7  # LOCKED for resistance cycle
+            state = 4  # PERMANENT LOCK! No more entries for this support breakdown.
 
 
 # ---------------------------------------------------------
@@ -408,7 +352,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTRobustDCBAEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTWickBreakoutEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -416,7 +360,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets for Robust Dual-Engine setups..."):
+with st.spinner("⚡ Scanning all 20 assets for wick breakout setups..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -429,14 +373,15 @@ with st.spinner("⚡ Scanning all 20 assets for Robust Dual-Engine setups..."):
         master_signals.append(latest)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} active dual-engine setup(s)!")
+  st.success(f"✅ Found {len(master_signals)} active setup(s)!")
   df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
   st.info(
-      "ℹ️ No active signals in the last 1 hour. Waiting for Buy or Sell setups..."
+      "ℹ️ No active signals in the last 1 hour. Waiting for 5-red + wick"
+      " breakout sequence..."
   )
 
 # ---------------------------------------------------------
@@ -448,14 +393,14 @@ st.subheader("📊 Manual Asset Inspector & Chart")
 selected_symbol = st.selectbox(
     "🔍 Select Asset to Load Chart & Complete History",
     options=ASSET_LIST,
-    index=18,  # Default to FIL
+    index=0,  # Default to BTC
 )
 
 if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTRobustDCBAEngine(df_5, df_4, df_6, selected_symbol, active_tz)
+  bot = TWTWickBreakoutEngine(df_5, df_4, df_6, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -471,43 +416,39 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Robust DCBA Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Wick Engine Active")
 
   if bot.signals:
     latest_sig = bot.signals[-1]
-    is_buy = "BUY" in latest_sig["Type"]
+    is_buy = "Buy" in latest_sig["Action"]
     entry_p = latest_sig["Entry Price"]
     signal_time = latest_sig["Time"]
 
     st.warning("⚠️ **Don't use after 40 minutes!**")
 
-    if is_buy:
-      st.success(
-          f"🟢 **TWT BUY SETUP: {latest_sig['Action']}**\n\n"
-          f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle #{latest_sig['Candle #']})\n"
-          f"- **Entry Price:** `{entry_p}`\n"
-          f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
-          f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:** `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`"
-      )
-    else:
-      st.error(
-          f"🔴 **TWT SELL SETUP: {latest_sig['Action']}**\n\n"
-          f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle #{latest_sig['Candle #']})\n"
-          f"- **Entry Price:** `{entry_p}`\n"
-          f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
-          f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:** `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`"
-      )
+    st.success(
+        f"🟢 **TWT WICK BREAKOUT SETUP: {latest_sig['Action']}**\n\n"
+        f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
+        f" #{latest_sig['Candle #']})\n"
+        f"- **Entry Price:** `{entry_p}`\n"
+        f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
+        f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
+        f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
+        "📌 *Instructions:* 5 Reds -> Green -> Red -> Green crossing Red wick"
+        " (Strictly 1-Time Verified)!"
+    )
   else:
     st.warning(
-        "🟡 **STATUS: WAITING FOR SETUP**\n\n"
-        "📌 *Instructions:* Monitoring support for Buy and resistance for Sell setups."
+        "🟡 **STATUS: WAITING FOR WICK SETUP**\n\n"
+        "📌 *Instructions:* Monitoring support breakdown, 5-red count, and wick"
+        " breakout sequence."
     )
 
   # Complete Signal History
   if bot.signals:
     st.markdown("---")
     st.subheader(
-        f"📋 Complete Signal History for {selected_symbol} (Robust DCBA Engine)"
+        f"📋 Complete Signal History for {selected_symbol} (Wick Engine)"
     )
     df_history = pd.DataFrame(bot.signals).drop(
         columns=["Is_Within_1hr"], errors="ignore"
@@ -575,8 +516,8 @@ if bot.df_5 is not None and not bot.df_5.empty:
       margin = curr_p * 0.005
     ax.set_ylim(min(lows) - margin, max(highs) + margin)
 
-  # Plot Buy Count Numbers (Red counting 1 to 5)
-  for cid, cnt, hp in bot.buy_annotations:
+  # Plot Red Candle Counting Numbers (1 to 5) strictly below support
+  for cid, cnt, hp in bot.count_annotations:
     ax.text(
         cid,
         hp + (margin * 0.03),
@@ -588,37 +529,21 @@ if bot.df_5 is not None and not bot.df_5.empty:
         va="bottom",
     )
 
-  # Plot Sell Labels (D, C, B, A below resistance)
-  for cid, label_str, hp in bot.sell_annotations:
-    ax.text(
-        cid,
-        hp + (margin * 0.03),
-        label_str,
-        color="#00e676",
-        weight="bold",
-        fontsize=9,
-        ha="center",
-        va="bottom",
-    )
-
-  # Plot Signals ('B' for Buy, 'S' for Sell)
+  # Plot Buy Entry Signals (B) - Only Once
   for sig in bot.signals:
-    is_b = "BUY" in sig["Type"]
-    bg_col = "#00e676" if is_b else "#ff5252"
-    txt = " B " if is_b else " S "
     ax.text(
         sig["Candle #"],
         sig["Entry Price"],
-        txt,
+        " B ",
         color="white",
         weight="bold",
-        bbox=dict(boxstyle="round,pad=0.2", facecolor=bg_col, alpha=0.9),
+        bbox=dict(boxstyle="round,pad=0.2", facecolor="#00e676", alpha=0.9),
         ha="center",
         va="center",
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Robust DCBA Engine ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Wick Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
