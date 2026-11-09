@@ -218,7 +218,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Ultimate Wick & 2-Candle Retest Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Support/Resistance Sweep & Rebound Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -248,7 +248,7 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
-st.sidebar.text("Logic            : Wick Touch + 2-Candle Retest")
+st.sidebar.text("Logic            : Support/Resistance Sweep + Green/Red Rebound")
 st.sidebar.text("Take profit        : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss          : ATR Managed")
 
@@ -317,7 +317,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTUltimateEngine:
+class TWTSweepEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -414,59 +414,69 @@ class TWTUltimateEngine:
           "is_within_1hr": is_within_1hr,
       })
 
-    # State tracking variables
-    res_wick_touched = False
-    res_inside_count = 0
-    res_ready_for_retest = False
-
-    sup_wick_touched = False
-    sup_inside_count = 0
-    sup_ready_for_retest = False
-
-    signal_given = False
+    cooldown = 0
 
     for i in range(5, len(self.candles)):
+      if cooldown > 0:
+        cooldown -= 1
+        continue
+
       c = self.candles[i]
       if time(1, 0) <= c["dt_ist"].time() <= time(6, 0):
         continue
 
       atr = c["atr"]
       dec = get_decimals(c["close"])
+      prev_c = self.candles[i - 1]
 
-      # --- SHORT LOGIC (RESISTANCE) ---
-      # 1. Seller upper wick touches resistance
-      if c["high"] >= self.resistance_lvl - (0.4 * atr):
-        res_wick_touched = True
+      # --- SUPPORT SWEEP / DEMAND ZONE REBOUND (BUY) ---
+      # Price dipped below support (sweep / fakeout) and formed a strong Green candle closing upwards
+      support_sweep = (prev_c["low"] < self.support_lvl) or (
+          c["low"] <= self.support_lvl
+      )
+      green_rebound = (c["color"] == "Green") and (c["close"] > c["open"])
 
-      # 2. Price crosses resistance and at least 2 red candles close inside/below resistance
-      if (
-          res_wick_touched
-          and c["close"] < self.resistance_lvl
-          and c["color"] == "Red"
-      ):
-        res_inside_count += 1
-        if res_inside_count >= 2:
-          res_ready_for_retest = True
+      if support_sweep and green_rebound:
+        sl = round(c["low"] - (1.2 * atr), dec)
+        tp1 = round(c["close"] + (1.2 * atr), dec)
+        tp2 = round(c["close"] + (2.5 * atr), dec)
+        tp3 = round(c["close"] + (4.0 * atr), dec)
 
-      # 3. Retest pullback (weak green candle) -> SHORT ENTRY
-      if (
-          res_ready_for_retest
-          and not signal_given
-          and c["color"] == "Green"
-          and c["high"] >= self.resistance_lvl - (0.8 * atr)
-      ):
-        signal_given = True
+        self.signals.append({
+            "Asset": self.symbol,
+            "Time": c["time"],
+            "Candle #": c["id"],
+            "Setup": "Support Sweep & Rebound Long",
+            "Action": "Buy / Long (B) [Sweep Rebound] 🟢",
+            "Entry Price": round(c["close"], dec),
+            "Stop Loss (SL)": sl,
+            "TP 1": tp1,
+            "TP 2": tp2,
+            "TP 3": tp3,
+            "Is_Within_1hr": c["is_within_1hr"],
+        })
+        cooldown = 6
+        continue
+
+      # --- RESISTANCE SWEEP / SUPPLY ZONE REJECTION (SELL) ---
+      # Price poked above resistance (sweep) and formed a strong Red candle closing downwards
+      resistance_sweep = (prev_c["high"] > self.resistance_lvl) or (
+          c["high"] >= self.resistance_lvl
+      )
+      red_rejection = (c["color"] == "Red") and (c["close"] < c["open"])
+
+      if resistance_sweep and red_rejection:
         sl = round(c["high"] + (1.2 * atr), dec)
-        tp1 = round(c["close"] - (1.0 * atr), dec)
-        tp2 = round(c["close"] - (2.2 * atr), dec)
+        tp1 = round(c["close"] - (1.2 * atr), dec)
+        tp2 = round(c["close"] - (2.5 * atr), dec)
         tp3 = round(c["close"] - (3.8 * atr), dec)
 
         self.signals.append({
             "Asset": self.symbol,
             "Time": c["time"],
             "Candle #": c["id"],
-            "Setup": "Resistance Wick + 2-Candle Retest Short",
-            "Action": "Sell / Short (S) [Confirmed Retest] 🔴",
+            "Setup": "Resistance Sweep & Rejection Short",
+            "Action": "Sell / Short (S) [Sweep Rejection] 🔴",
             "Entry Price": round(c["close"], dec),
             "Stop Loss (SL)": sl,
             "TP 1": tp1,
@@ -474,48 +484,8 @@ class TWTUltimateEngine:
             "TP 3": tp3,
             "Is_Within_1hr": c["is_within_1hr"],
         })
-
-      # --- LONG LOGIC (SUPPORT) ---
-      # 1. Buyer lower wick touches support
-      if c["low"] <= self.support_lvl + (0.4 * atr):
-        sup_wick_touched = True
-
-      # 2. Price crosses support and at least 2 green candles close above support
-      if (
-          sup_wick_touched
-          and c["close"] > self.support_lvl
-          and c["color"] == "Green"
-      ):
-        sup_inside_count += 1
-        if sup_inside_count >= 2:
-          sup_ready_for_retest = True
-
-      # 3. Retest pullback (weak red candle) -> LONG ENTRY
-      if (
-          sup_ready_for_retest
-          and not signal_given
-          and c["color"] == "Red"
-          and c["low"] <= self.support_lvl + (0.8 * atr)
-      ):
-        signal_given = True
-        sl = round(c["low"] - (1.2 * atr), dec)
-        tp1 = round(c["close"] + (1.0 * atr), dec)
-        tp2 = round(c["close"] + (2.2 * atr), dec)
-        tp3 = round(c["close"] + (3.8 * atr), dec)
-
-        self.signals.append({
-            "Asset": self.symbol,
-            "Time": c["time"],
-            "Candle #": c["id"],
-            "Setup": "Support Wick + 2-Candle Retest Long",
-            "Action": "Buy / Long (B) [Confirmed Retest] 🟢",
-            "Entry Price": round(c["close"], dec),
-            "Stop Loss (SL)": sl,
-            "TP 1": tp1,
-            "TP 2": tp2,
-            "TP 3": tp3,
-            "Is_Within_1hr": c["is_within_1hr"],
-        })
+        cooldown = 6
+        continue
 
 
 # ---------------------------------------------------------
@@ -531,7 +501,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTUltimateEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTSweepEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -539,7 +509,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets for ultimate wick retest setups..."):
+with st.spinner("⚡ Scanning all 20 assets for sweep & rebound setups..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -552,15 +522,14 @@ with st.spinner("⚡ Scanning all 20 assets for ultimate wick retest setups...")
         master_signals.append(latest)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} active ultimate setup(s)!")
+  st.success(f"✅ Found {len(master_signals)} active sweep setup(s)!")
   df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
   st.info(
-      "ℹ️ No active ultimate signals in the last 1 hour. Waiting for wick touch"
-      " & 2-candle retest..."
+      "ℹ️ No active sweep signals in the last 1 hour. Waiting for support/resistance sweep..."
   )
 
 # ---------------------------------------------------------
@@ -579,7 +548,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTUltimateEngine(df_5, df_4, df_6, selected_symbol, active_tz)
+  bot = TWTSweepEngine(df_5, df_4, df_6, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -595,7 +564,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Ultimate Active")
+    st.metric(label="Timezone", value=tz_short, delta="Sweep Engine Active")
 
   if bot.signals:
     latest_sig = bot.signals[-1]
@@ -607,33 +576,33 @@ if bot.df_5 is not None and not bot.df_5.empty:
 
     if is_buy:
       st.success(
-          f"🟢 **TWT ULTIMATE SETUP: {latest_sig['Action']}**\n\n"
+          f"🟢 **TWT SWEEP SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Support wick touch -> 2 Candles above -> Retest"
-          " pullback -> Buyer confirmed!"
+          "📌 *Instructions:* Support zone dip/sweep -> Green reversal candle"
+          " confirmed!"
       )
     else:
       st.error(
-          f"🔴 **TWT ULTIMATE SETUP: {latest_sig['Action']}**\n\n"
+          f"🔴 **TWT SWEEP SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Resistance wick touch -> 2 Candles inside -> Retest"
-          " pullback -> Seller confirmed!"
+          "📌 *Instructions:* Resistance zone spike/sweep -> Red rejection"
+          " candle confirmed!"
       )
   else:
     st.warning(
-        "🟡 **STATUS: WAITING FOR WICK TOUCH & 2-CANDLE RETEST**\n\n"
-        "📌 *Instructions:* Monitoring wick touches and multi-candle"
-        " confirmations."
+        "🟡 **STATUS: WAITING FOR SUPPORT/RESISTANCE SWEEP**\n\n"
+        "📌 *Instructions:* Monitoring zone dips and sweeps for instant rebound"
+        " entries."
     )
 
   # Complete Signal History
@@ -721,8 +690,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Ultimate Engine"
-      f" ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Sweep Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
