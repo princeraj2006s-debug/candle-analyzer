@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Multi-Pullback Wave & MTF Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Zone-Locked Multi-Pullback Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -84,16 +84,16 @@ server_time_target = datetime.now(active_tz)
 st.sidebar.text(
     f"Server time          ———  {server_time_target.strftime('%H:%M')}"
 )
-st.sidebar.text("Support Ref (6H)   ———  05:30 IST Candle Low")
-st.sidebar.text("Resistance Ref (4H) ———  01:30 IST Candle High")
+st.sidebar.text("Support Ref (6H)   ———  05:30 IST Candle Low (Buy Only)")
+st.sidebar.text("Resistance Ref (4H) ———  01:30 IST Candle High (Sell Only)")
 st.sidebar.text("No-Trade Zone      ———  01:00 ➔ 06:00 IST")
 st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
-st.sidebar.text("Logic            : Multi-Pullback Wave (Skip 1st, Trade 2nd/3rd)")
-st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
-st.sidebar.text("Stop loss        : ATR Managed")
+st.sidebar.text("Support Zone     : ONLY BUY (Long Setup)")
+st.sidebar.text("Resistance Zone  : ONLY SELL (Short Setup)")
+st.sidebar.text("Wave Logic       : Skip 1st Pullback, Trade 2nd/3rd Wave")
 
 
 def get_decimals(price):
@@ -118,7 +118,6 @@ def calculate_indicators(df):
   df["EMA_Fast"] = df["Close"].ewm(span=9, adjust=False).mean()
   df["EMA_Slow"] = df["Close"].ewm(span=21, adjust=False).mean()
   
-  # G-Channel
   df["G_Mid"] = df["Close"].ewm(span=20, adjust=False).mean()
   df["G_Upper"] = df["G_Mid"] + (df["ATR"] * 1.5)
   df["G_Lower"] = df["G_Mid"] - (df["ATR"] * 1.5)
@@ -184,7 +183,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None, None, None
 
 
-class TWTMultiPullbackEngine:
+class TWTZoneLockedEngine:
 
   def __init__(self, df_5, df_15, df_1h, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -260,7 +259,7 @@ class TWTMultiPullbackEngine:
       })
 
     # =========================================================
-    # MULTI-PULLBACK WAVE DETECTION & ENTRY LOGIC
+    # ZONE-LOCKED MULTI-PULLBACK WAVE ENGINE
     # =========================================================
     signal_given = False
 
@@ -272,24 +271,22 @@ class TWTMultiPullbackEngine:
       atr = c["ATR"] if "ATR" in c else c["atr"]
       dec = get_decimals(c["close"])
 
-      # --- BUY / LONG WAVE SETUP (Skipping 1st Pullback, Targeting 2nd or 3rd Wave) ---
-      if c["close"] >= self.support_lvl:
-        # Detect pullback waves by looking at local lows in the recent window
+      # --- ZONE 1: SUPPORT ZONE (ONLY BUY / LONG) ---
+      # Price must be in lower half / near support
+      if c["close"] >= self.support_lvl and c["close"] < (self.support_lvl + (self.resistance_lvl - self.support_lvl) * 0.4):
         recent_window = self.candles[i - 25:i]
         
-        # Count how many pullback waves occurred (valleys near support)
         valleys = []
         for j in range(1, len(recent_window) - 1):
           if recent_window[j]["low"] < recent_window[j-1]["low"] and recent_window[j]["low"] < recent_window[j+1]["low"]:
             valleys.append(recent_window[j])
 
-        # We need at least 2 or 3 pullback waves (Skipping the 1st raw dip)
+        # Skip 1st pullback wave, target 2nd or 3rd wave near support bounce
         if len(valleys) >= 2 and not signal_given and mtf_bullish:
           prev_c = self.candles[i - 1]
           
-          # 2nd or 3rd Pullback confirmation: Sellers failing to cross lower wick, upper wick forming, buyer green candle breaking previous high
           buyers_showing_strength = (c["color"] == "Green") and (c["close"] > prev_c["high"]) and (c["close"] > c["open"])
-          seller_momentum_fading = prev_c["low"] >= valleys[-1]["low"]  # Not making lower low
+          seller_momentum_fading = prev_c["low"] >= valleys[-1]["low"]
 
           if buyers_showing_strength and seller_momentum_fading:
             signal_given = True
@@ -303,7 +300,7 @@ class TWTMultiPullbackEngine:
                 "Asset": self.symbol,
                 "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": f"Wave {wave_num} Pullback Long (Confirmed)",
+                "Setup": f"Support Zone | Wave {wave_num} Pullback Long",
                 "Action": f"Buy / Long (B) [Wave {wave_num}] 🟢",
                 "Entry Price": round(c["close"], dec),
                 "Stop Loss (SL)": sl,
@@ -313,8 +310,9 @@ class TWTMultiPullbackEngine:
                 "Is_Within_1hr": c["is_within_1hr"],
             })
 
-      # --- SELL / SHORT WAVE SETUP (Skipping 1st Pullback, Targeting 2nd or 3rd Wave) ---
-      if c["close"] <= self.resistance_lvl:
+      # --- ZONE 2: RESISTANCE ZONE (ONLY SELL / SHORT) ---
+      # Price must be below resistance level
+      if c["close"] <= self.resistance_lvl and c["close"] > (self.resistance_lvl - (self.resistance_lvl - self.support_lvl) * 0.4):
         recent_window = self.candles[i - 25:i]
         
         peaks = []
@@ -322,11 +320,12 @@ class TWTMultiPullbackEngine:
           if recent_window[j]["high"] > recent_window[j-1]["high"] and recent_window[j]["high"] > recent_window[j+1]["high"]:
             peaks.append(recent_window[j])
 
+        # Skip 1st pullback wave, target 2nd or 3rd wave near resistance rejection
         if len(peaks) >= 2 and not signal_given and mtf_bearish:
           prev_c = self.candles[i - 1]
           
           sellers_showing_strength = (c["color"] == "Red") and (c["close"] < prev_c["low"]) and (c["close"] < c["open"])
-          buyer_momentum_fading = prev_c["high"] <= peaks[-1]["high"]  # Not making higher high
+          buyer_momentum_fading = prev_c["high"] <= peaks[-1]["high"]
 
           if sellers_showing_strength and buyer_momentum_fading:
             signal_given = True
@@ -340,7 +339,7 @@ class TWTMultiPullbackEngine:
                 "Asset": self.symbol,
                 "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": f"Wave {wave_num} Pullback Short (Confirmed)",
+                "Setup": f"Resistance Zone | Wave {wave_num} Pullback Short",
                 "Action": f"Sell / Short (S) [Wave {wave_num}] 🔴",
                 "Entry Price": round(c["close"], dec),
                 "Stop Loss (SL)": sl,
@@ -364,7 +363,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_15, df_1h, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTMultiPullbackEngine(df_5, df_15, df_1h, df_4, df_6, sym, active_tz)
+    engine = TWTZoneLockedEngine(df_5, df_15, df_1h, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -372,7 +371,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets with Multi-Pullback Wave logic..."):
+with st.spinner("⚡ Scanning all 20 assets with Zone-Locked rules..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -385,19 +384,19 @@ with st.spinner("⚡ Scanning all 20 assets with Multi-Pullback Wave logic..."):
         master_signals.append(latest)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} active multi-pullback setup(s)!")
+  st.success(f"✅ Found {len(master_signals)} active zone-locked setup(s)!")
   df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
   st.info(
-      "ℹ️ No active setups in the last 1 hour. Skipping 1st pullback wave,"
-      " waiting for 2nd/3rd wave confirmation..."
+      "ℹ️ No active setups in the last 1 hour. Waiting for precise zone"
+      " validation & 2nd/3rd wave pullback..."
   )
 
 # ---------------------------------------------------------
-# MANUAL ASSET SELECTOR & CHART VIEWER (With Entry History)
+# MANUAL ASSET SELECTOR & CHART VIEWER
 # ---------------------------------------------------------
 st.markdown("---")
 st.subheader("📊 Manual Asset Inspector & Chart")
@@ -412,7 +411,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_15, df_1h, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTMultiPullbackEngine(df_5, df_15, df_1h, df_4, df_6, selected_symbol, active_tz)
+  bot = TWTZoneLockedEngine(df_5, df_15, df_1h, df_4, df_6, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -428,7 +427,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Wave Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Zone Engine Active")
 
   recent_signals = [s for s in bot.signals if s.get("Is_Within_1hr", False)]
 
@@ -442,33 +441,33 @@ if bot.df_5 is not None and not bot.df_5.empty:
 
     if is_buy:
       st.success(
-          f"🟢 **TWT WAVE SETUP: {latest_sig['Action']}**\n\n"
+          f"🟢 **TWT ZONE SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* 1st pullback skipped -> 2nd/3rd Wave pullback +"
-          " MTF Trend + Momentum Confirmed!"
+          "📌 *Instructions:* Support Zone Buy Setup -> 2nd/3rd Wave pullback +"
+          " Momentum confirmed!"
       )
     else:
       st.error(
-          f"🔴 **TWT WAVE SETUP: {latest_sig['Action']}**\n\n"
+          f"🔴 **TWT ZONE SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* 1st pullback skipped -> 2nd/3rd Wave pullback +"
-          " MTF Trend + Momentum Confirmed!"
+          "📌 *Instructions:* Resistance Zone Sell Setup -> 2nd/3rd Wave"
+          " pullback + Momentum confirmed!"
       )
   else:
     st.warning(
-        "🟡 **STATUS: WAITING FOR 2nd/3rd WAVE PULLBACK CONFIRMATION**\n\n"
-        "📌 *Instructions:* Skipping 1st wave dip. Monitoring subsequent"
-        " pullback waves and wicks."
+        "🟡 **STATUS: WAITING FOR ZONE VALIDATION & WAVE PULLBACK**\n\n"
+        "📌 *Instructions:* Support = Buy only, Resistance = Sell only. Waiting"
+        " for 2nd/3rd wave."
     )
 
   # Complete Signal History (All past entries shown clearly)
@@ -586,8 +585,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Multi-Pullback Engine"
-      f" ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Zone Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
