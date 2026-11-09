@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Robust 7-Red Single-Entry Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Pullback Breakout Single-Entry Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -92,8 +92,8 @@ st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
 st.sidebar.text(
-    "Logic            : Support Breakdown -> 7 Red Count -> Green Rebound Entry"
-    " (1-Time)"
+    "Logic            : 7 Red -> 1st Green -> 2 Red Pullback -> Green Crosses"
+    " Level (1-Time)"
 )
 st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss        : ATR Managed")
@@ -163,7 +163,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTRobustEngine:
+class TWTPullbackSingleEntryEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -261,13 +261,16 @@ class TWTRobustEngine:
           "is_within_1hr": is_within_1hr,
       })
 
-    # Robust State Machine:
-    # State 0: Waiting for breakdown below support
-    # State 1: Counting 7 red candles below support
-    # State 2: Ready for Green Rebound Entry (1-Time Only)
-    # State 3: Permanently Locked for this cycle
+    # State Machine:
+    # 0 = Waiting for breakdown & 7 red candles
+    # 1 = Waiting for 1st Green candle after 7 reds (sets ref_green_high)
+    # 2 = Waiting for 2 Red pullback candles
+    # 3 = Waiting for Green candle to cross ref_green_high -> ENTRY (Strictly 1-Time)
+    # 4 = Permanently Locked for this cycle
     state = 0
     red_count = 0
+    ref_green_high = 0.0
+    pullback_reds = 0
 
     for i in range(len(self.candles)):
       c = self.candles[i]
@@ -277,32 +280,47 @@ class TWTRobustEngine:
       atr = c["atr"]
       dec = get_decimals(c["close"])
 
-      # If price goes back above support level, reset state for a fresh cycle
+      # If price goes back above support, reset cycle completely
       if c["close"] >= self.support_lvl:
         state = 0
         red_count = 0
+        ref_green_high = 0.0
+        pullback_reds = 0
         continue
 
-      # If already traded (State 3), ignore until price resets above support
-      if state == 3:
-        continue
+      if state == 4:
+        continue  # Permanently locked for this support cycle
 
       if c["close"] < self.support_lvl:
-        if state == 0 and c["color"] == "Red":
-          state = 1
-          red_count = 1
-          self.count_annotations.append((c["id"], red_count, c["high"]))
-        elif state == 1:
+        if state == 0:
           if c["color"] == "Red":
             red_count += 1
             self.count_annotations.append((c["id"], red_count, c["high"]))
             if red_count >= 7:
-              state = 2  # 7 reds reached, now ready for green rebound
-          elif c["color"] == "Green":
-            pass  # Ignore interim green candles during counting
-        elif state == 2:
-          # Immediate Green Rebound Entry after 7 red candles (Strictly 1-Time)
+              state = 1  # 7 reds done, now looking for 1st green candle
+        elif state == 1:
           if c["color"] == "Green":
+            ref_green_high = c[
+                "high"
+            ]  # Save level of the first green candle after 7 reds
+            pullback_reds = 0
+            state = 2  # Now wait for 2 red pullback candles
+          elif c["color"] == "Red":
+            pass  # Keep waiting for 1st green after 7 reds
+        elif state == 2:
+          if c["color"] == "Red":
+            pullback_reds += 1
+            if pullback_reds >= 2:
+              state = (
+                  3  # 2 red pullbacks completed, now wait for breaking green
+              )
+          elif c["color"] == "Green":
+            # If a new green appears before 2 reds, update reference high and reset pullback count
+            ref_green_high = c["high"]
+            pullback_reds = 0
+        elif state == 3:
+          if c["color"] == "Green" and c["close'] > ref_green_high:
+            # ENTRY TRIGGERED (Strictly 1-Time Only)
             sl = round(c["low"] - (1.2 * atr), dec)
             tp1 = round(c["close"] + (1.2 * atr), dec)
             tp2 = round(c["close"] + (2.5 * atr), dec)
@@ -312,8 +330,12 @@ class TWTRobustEngine:
                 "Asset": self.symbol,
                 "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": "7-Red Breakdown + Green Rebound",
-                "Action": "Buy / Long (B) [Robust Single-Entry] 🟢",
+                "Setup": (
+                    "7-Red -> 1st Green -> 2 Red Pullback -> Breakout Entry"
+                ),
+                "Action": (
+                    "Buy / Long (B) [Pullback Breakout Single-Entry] 🟢"
+                ),
                 "Entry Price": round(c["close"], dec),
                 "Stop Loss (SL)": sl,
                 "TP 1": tp1,
@@ -321,7 +343,7 @@ class TWTRobustEngine:
                 "TP 3": tp3,
                 "Is_Within_1hr": c["is_within_1hr"],
             })
-            state = 3  # LOCKED! No more entries for this support breakdown.
+            state = 4  # PERMANENT LOCK! No more entries for this support breakdown.
 
 
 # ---------------------------------------------------------
@@ -337,7 +359,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTRobustEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTPullbackSingleEntryEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -345,7 +367,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets for robust setups..."):
+with st.spinner("⚡ Scanning all 20 assets for pullback single-entry setups..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -365,8 +387,8 @@ if master_signals:
   st.dataframe(df_display, width="stretch")
 else:
   st.info(
-      "ℹ️ No active signals in the last 1 hour. Waiting for 7-red breakdown"
-      " setup..."
+      "ℹ️ No active signals in the last 1 hour. Waiting for 7-red + pullback"
+      " breakout sequence..."
   )
 
 # ---------------------------------------------------------
@@ -385,7 +407,9 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTRobustEngine(df_5, df_4, df_6, selected_symbol, active_tz)
+  bot = TWTPullbackSingleEntryEngine(
+      df_5, df_4, df_6, selected_symbol, active_tz
+  )
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -401,7 +425,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Robust Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Pullback Engine Active")
 
   if bot.signals:
     latest_sig = bot.signals[-1]
@@ -412,27 +436,28 @@ if bot.df_5 is not None and not bot.df_5.empty:
     st.warning("⚠️ **Don't use after 40 minutes!**")
 
     st.success(
-        f"🟢 **TWT ROBUST SETUP: {latest_sig['Action']}**\n\n"
+        f"🟢 **TWT PULLBACK BREAKOUT SETUP: {latest_sig['Action']}**\n\n"
         f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
-        f" #{latest_sig['Candle #']})[span_0](start_span)[span_0](end_span)[span_1](start_span)[span_1](end_span)\n"
+        f" #{latest_sig['Candle #']})\n"
         f"- **Entry Price:** `{entry_p}`\n"
         f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
         f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
         f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-        "📌 *Instructions:* Support broken -> 7 Red counted -> Green Rebound Entry"
-        " (Strictly 1-Time Verified)!"
+        "📌 *Instructions:* 7 Reds -> 1st Green -> 2 Red Pullbacks -> Breakout"
+        " Green Entry (Strictly 1-Time Verified)!"
     )
   else:
     st.warning(
-        "🟡 **STATUS: WAITING FOR SETUP**\n\n"
-        "📌 *Instructions:* Monitoring support breakdown and 7-red count."
+        "🟡 **STATUS: WAITING FOR PULLBACK SETUP**\n\n"
+        "📌 *Instructions:* Monitoring support breakdown, 7-red count, and"
+        " pullback breakout pattern."
     )
 
   # Complete Signal History
   if bot.signals:
     st.markdown("---")
     st.subheader(
-        f"📋 Complete Signal History for {selected_symbol} (Robust Engine)"
+        f"📋 Complete Signal History for {selected_symbol} (Pullback Engine)"
     )
     df_history = pd.DataFrame(bot.signals).drop(
         columns=["Is_Within_1hr"], errors="ignore"
@@ -527,7 +552,8 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Robust Engine ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Pullback Engine"
+      f" ({tz_short})",
       color="white",
       fontsize=14,
   )
