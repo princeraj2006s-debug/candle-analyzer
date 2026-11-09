@@ -218,7 +218,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Sequential Exhaustion Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Fresh Breakdown Sequential Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -248,7 +248,7 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
-st.sidebar.text("Logic            : 5-6 Red Breakdown + Strong Green Rebound")
+st.sidebar.text("Logic            : Fresh Support Cross -> 5-6 Red Count -> Green Rebound")
 st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss        : ATR Managed")
 
@@ -317,7 +317,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTSequentialEngine:
+class TWTFreshBreakdownEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -414,75 +414,63 @@ class TWTSequentialEngine:
           "is_within_1hr": is_within_1hr,
       })
 
+    # State tracking for fresh breakdown counting
+    breakdown_active = False
+    fresh_red_count = 0
     cooldown = 0
 
-    for i in range(7, len(self.candles)):
+    for i in range(1, len(self.candles)):
       if cooldown > 0:
         cooldown -= 1
         continue
 
       c = self.candles[i]
+      prev_c = self.candles[i - 1]
       if time(1, 0) <= c["dt_ist"].time() <= time(6, 0):
         continue
 
       atr = c["atr"]
       dec = get_decimals(c["close"])
 
-      # --- BUY / LONG SETUP (5-6 Red Breakdown + Strong Green Rebound) ---
-      # Check if price went below support and preceding 5 to 6 candles were predominantly Red (downward sequence)
-      recent_slice = self.candles[i - 7 : i]
-      below_support = any(x["low"] < self.support_lvl for x in recent_slice)
-      red_count = sum(1 for x in recent_slice[:-1] if x["color"] == "Red")
-
-      # If there were at least 5 red candles before this, and current candle is a strong Green reversal
-      if below_support and red_count >= 5 and c["color"] == "Green" and c["close"] > c["open"]:
-        sl = round(c["low"] - (1.2 * atr), dec)
-        tp1 = round(c["close"] + (1.2 * atr), dec)
-        tp2 = round(c["close"] + (2.5 * atr), dec)
-        tp3 = round(c["close"] + (4.0 * atr), dec)
-
-        self.signals.append({
-            "Asset": self.symbol,
-            "Time": c["time"],
-            "Candle #": c["id"],
-            "Setup": "5-6 Red Breakdown + Strong Green Rebound Long",
-            "Action": "Buy / Long (B) [Exhaustion Rebound] 🟢",
-            "Entry Price": round(c["close"], dec),
-            "Stop Loss (SL)": sl,
-            "TP 1": tp1,
-            "TP 2": tp2,
-            "TP 3": tp3,
-            "Is_Within_1hr": c["is_within_1hr"],
-        })
-        cooldown = 15  # Cooldown to prevent multiple entries in the same zone
+      # Step 1: Detect fresh support breakdown (price crosses below support level)
+      if prev_c["close'] >= self.support_lvl and c["close"] < self.support_lvl and c["color"] == "Red":
+        breakdown_active = True
+        fresh_red_count = 1  # Start counting fresh from here!
         continue
 
-      # --- SELL / SHORT SETUP (Resistance Rejection) ---
-      recent_slice_res = self.candles[i - 6 : i]
-      above_resistance = any(x["high"] >= self.resistance_lvl - (0.4 * atr) for x in recent_slice_res)
-      green_count = sum(1 for x in recent_slice_res[:-1] if x["color"] == "Green")
+      # Step 2: If breakdown is active, count ONLY fresh consecutive red candles below support
+      if breakdown_active:
+        if c["color"] == "Red" and c["close"] < self.support_lvl:
+          fresh_red_count += 1
+        elif c["color"] == "Green":
+          # If we reached 5 to 6 fresh red candles and now a Green reversal candle forms -> BUY ENTRY!
+          if 5 <= fresh_red_count <= 7:
+            sl = round(c["low"] - (1.2 * atr), dec)
+            tp1 = round(c["close"] + (1.2 * atr), dec)
+            tp2 = round(c["close"] + (2.5 * atr), dec)
+            tp3 = round(c["close"] + (4.0 * atr), dec)
 
-      if above_resistance and green_count >= 4 and c["color"] == "Red" and c["close"] < c["open"]:
-        sl = round(self.resistance_lvl + (1.2 * atr), dec)
-        tp1 = round(c["close"] - (1.2 * atr), dec)
-        tp2 = round(c["close"] - (2.5 * atr), dec)
-        tp3 = round(c["close"] - (3.8 * atr), dec)
-
-        self.signals.append({
-            "Asset": self.symbol,
-            "Time": c["time"],
-            "Candle #": c["id"],
-            "Setup": "Resistance Exhaustion Rejection Short",
-            "Action": "Sell / Short (S) [Exhaustion Rejection] 🔴",
-            "Entry Price": round(c["close"], dec),
-            "Stop Loss (SL)": sl,
-            "TP 1": tp1,
-            "TP 2": tp2,
-            "TP 3": tp3,
-            "Is_Within_1hr": c["is_within_1hr"],
-        })
-        cooldown = 15
-        continue
+            self.signals.append({
+                "Asset": self.symbol,
+                "Time": c["time"],
+                "Candle #": c["id"],
+                "Setup": "Fresh Support Breakdown + 5-6 Red Count Long",
+                "Action": "Buy / Long (B) [Fresh Rebound] 🟢",
+                "Entry Price": round(c["close"], dec),
+                "Stop Loss (SL)": sl,
+                "TP 1": tp1,
+                "TP 2": tp2,
+                "TP 3": tp3,
+                "Is_Within_1hr": c["is_within_1hr"],
+            })
+            breakdown_active = False
+            fresh_red_count = 0
+            cooldown = 20
+            continue
+          else:
+            # Reset if green came too early or too late
+            breakdown_active = False
+            fresh_red_count = 0
 
 
 # ---------------------------------------------------------
@@ -498,7 +486,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTSequentialEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTFreshBreakdownEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -506,7 +494,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets for sequential exhaustion setups..."):
+with st.spinner("⚡ Scanning all 20 assets for fresh breakdown setups..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -519,15 +507,15 @@ with st.spinner("⚡ Scanning all 20 assets for sequential exhaustion setups..."
         master_signals.append(latest)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} active sequential setup(s)!")
+  st.success(f"✅ Found {len(master_signals)} active fresh setup(s)!")
   df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
   st.info(
-      "ℹ️ No active sequential signals in the last 1 hour. Waiting for 5-6 red"
-      " candle breakdown sequence..."
+      "ℹ️ No active fresh breakdown signals in the last 1 hour. Waiting for"
+      " support cross & fresh red count..."
   )
 
 # ---------------------------------------------------------
@@ -546,7 +534,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTSequentialEngine(df_5, df_4, df_6, selected_symbol, active_tz)
+  bot = TWTFreshBreakdownEngine(df_5, df_4, df_6, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -562,7 +550,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Sequential Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Fresh Engine Active")
 
   if bot.signals:
     latest_sig = bot.signals[-1]
@@ -572,40 +560,29 @@ if bot.df_5 is not None and not bot.df_5.empty:
 
     st.warning("⚠️ **Don't use after 40 minutes!**")
 
-    if is_buy:
-      st.success(
-          f"🟢 **TWT SEQUENTIAL SETUP: {latest_sig['Action']}**\n\n"
-          f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
-          f" #{latest_sig['Candle #']})\n"
-          f"- **Entry Price:** `{entry_p}`\n"
-          f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
-          f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
-          f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* 5-6 Red candles breakdown -> Strong Green Rebound"
-          " confirmed!"
-      )
-    else:
-      st.error(
-          f"🔴 **TWT SEQUENTIAL SETUP: {latest_sig['Action']}**\n\n"
-          f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
-          f" #{latest_sig['Candle #']})\n"
-          f"- **Entry Price:** `{entry_p}`\n"
-          f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
-          f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
-          f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Exhaustion rejection near resistance confirmed!"
-      )
+    st.success(
+        f"🟢 **TWT FRESH SETUP: {latest_sig['Action']}**\n\n"
+        f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
+        f" #{latest_sig['Candle #']})\n"
+        f"- **Entry Price:** `{entry_p}`\n"
+        f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
+        f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
+        f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
+        "📌 *Instructions:* Support fresh cross -> 5-6 fresh red count -> Strong"
+        " Green Rebound!"
+    )
   else:
     st.warning(
-        "🟡 **STATUS: WAITING FOR SEQUENTIAL SETUP**\n\n"
-        "📌 *Instructions:* Monitoring support breakdown exhaustion sequences."
+        "🟡 **STATUS: WAITING FOR FRESH BREAKDOWN SETUP**\n\n"
+        "📌 *Instructions:* Monitoring support level for fresh cross and red"
+        " counting."
     )
 
   # Complete Signal History
   if bot.signals:
     st.markdown("---")
     st.subheader(
-        f"📋 Complete Signal History for {selected_symbol} (Exhaustion Engine)"
+        f"📋 Complete Signal History for {selected_symbol} (Fresh Engine)"
     )
     df_history = pd.DataFrame(bot.signals).drop(
         columns=["Is_Within_1hr"], errors="ignore"
@@ -686,7 +663,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Sequential Engine ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Fresh Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
