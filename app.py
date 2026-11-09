@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Dynamic Price Action & Wave Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Clean Wave & Trend Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -91,7 +91,7 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
-st.sidebar.text("Logic            : Multi-Pullback Wave + Candle Direction")
+st.sidebar.text("Logic            : Filtered Waves + Anti-Spam Cooldown")
 st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss        : ATR Managed")
 
@@ -173,7 +173,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTynamicEngine:
+class TWTCleanEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -193,7 +193,6 @@ class TWTynamicEngine:
     IST = timezone(timedelta(hours=5, minutes=30))
     current_utc_time = datetime.now(timezone.utc)
 
-    # Reference Levels
     if self.df_4 is not None and not self.df_4.empty:
       idx_utc = self.df_4.index.tz_localize("UTC") if self.df_4.index.tz is None else self.df_4.index
       df_4_ist = idx_utc.tz_convert(IST)
@@ -221,6 +220,8 @@ class TWTynamicEngine:
       r = row[1]
       o, h, l, c, v = float(r["Open"]), float(r["High"]), float(r["Low"]), float(r["Close"]), float(r["Volume"])
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
+      ema_fast = float(r["EMA_Fast"]) if not pd.isna(r["EMA_Fast"]) else c
+      ema_slow = float(r["EMA_Slow"]) if not pd.isna(r["EMA_Slow"]) else c
 
       age_minutes = (current_utc_time - dt_utc).total_seconds() / 60.0
       is_within_1hr = age_minutes <= 60.0
@@ -237,30 +238,41 @@ class TWTynamicEngine:
           "close": c,
           "volume": v,
           "atr": atr,
+          "ema_fast": ema_fast,
+          "ema_slow": ema_slow,
           "is_within_1hr": is_within_1hr,
       })
 
     # =========================================================
-    # DYNAMIC MULTI-PULLBACK WAVE & CANDLE DIRECTION ENGINE
+    # CLEAN WAVE & DIRECTION ENGINE WITH ANTI-SPAM COOLDOWN
     # =========================================================
+    cooldown = 0
+
     for i in range(20, len(self.candles)):
+      if cooldown > 0:
+        cooldown -= 1
+        continue
+
       c = self.candles[i]
       if time(1, 0) <= c["dt_ist"].time() <= time(6, 0):
         continue
 
-      atr = c["ATR"] if "ATR" in c else c["atr"]
+      atr = c["atr"]
       dec = get_decimals(c["close"])
       recent_window = self.candles[i - 20:i]
 
-      # --- 1. BUY / LONG SETUP (Dynamic Wave Pullback + Candle Direction) ---
+      # Trend bias from EMA
+      is_uptrend = c["ema_fast"] > c["ema_slow"]
+      is_downtrend = c["ema_fast"] < c["ema_slow"]
+
+      # --- 1. BUY / LONG SETUP ---
       valleys = []
       for j in range(1, len(recent_window) - 1):
         if recent_window[j]["low"] < recent_window[j-1]["low"] and recent_window[j]["low"] < recent_window[j+1]["low"]:
           valleys.append(recent_window[j])
 
-      if len(valleys) >= 2:
+      if len(valleys) >= 2 and is_uptrend:
         prev_c = self.candles[i - 1]
-        # Skip 1st pullback, check 2nd/3rd wave where buyers bounce and break previous high
         buyers_active = (c["color"] == "Green") and (c["close"] > prev_c["high"]) and (c["close"] > c["open"])
         seller_fading = prev_c["low"] >= valleys[-1]["low"]
 
@@ -275,7 +287,7 @@ class TWTynamicEngine:
               "Asset": self.symbol,
               "Time": c["time"],
               "Candle #": c["id"],
-              "Setup": f"Wave {wave_num} Pullback Buy Setup",
+              "Setup": f"Wave {wave_num} Pullback Buy",
               "Action": f"Buy / Long (B) [Wave {wave_num}] 🟢",
               "Entry Price": round(c["close"], dec),
               "Stop Loss (SL)": sl,
@@ -284,17 +296,17 @@ class TWTynamicEngine:
               "TP 3": tp3,
               "Is_Within_1hr": c["is_within_1hr"],
           })
-          continue  # Prevent overlapping duplicate triggers on same candle
+          cooldown = 12  # Prevent spamming signals back-to-back
+          continue
 
-      # --- 2. SELL / SHORT SETUP (Dynamic Wave Pullback + Candle Direction) ---
+      # --- 2. SELL / SHORT SETUP ---
       peaks = []
       for j in range(1, len(recent_window) - 1):
         if recent_window[j]["high"] > recent_window[j-1]["high"] and recent_window[j]["high"] > recent_window[j+1]["high"]:
           peaks.append(recent_window[j])
 
-      if len(peaks) >= 2:
+      if len(peaks) >= 2 and is_downtrend:
         prev_c = self.candles[i - 1]
-        # Skip 1st pullback, check 2nd/3rd wave where sellers reject and break previous low
         sellers_active = (c["color"] == "Red") and (c["close"] < prev_c["low"]) and (c["close"] < c["open"])
         buyer_fading = prev_c["high"] <= peaks[-1]["high"]
 
@@ -309,7 +321,7 @@ class TWTynamicEngine:
               "Asset": self.symbol,
               "Time": c["time"],
               "Candle #": c["id"],
-              "Setup": f"Wave {wave_num} Pullback Sell Setup",
+              "Setup": f"Wave {wave_num} Pullback Sell",
               "Action": f"Sell / Short (S) [Wave {wave_num}] 🔴",
               "Entry Price": round(c["close"], dec),
               "Stop Loss (SL)": sl,
@@ -318,6 +330,8 @@ class TWTynamicEngine:
               "TP 3": tp3,
               "Is_Within_1hr": c["is_within_1hr"],
           })
+          cooldown = 12  # Prevent spamming signals back-to-back
+          continue
 
 
 # ---------------------------------------------------------
@@ -333,7 +347,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTynamicEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTCleanEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -341,7 +355,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets with dynamic wave rules..."):
+with st.spinner("⚡ Scanning all 20 assets with clean wave rules..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -354,13 +368,13 @@ with st.spinner("⚡ Scanning all 20 assets with dynamic wave rules..."):
         master_signals.append(latest)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} active dynamic setup(s)!")
+  st.success(f"✅ Found {len(master_signals)} active clean setup(s)!")
   df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active setups in the last 1 hour. Waiting for wave pullback confirmation...")
+  st.info("ℹ️ No active setups in the last 1 hour. Waiting for clean wave setup...")
 
 # ---------------------------------------------------------
 # MANUAL ASSET SELECTOR & CHART VIEWER
@@ -378,7 +392,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTynamicEngine(df_5, df_4, df_6, selected_symbol, active_tz)
+  bot = TWTCleanEngine(df_5, df_4, df_6, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -392,7 +406,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Dynamic Active")
+    st.metric(label="Timezone", value=tz_short, delta="Clean Engine Active")
 
   recent_signals = [s for s in bot.signals if s.get("Is_Within_1hr", False)]
 
@@ -406,33 +420,32 @@ if bot.df_5 is not None and not bot.df_5.empty:
 
     if is_buy:
       st.success(
-          f"🟢 **TWT DYNAMIC SETUP: {latest_sig['Action']}**\n\n"
+          f"🟢 **TWT SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Wave Pullback + Candle Direction Confirmed!"
+          "📌 *Instructions:* Clean Wave Pullback + Trend Confirmed!"
       )
     else:
       st.error(
-          f"🔴 **TWT DYNAMIC SETUP: {latest_sig['Action']}**\n\n"
+          f"🔴 **TWT SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Wave Pullback + Candle Direction Confirmed!"
+          "📌 *Instructions:* Clean Wave Pullback + Trend Confirmed!"
       )
   else:
     st.warning(
-        "🟡 **STATUS: WAITING FOR WAVE PULLBACK CONFIRMATION**\n\n"
-        "📌 *Instructions:* Monitoring multi-pullback waves across price action."
+        "🟡 **STATUS: WAITING FOR CLEAN WAVE SETUP**\n\n"
+        "📌 *Instructions:* Monitoring filtered trend waves."
     )
 
-  # Complete Signal History (All past entries shown clearly)
   if bot.signals:
     st.markdown("---")
     st.subheader(
@@ -443,7 +456,6 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
     st.dataframe(df_history, width="stretch")
 
-  # Chart Rendering with Historical Entries & G-Channel
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
   for c in bot.candles:
     col = "#26a69a" if c["color"] == "Green" else "#ef5350"
@@ -533,7 +545,6 @@ if bot.df_5 is not None and not bot.df_5.empty:
       margin = curr_p * 0.005
     ax.set_ylim(min(lows) - margin, max(highs) + margin)
 
-  # Plot all historical signal tags on the chart
   for sig in bot.signals:
     tag = "B" if "Buy" in sig["Action"] else "S"
     tag_color = "#00e676" if tag == "B" else "#ff1744"
@@ -547,7 +558,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Dynamic Engine ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Clean Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
