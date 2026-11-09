@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Precision Pullback & MTF Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Multi-Pullback Wave & MTF Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -91,7 +91,7 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
-st.sidebar.text("Logic            : True Swing Pullback + MTF Confirmation")
+st.sidebar.text("Logic            : Multi-Pullback Wave (Skip 1st, Trade 2nd/3rd)")
 st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss        : ATR Managed")
 
@@ -106,7 +106,6 @@ def get_decimals(price):
 
 
 def calculate_indicators(df):
-  """Calculates G-Channel, EMA filters and Momentum strength metrics."""
   df = df.copy()
   df["TR"] = np.maximum(
       df["High"] - df["Low"],
@@ -146,15 +145,24 @@ def fetch_twt_delta_data(symbol, tf):
       exchange.load_markets()
       for sym in symbol_variants:
         if sym in exchange.markets:
-          ohlcv_tf = exchange.fetch_ohlcv(sym, timeframe=tf, limit=120)
+          ohlcv_tf = exchange.fetch_ohlcv(sym, timeframe=tf, limit=140)
+          ohlcv_15m = exchange.fetch_ohlcv(sym, timeframe="15m", limit=60)
+          ohlcv_1h = exchange.fetch_ohlcv(sym, timeframe="1h", limit=50)
           ohlcv_4h = exchange.fetch_ohlcv(sym, timeframe="4h", limit=25)
           ohlcv_6h = exchange.fetch_ohlcv(sym, timeframe="6h", limit=25)
-          ohlcv_15m = exchange.fetch_ohlcv(sym, timeframe="15m", limit=50)
 
           if ohlcv_tf and ohlcv_4h:
             df_5 = pd.DataFrame(ohlcv_tf, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
             df_5["timestamp"] = pd.to_datetime(df_5["timestamp"], unit="ms")
             df_5 = df_5.set_index("timestamp")
+
+            df_15 = pd.DataFrame(ohlcv_15m, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"]) if ohlcv_15m else df_5.copy()
+            df_15["timestamp"] = pd.to_datetime(df_15["timestamp"], unit="ms")
+            df_15 = df_15.set_index("timestamp")
+
+            df_1h = pd.DataFrame(ohlcv_1h, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"]) if ohlcv_1h else df_5.copy()
+            df_1h["timestamp"] = pd.to_datetime(df_1h["timestamp"], unit="ms")
+            df_1h = df_1h.set_index("timestamp")
 
             df_4 = pd.DataFrame(ohlcv_4h, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
             df_4["timestamp"] = pd.to_datetime(df_4["timestamp"], unit="ms")
@@ -164,31 +172,26 @@ def fetch_twt_delta_data(symbol, tf):
             df_6["timestamp"] = pd.to_datetime(df_6["timestamp"], unit="ms")
             df_6 = df_6.set_index("timestamp")
 
-            df_15 = pd.DataFrame(ohlcv_15m, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"]) if ohlcv_15m else df_5.copy()
-            df_15["timestamp"] = pd.to_datetime(df_15["timestamp"], unit="ms")
-            df_15 = df_15.set_index("timestamp")
-
             if symbol == "XAUT/USDT":
               gold_mult = 1.0025
-              for col in ["Open", "High", "Low", "Close"]:
-                df_5[col] *= gold_mult
-                df_4[col] *= gold_mult
-                df_6[col] *= gold_mult
-                df_15[col] *= gold_mult
+              for d in [df_5, df_15, df_1h, df_4, df_6]:
+                for col in ["Open", "High", "Low", "Close"]:
+                  d[col] *= gold_mult
 
-            return df_5, df_4, df_6, df_15
+            return df_5, df_15, df_1h, df_4, df_6
     except Exception:
       continue
-  return None, None, None, None
+  return None, None, None, None, None
 
 
-class TWTPrecisionEngine:
+class TWTMultiPullbackEngine:
 
-  def __init__(self, df_5, df_4, df_6, df_15, symbol, user_tz):
+  def __init__(self, df_5, df_15, df_1h, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
+    self.df_15 = df_15
+    self.df_1h = df_1h
     self.df_4 = df_4
     self.df_6 = df_6
-    self.df_15 = df_15
     self.symbol = symbol
     self.user_tz = user_tz
     self.candles = []
@@ -203,7 +206,7 @@ class TWTPrecisionEngine:
     IST = timezone(timedelta(hours=5, minutes=30))
     current_utc_time = datetime.now(timezone.utc)
 
-    # 1. Key Levels from Higher Timeframes
+    # Key Levels from 4H and 6H
     if self.df_4 is not None and not self.df_4.empty:
       idx_utc = self.df_4.index.tz_localize("UTC") if self.df_4.index.tz is None else self.df_4.index
       df_4_ist = idx_utc.tz_convert(IST)
@@ -218,12 +221,13 @@ class TWTPrecisionEngine:
     elif self.df_4 is not None:
       self.support_lvl = float(self.df_4["Low"].iloc[-1])
 
-    # 2. Indicators & MTF Trend Direction
+    # Indicators & MTF Analysis
     self.df_5 = calculate_indicators(self.df_5)
     self.df_15 = calculate_indicators(self.df_15)
-    
-    mtf_trend_bullish = self.df_15["Close"].iloc[-1] > self.df_15["EMA_Slow"].iloc[-1]
-    mtf_trend_bearish = self.df_15["Close"].iloc[-1] < self.df_15["EMA_Slow"].iloc[-1]
+    self.df_1h = calculate_indicators(self.df_1h)
+
+    mtf_bullish = (self.df_15["Close"].iloc[-1] > self.df_15["EMA_Slow"].iloc[-1]) and (self.df_1h["Close"].iloc[-1] > self.df_1h["EMA_Slow"].iloc[-1])
+    mtf_bearish = (self.df_15["Close"].iloc[-1] < self.df_15["EMA_Slow"].iloc[-1]) and (self.df_1h["Close"].iloc[-1] < self.df_1h["EMA_Slow"].iloc[-1])
 
     for idx, row in enumerate(self.df_5.iterrows()):
       dt_utc = row[0]
@@ -236,7 +240,6 @@ class TWTPrecisionEngine:
       r = row[1]
       o, h, l, c, v = float(r["Open"]), float(r["High"]), float(r["Low"]), float(r["Close"]), float(r["Volume"])
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
-      ema_fast = float(r["EMA_Fast"]) if not pd.isna(r["EMA_Fast"]) else c
 
       age_minutes = (current_utc_time - dt_utc).total_seconds() / 60.0
       is_within_1hr = age_minutes <= 60.0
@@ -253,47 +256,45 @@ class TWTPrecisionEngine:
           "close": c,
           "volume": v,
           "atr": atr,
-          "ema_fast": ema_fast,
           "is_within_1hr": is_within_1hr,
       })
 
     # =========================================================
-    # STRICT TRUE SWING / 50% PULLBACK + MTF CONFIRMATION ENGINE
+    # MULTI-PULLBACK WAVE DETECTION & ENTRY LOGIC
     # =========================================================
     signal_given = False
 
-    for i in range(12, len(self.candles)):
+    for i in range(20, len(self.candles)):
       c = self.candles[i]
       if time(1, 0) <= c["dt_ist"].time() <= time(6, 0):
         continue
 
-      atr = c["atr"]
+      atr = c["ATR"] if "ATR" in c else c["atr"]
       dec = get_decimals(c["close"])
 
-      # --- BUY / LONG SETUP ---
-      # Price must respect Support Zone (above 6H Support)
+      # --- BUY / LONG WAVE SETUP (Skipping 1st Pullback, Targeting 2nd or 3rd Wave) ---
       if c["close"] >= self.support_lvl:
-        # Identify true swing low in recent 15 candles where price bounced
-        recent_window = self.candles[i - 15:i]
-        swing_lows = [candle["low"] for candle in recent_window]
-        true_support_level = min(swing_lows) if swing_lows else self.support_lvl
+        # Detect pullback waves by looking at local lows in the recent window
+        recent_window = self.candles[i - 25:i]
+        
+        # Count how many pullback waves occurred (valleys near support)
+        valleys = []
+        for j in range(1, len(recent_window) - 1):
+          if recent_window[j]["low"] < recent_window[j-1]["low"] and recent_window[j]["low"] < recent_window[j+1]["low"]:
+            valleys.append(recent_window[j])
 
-        # Check if price pulled back precisely to the swing low area OR within its 50% retracement boundary
-        pulled_back_to_level = (c["low"] <= true_support_level + (0.5 * atr)) or (c["low"] <= self.support_lvl + (1.2 * atr))
-
-        if pulled_back_to_level and not signal_given and mtf_trend_bullish:
+        # We need at least 2 or 3 pullback waves (Skipping the 1st raw dip)
+        if len(valleys) >= 2 and not signal_given and mtf_bullish:
           prev_c = self.candles[i - 1]
-          prev_prev_c = self.candles[i - 2]
           
-          # Strong Confirmation Candle check: Current candle is Green, body is strong, and crosses previous candle high
-          body_size = abs(c["close"] - c["open"])
-          avg_body = np.mean([abs(x["close"] - x["open"]) for x in recent_window])
-          
-          is_strong_green = (c["color"] == "Green") and (c["close"] > prev_c["high"]) and (body_size >= 0.7 * avg_body)
+          # 2nd or 3rd Pullback confirmation: Sellers failing to cross lower wick, upper wick forming, buyer green candle breaking previous high
+          buyers_showing_strength = (c["color"] == "Green") and (c["close"] > prev_c["high"]) and (c["close"] > c["open"])
+          seller_momentum_fading = prev_c["low"] >= valleys[-1]["low"]  # Not making lower low
 
-          if is_strong_green:
+          if buyers_showing_strength and seller_momentum_fading:
             signal_given = True
-            sl = round(true_support_level - (1.0 * atr), dec)
+            wave_num = len(valleys)
+            sl = round(valleys[-1]["low"] - (1.0 * atr), dec)
             tp1 = round(c["close"] + (1.2 * atr), dec)
             tp2 = round(c["close"] + (2.5 * atr), dec)
             tp3 = round(c["close"] + (4.0 * atr), dec)
@@ -302,8 +303,8 @@ class TWTPrecisionEngine:
                 "Asset": self.symbol,
                 "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": "True Swing Pullback + MTF Long",
-                "Action": "Buy / Long (B) [Strong Bounce] 🟢",
+                "Setup": f"Wave {wave_num} Pullback Long (Confirmed)",
+                "Action": f"Buy / Long (B) [Wave {wave_num}] 🟢",
                 "Entry Price": round(c["close"], dec),
                 "Stop Loss (SL)": sl,
                 "TP 1": tp1,
@@ -312,25 +313,25 @@ class TWTPrecisionEngine:
                 "Is_Within_1hr": c["is_within_1hr"],
             })
 
-      # --- SELL / SHORT SETUP ---
-      # Price must respect Resistance Zone (below 4H Resistance)
+      # --- SELL / SHORT WAVE SETUP (Skipping 1st Pullback, Targeting 2nd or 3rd Wave) ---
       if c["close"] <= self.resistance_lvl:
-        recent_window = self.candles[i - 15:i]
-        swing_highs = [candle["high"] for candle in recent_window]
-        true_resistance_level = max(swing_highs) if swing_highs else self.resistance_lvl
+        recent_window = self.candles[i - 25:i]
+        
+        peaks = []
+        for j in range(1, len(recent_window) - 1):
+          if recent_window[j]["high"] > recent_window[j-1]["high"] and recent_window[j]["high"] > recent_window[j+1]["high"]:
+            peaks.append(recent_window[j])
 
-        pulled_back_to_res = (c["high"] >= true_resistance_level - (0.5 * atr)) or (c["high"] >= self.resistance_lvl - (1.2 * atr))
-
-        if pulled_back_to_res and not signal_given and mtf_trend_bearish:
+        if len(peaks) >= 2 and not signal_given and mtf_bearish:
           prev_c = self.candles[i - 1]
-          body_size = abs(c["close"] - c["open"])
-          avg_body = np.mean([abs(x["close"] - x["open"]) for x in recent_window])
+          
+          sellers_showing_strength = (c["color"] == "Red") and (c["close"] < prev_c["low"]) and (c["close"] < c["open"])
+          buyer_momentum_fading = prev_c["high"] <= peaks[-1]["high"]  # Not making higher high
 
-          is_strong_red = (c["color"] == "Red") and (c["close"] < prev_c["low"]) and (body_size >= 0.7 * avg_body)
-
-          if is_strong_red:
+          if sellers_showing_strength and buyer_momentum_fading:
             signal_given = True
-            sl = round(true_resistance_level + (1.0 * atr), dec)
+            wave_num = len(peaks)
+            sl = round(peaks[-1]["high"] + (1.0 * atr), dec)
             tp1 = round(c["close"] - (1.2 * atr), dec)
             tp2 = round(c["close"] - (2.5 * atr), dec)
             tp3 = round(c["close"] - (4.0 * atr), dec)
@@ -339,8 +340,8 @@ class TWTPrecisionEngine:
                 "Asset": self.symbol,
                 "Time": c["time"],
                 "Candle #": c["id"],
-                "Setup": "True Swing Pullback + MTF Short",
-                "Action": "Sell / Short (S) [Strong Rejection] 🔴",
+                "Setup": f"Wave {wave_num} Pullback Short (Confirmed)",
+                "Action": f"Sell / Short (S) [Wave {wave_num}] 🔴",
                 "Entry Price": round(c["close"], dec),
                 "Stop Loss (SL)": sl,
                 "TP 1": tp1,
@@ -361,9 +362,9 @@ asset_engines = {}
 
 
 def scan_single_asset(sym):
-  df_5, df_4, df_6, df_15 = fetch_twt_delta_data(sym, selected_tf)
+  df_5, df_15, df_1h, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTPrecisionEngine(df_5, df_4, df_6, df_15, sym, active_tz)
+    engine = TWTMultiPullbackEngine(df_5, df_15, df_1h, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -371,7 +372,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets with precise swing pullback rules..."):
+with st.spinner("⚡ Scanning all 20 assets with Multi-Pullback Wave logic..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -384,19 +385,19 @@ with st.spinner("⚡ Scanning all 20 assets with precise swing pullback rules...
         master_signals.append(latest)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} active precision setup(s)!")
+  st.success(f"✅ Found {len(master_signals)} active multi-pullback setup(s)!")
   df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
   st.info(
-      "ℹ️ No active precision setups in the last 1 hour. Waiting for exact"
-      " swing pullback & strong confirmation..."
+      "ℹ️ No active setups in the last 1 hour. Skipping 1st pullback wave,"
+      " waiting for 2nd/3rd wave confirmation..."
   )
 
 # ---------------------------------------------------------
-# MANUAL ASSET SELECTOR & CHART VIEWER
+# MANUAL ASSET SELECTOR & CHART VIEWER (With Entry History)
 # ---------------------------------------------------------
 st.markdown("---")
 st.subheader("📊 Manual Asset Inspector & Chart")
@@ -410,8 +411,8 @@ selected_symbol = st.selectbox(
 if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
-  df_5, df_4, df_6, df_15 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTPrecisionEngine(df_5, df_4, df_6, df_15, selected_symbol, active_tz)
+  df_5, df_15, df_1h, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
+  bot = TWTMultiPullbackEngine(df_5, df_15, df_1h, df_4, df_6, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -427,7 +428,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Precision Active")
+    st.metric(label="Timezone", value=tz_short, delta="Wave Engine Active")
 
   recent_signals = [s for s in bot.signals if s.get("Is_Within_1hr", False)]
 
@@ -441,47 +442,47 @@ if bot.df_5 is not None and not bot.df_5.empty:
 
     if is_buy:
       st.success(
-          f"🟢 **TWT PRECISION SETUP: {latest_sig['Action']}**\n\n"
+          f"🟢 **TWT WAVE SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Precise swing pullback + MTF Trend + Strong"
-          " Candle Confirmation verified!"
+          "📌 *Instructions:* 1st pullback skipped -> 2nd/3rd Wave pullback +"
+          " MTF Trend + Momentum Confirmed!"
       )
     else:
       st.error(
-          f"🔴 **TWT PRECISION SETUP: {latest_sig['Action']}**\n\n"
+          f"🔴 **TWT WAVE SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Precise swing pullback + MTF Trend + Strong"
-          " Candle Confirmation verified!"
+          "📌 *Instructions:* 1st pullback skipped -> 2nd/3rd Wave pullback +"
+          " MTF Trend + Momentum Confirmed!"
       )
   else:
     st.warning(
-        "🟡 **STATUS: WAITING FOR TRUE SWING PULLBACK & CONFIRMATION**\n\n"
-        "📌 *Instructions:* Monitoring exact swing lows/highs and strong body"
-        " candles."
+        "🟡 **STATUS: WAITING FOR 2nd/3rd WAVE PULLBACK CONFIRMATION**\n\n"
+        "📌 *Instructions:* Skipping 1st wave dip. Monitoring subsequent"
+        " pullback waves and wicks."
     )
 
-  # Complete Signal History
+  # Complete Signal History (All past entries shown clearly)
   if bot.signals:
     st.markdown("---")
     st.subheader(
-        f"📋 Complete Signal History for {selected_symbol} (Old & New)"
+        f"📋 Complete Signal History for {selected_symbol} (Old & New Entries)"
     )
     df_history = pd.DataFrame(bot.signals).drop(
         columns=["Is_Within_1hr"], errors="ignore"
     )
     st.dataframe(df_history, width="stretch")
 
-  # Chart Rendering with G-Channel Overlay
+  # Chart Rendering with Historical Entries & G-Channel
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
   for c in bot.candles:
     col = "#26a69a" if c["color"] == "Green" else "#ef5350"
@@ -571,6 +572,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
       margin = curr_p * 0.005
     ax.set_ylim(min(lows) - margin, max(highs) + margin)
 
+  # Plot all historical signal tags on the chart
   for sig in bot.signals:
     tag = "B" if "Buy" in sig["Action"] else "S"
     tag_color = "#00e676" if tag == "B" else "#ff1744"
@@ -584,7 +586,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Precision Engine"
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Multi-Pullback Engine"
       f" ({tz_short})",
       color="white",
       fontsize=14,
