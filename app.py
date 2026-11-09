@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Advanced Pattern Rebound Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Strict One-Time Pattern Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -91,7 +91,10 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
-st.sidebar.text("Logic            : 7 Red Count -> Strong Red -> Small Wick Red -> Strong Green Entry")
+st.sidebar.text(
+    "Logic            : 7 Red Count -> Strong Red -> Small Wick Red -> Medium"
+    " Green Entry (1-Time)"
+)
 st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss        : ATR Managed")
 
@@ -160,7 +163,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTAdvancedPatternEngine:
+class TWTStrictOneTimePatternEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -258,11 +261,14 @@ class TWTAdvancedPatternEngine:
           "is_within_1hr": is_within_1hr,
       })
 
-    # Advanced State Machine for Single-Entry & Pattern Confirmation
-    # States: 0 = Waiting for Breakdown, 1 = Counting 7 Reds, 2 = Waiting for Pattern (Strong Red -> Small Wick Red -> Strong Green), 3 = Traded / Locked
+    # Strict State Machine:
+    # State 0: Waiting for breakdown below support
+    # State 1: Counting 7 red candles
+    # State 2: Pattern Confirmation Sequence (Step 1: Strong Red -> Step 2: Small Red with wicks -> Step 3: Medium Green Entry)
+    # State 3: Locked! (Given entry once, no more entries until price resets above support)
     state = 0
     red_count = 0
-    pattern_step = 0  # 0: waiting strong red after 7, 1: waiting small wick red, 2: waiting strong green
+    pattern_step = 0
 
     for i in range(len(self.candles)):
       c = self.candles[i]
@@ -272,80 +278,81 @@ class TWTAdvancedPatternEngine:
       atr = c["atr"]
       dec = get_decimals(c["close"])
 
-      # Reset state if price goes back above support level
+      # CRITICAL: If price goes back above support level, completely reset state for a fresh cycle!
       if c["close"] >= self.support_lvl:
         state = 0
         red_count = 0
         pattern_step = 0
         continue
 
-      # State 0: Price is below support, start counting red candles
-      if state == 0 and c["close"] < self.support_lvl:
-        if c["color"] == "Red":
-          state = 1
-          red_count = 1
-          self.count_annotations.append((c["id"], red_count, c["high"]))
+      # If already traded (State 3), ignore everything until price resets above support
+      if state == 3:
+        continue
 
-      elif state == 1:
-        if c["close"] < self.support_lvl:
+      if c["close"] < self.support_lvl:
+        if state == 0:
+          if c["color"] == "Red":
+            state = 1
+            red_count = 1
+            self.count_annotations.append((c["id"], red_count, c["high"]))
+        elif state == 1:
           if c["color"] == "Red":
             red_count += 1
             self.count_annotations.append((c["id"], red_count, c["high"]))
             if red_count >= 7:
-              # Reached 7 red candles, now move to pattern confirmation state
               state = 2
-              pattern_step = 0
+              pattern_step = 1  # Step 1: Wait for Strong Red Candle
           elif c["color"] == "Green":
-            # Ignore interim green candles during counting, keep counting red
+            # Ignore intermediate green candles during counting
             pass
+        elif state == 2:
+          body = abs(c["close"] - c["open"])
+          upper_wick = c["high"] - max(c["open"], c["close"])
+          lower_wick = min(c["open"], c["close"]) - c["low"]
 
-      elif state == 2:
-        # Pattern confirmation phase after 7 red counts
-        body = abs(c["close"] - c["open"])
-        upper_wick = c["high"] - max(c["open"], c["close"])
-        lower_wick = min(c["open"], c["close"]) - c["low"]
+          if pattern_step == 1:
+            # Step 1: Wait for Strong Red Candle (Mota Red Candle)
+            if c["color"] == "Red" and body >= (0.3 * atr):
+              pattern_step = 2
+          elif pattern_step == 2:
+            # Step 2: Wait for Small Red Candle with BOTH upper and lower wicks
+            if (
+                c["color"] == "Red"
+                and body < (0.35 * atr)
+                and upper_wick > (0.03 * atr)
+                and lower_wick > (0.03 * atr)
+            ):
+              pattern_step = 3
+            elif c["color"] == "Green":
+              pattern_step = (
+                  1  # Restart pattern if interrupted improperly by green
+              )
+          elif pattern_step == 3:
+            # Step 3: Wait for Medium Size Green Candle -> ENTRY! (Only once)
+            if c["color"] == "Green" and body >= (0.25 * atr):
+              sl = round(c["low"] - (1.2 * atr), dec)
+              tp1 = round(c["close"] + (1.2 * atr), dec)
+              tp2 = round(c["close"] + (2.5 * atr), dec)
+              tp3 = round(c["close"] + (4.0 * atr), dec)
 
-        if pattern_step == 0:
-          # Step A: Look for a Strong Red Candle
-          if c["color"] == "Red" and body >= (0.3 * atr):
-            pattern_step = 1  # Move to next step
-        elif pattern_step == 1:
-          # Step B: Look for a Small Red Candle with BOTH upper and lower wicks
-          if (
-              c["color"] == "Red"
-              and body < (0.4 * atr)
-              and upper_wick > (0.05 * atr)
-              and lower_wick > (0.05 * atr)
-          ):
-            pattern_step = 2  # Ready for entry green candle
-          elif c["color"] == "Green":
-            # If green disrupts pattern, reset or stay
-            pass
-        elif pattern_step == 2:
-          # Step C: Look for the Final Strong Green Rebound Candle -> ENTRY!
-          if c["color"] == "Green" and body >= (0.35 * atr):
-            sl = round(c["low"] - (1.2 * atr), dec)
-            tp1 = round(c["close"] + (1.2 * atr), dec)
-            tp2 = round(c["close"] + (2.5 * atr), dec)
-            tp3 = round(c["close"] + (4.0 * atr), dec)
-
-            self.signals.append({
-                "Asset": self.symbol,
-                "Time": c["time"],
-                "Candle #": c["id"],
-                "Setup": "7-Red + Pattern Confirmation Rebound",
-                "Action": "Buy / Long (B) [Advanced Pattern Rebound] 🟢",
-                "Entry Price": round(c["close"], dec),
-                "Stop Loss (SL)": sl,
-                "TP 1": tp1,
-                "TP 2": tp2,
-                "TP 3": tp3,
-                "Is_Within_1hr": c["is_within_1hr"],
-            })
-            state = 3  # Locked! No more entries until price resets above support
-          elif c["color"] == "Red":
-            # If another big red appears, reset pattern step 0 or stay
-            pattern_step = 0
+              self.signals.append({
+                  "Asset": self.symbol,
+                  "Time": c["time"],
+                  "Candle #": c["id"],
+                  "Setup": "7-Red + Strict Pattern Rebound",
+                  "Action": (
+                      "Buy / Long (B) [Strict One-Time Pattern Rebound] 🟢"
+                  ),
+                  "Entry Price": round(c["close"], dec),
+                  "Stop Loss (SL)": sl,
+                  "TP 1": tp1,
+                  "TP 2": tp2,
+                  "TP 3": tp3,
+                  "Is_Within_1hr": c["is_within_1hr"],
+              })
+              state = 3  # LOCKED! No more entries for this breakdown cycle.
+            elif c["color"] == "Red":
+              pattern_step = 1
 
 
 # ---------------------------------------------------------
@@ -361,7 +368,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTAdvancedPatternEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTStrictOneTimePatternEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -369,7 +376,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets for advanced pattern setups..."):
+with st.spinner("⚡ Scanning all 20 assets for one-time pattern setups..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -390,7 +397,7 @@ if master_signals:
 else:
   st.info(
       "ℹ️ No active pattern signals in the last 1 hour. Waiting for 7-red count"
-      " + wick pattern confirmation..."
+      " + strict pattern confirmation..."
   )
 
 # ---------------------------------------------------------
@@ -402,14 +409,16 @@ st.subheader("📊 Manual Asset Inspector & Chart")
 selected_symbol = st.selectbox(
     "🔍 Select Asset to Load Chart & Complete History",
     options=ASSET_LIST,
-    index=3,  # Default to SOL
+    index=0,  # Default to BTC
 )
 
 if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTAdvancedPatternEngine(df_5, df_4, df_6, selected_symbol, active_tz)
+  bot = TWTStrictOneTimePatternEngine(
+      df_5, df_4, df_6, selected_symbol, active_tz
+  )
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -425,7 +434,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Advanced Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Strict Engine Active")
 
   if bot.signals:
     latest_sig = bot.signals[-1]
@@ -436,28 +445,28 @@ if bot.df_5 is not None and not bot.df_5.empty:
     st.warning("⚠️ **Don't use after 40 minutes!**")
 
     st.success(
-        f"🟢 **TWT ADVANCED SETUP: {latest_sig['Action']}**\n\n"
+        f"🟢 **TWT STRICT ONE-TIME SETUP: {latest_sig['Action']}**\n\n"
         f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
         f" #{latest_sig['Candle #']})\n"
         f"- **Entry Price:** `{entry_p}`\n"
         f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
         f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
         f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-        "📌 *Instructions:* 7 Reds -> Strong Red -> Small Wick Red -> Strong"
-        " Green Rebound Confirmed!"
+        "📌 *Instructions:* 7 Reds -> Strong Red -> Small Wick Red -> Medium"
+        " Green Rebound Entry (Single-Trigger Confirmed)!"
     )
   else:
     st.warning(
-        "🟡 **STATUS: WAITING FOR ADVANCED PATTERN SETUP**\n\n"
-        "📌 *Instructions:* Monitoring support breakdown, 7-red count, and wick"
-        " exhaustion pattern."
+        "🟡 **STATUS: WAITING FOR ONE-TIME PATTERN SETUP**\n\n"
+        "📌 *Instructions:* Monitoring support breakdown, 7-red count, and strict"
+        " candle pattern confirmation."
     )
 
   # Complete Signal History
   if bot.signals:
     st.markdown("---")
     st.subheader(
-        f"📋 Complete Signal History for {selected_symbol} (Advanced Engine)"
+        f"📋 Complete Signal History for {selected_symbol} (Strict Engine)"
     )
     df_history = pd.DataFrame(bot.signals).drop(
         columns=["Is_Within_1hr"], errors="ignore"
@@ -552,7 +561,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Advanced Engine"
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Strict Engine"
       f" ({tz_short})",
       color="white",
       fontsize=14,
