@@ -275,7 +275,7 @@ class TWTBuySellEngine:
       if time(1, 0) <= c["dt_ist"].time() <= time(6, 0):
         continue
 
-      atr = c["ATR"] if not np.isnan(c["ATR"]) else (c["close"] * 0.002)
+      atr = c["atr"] if not np.isnan(c["atr"]) else (c["close"] * 0.002)
       dec = get_decimals(c["close"])
 
       # ---------------------------------------------------------
@@ -335,39 +335,32 @@ class TWTBuySellEngine:
       # SELL ENGINE PROCESSING (Near/Touching Resistance)
       # ---------------------------------------------------------
       if sell_state != 5 and c["close"] <= self.resistance_lvl - (atr * 0.5):
-        # Reset sell state if price drops away from resistance
         sell_state = 0
         recent_green_candles = []
 
       if sell_state != 5:
-        # Check if candle touches or approaches resistance
         if c["high"] >= self.resistance_lvl or (c["close"] >= self.resistance_lvl - (atr * 0.2)):
           if c["color"] == "Green":
             recent_green_candles.append(c)
             if len(recent_green_candles) > 4:
               recent_green_candles.pop(0)
 
-            # When we have accumulated 4 green candles leading to resistance touch (1 is latest/touch)
             if len(recent_green_candles) == 4:
-              # Numbering: 4, 3, 2, 1 where 1 is the touch candle
               self.sell_annotations.append((recent_green_candles[0]["id"], 4, recent_green_candles[0]["high"]))
               self.sell_annotations.append((recent_green_candles[1]["id"], 3, recent_green_candles[1]["high"]))
               self.sell_annotations.append((recent_green_candles[2]["id"], 2, recent_green_candles[2]["high"]))
               self.sell_annotations.append((recent_green_candles[3]["id"], 1, recent_green_candles[3]["high"]))
 
-              target_3rd_green_low = recent_green_candles[1]["low"]  # 3rd green candle (index 1 in 0..3)
-              sell_state = 1  # 4 greens counted, now wait for red candle to cross 3rd green
+              target_3rd_green_low = recent_green_candles[1]["low"]
+              sell_state = 1
         
         elif sell_state == 1:
-          # Wait for a red candle that crosses/breaks below the 3rd green candle's level
           if c["color"] == "Red" and c["close"] < target_3rd_green_low:
-            sell_state = 2  # 3rd green broken by red, now wait for 1 green candle
+            sell_state = 2
         elif sell_state == 2:
-          # Wait for 1 green candle after the breakdown red candle
           if c["color"] == "Green":
-            sell_state = 3  # 1 green candle formed, now next red candle gives Sell Entry!
+            sell_state = 3
         elif sell_state == 3:
-          # Next red candle gives Sell/Short Entry!
           if c["color"] == "Red":
             sl = round(c["high"] + (1.2 * atr), dec)
             tp1 = round(c["close"] - (1.2 * atr), dec)
@@ -388,7 +381,7 @@ class TWTBuySellEngine:
                 "TP 3": tp3,
                 "Is_Within_1hr": c["is_within_1hr"],
             })
-            sell_state = 5  # PERMANENT LOCK for resistance cycle!
+            sell_state = 5  # Locked for resistance cycle
 
 
 # ---------------------------------------------------------
