@@ -8,18 +8,35 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(
-    page_title="TWT Delta Pro by TUCKYAA", page_icon="⚡", layout="wide"
+    page_title="TWT Saiyan Pro by TUCKYAA", page_icon="⚡", layout="wide"
 )
 
-# Hide Streamlit Header, Footer, Menu & GitHub Icon via CSS
-hide_streamlit_style = """
+# Goku Theme CSS Styling (Orange & Deep Blue Saiyan Vibe)
+goku_theme_style = """
     <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
+    
+    .stApp {
+        background-color: #0B0E14;
+    }
+    
+    /* Goku Orange & Blue Accents */
+    h1, h2, h3 {
+        color: #FF7F00 !important;
+        text-shadow: 0px 0px 10px rgba(255, 127, 0, 0.3);
+    }
+    
+    .stMetric {
+        background-color: #121824;
+        border: 1px solid #FF7F00;
+        border-radius: 8px;
+        padding: 10px;
+    }
     </style>
     """
-st.markdown(hide_streamlit_style, unsafe_allow_html=True)
+st.markdown(goku_theme_style, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
 # GLOBAL TRADING TIMEZONES & COMPLETE 20+ ASSETS LIST
@@ -61,7 +78,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Robust D,C,B,A Resistance Engine"
+    "⚡ TRADE WITH TUCKYAA (GOKU EDITION) — Hidden Strategy Dual Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -78,7 +95,7 @@ with col_tz:
 tz_short = selected_tz_name.split(")")[0] + ")"
 
 # Sidebar Panel
-st.sidebar.markdown("### 🤖 TWT Ultimate Price Action Panel")
+st.sidebar.markdown("### 🤖 TWT Saiyan Panel (Goku Theme)")
 st.sidebar.markdown("---")
 server_time_target = datetime.now(active_tz)
 st.sidebar.text(
@@ -90,11 +107,10 @@ st.sidebar.text("No-Trade Zone      ———  01:00 ➔ 06:00 IST")
 st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Trading Strategy")
-st.sidebar.text("Buy Logic        : 5 Red -> Green -> Red -> Green Wick Entry")
-st.sidebar.text("Sell Logic       : D->C->B->A (Ignoring Red gaps) -> B Low break -> Green -> Red crosses A & B Short")
-st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
-st.sidebar.text("Stop loss        : ATR Managed")
+st.sidebar.markdown("#### Super Saiyan Strategy")
+st.sidebar.text("Hidden Strategy Mode : Active (Tags Hidden)")
+st.sidebar.text("Take profit          : Multi-TP (TP1, TP2, TP3)")
+st.sidebar.text("Stop loss            : ATR Managed")
 
 
 def get_decimals(price):
@@ -161,7 +177,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTRobustDCBAEngine:
+class TWTSaiyanSecretEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -171,8 +187,6 @@ class TWTRobustDCBAEngine:
     self.user_tz = user_tz
     self.candles = []
     self.signals = []
-    self.buy_annotations = []   # Stores (candle_id, count_num, high_price)
-    self.sell_annotations = []  # Stores (candle_id, label_str, price)
     self.resistance_lvl = 0
     self.support_lvl = 0
 
@@ -265,7 +279,7 @@ class TWTRobustDCBAEngine:
     buy_red_count = 0
     ref_red_wick = 0.0
 
-    # --- SELL STATE MACHINE (Robust D, C, B, A ignoring intervening reds) ---
+    # --- SELL STATE MACHINE (D -> C -> B -> A with Red Ignore) ---
     sell_state = 0
     target_b_low = 0.0
     level_a_ref = 0.0
@@ -279,9 +293,7 @@ class TWTRobustDCBAEngine:
       atr = c["atr"] if not np.isnan(c["atr"]) else (c["close"] * 0.002)
       dec = get_decimals(c["close"])
 
-      # ---------------------------------------------------------
-      # BUY ENGINE PROCESSING (Below Support)
-      # ---------------------------------------------------------
+      # BUY ENGINE (Below Support)
       if buy_state != 5 and c["close"] >= self.support_lvl:
         buy_state = 0
         buy_red_count = 0
@@ -291,11 +303,9 @@ class TWTRobustDCBAEngine:
         if buy_state == 0 and c["color"] == "Red":
           buy_state = 1
           buy_red_count = 1
-          self.buy_annotations.append((c["id"], buy_red_count, c["high"]))
         elif buy_state == 1:
           if c["color"] == "Red":
             buy_red_count += 1
-            self.buy_annotations.append((c["id"], buy_red_count, c["high"]))
             if buy_red_count >= 5:
               buy_state = 2
           elif c["color"] == "Green":
@@ -332,47 +342,39 @@ class TWTRobustDCBAEngine:
             })
             buy_state = 5
 
-      # ---------------------------------------------------------
-      # SELL ENGINE PROCESSING (D -> C -> B -> A with Red Ignore)
-      # ---------------------------------------------------------
+      # SELL ENGINE (D -> C -> B -> A with Red Ignore)
       if sell_state != 5 and c["close"] <= self.resistance_lvl - (atr * 2.5):
         sell_state = 0
 
       if sell_state != 5:
         if sell_state == 0:
-          # Step 1: Green candle touching/crossing resistance is 'D'
-          if (c["high"] >= self.resistance_lvl or c["close"] >= self.resistance_lvl) and c["color"] == "Green":
-            self.sell_annotations.append((c["id"], "D", c["high"]))
+          if (
+              c["high"] >= self.resistance_lvl
+              or c["close"] >= self.resistance_lvl
+          ) and c["color"] == "Green":
             sell_state = 1
         elif sell_state == 1:
-          # Step 2: Next Green candle downwards is 'C' (ignore any interim red candles)
           if c["color"] == "Green":
-            self.sell_annotations.append((c["id"], "C", c["high"]))
             sell_state = 2
         elif sell_state == 2:
-          # Step 3: Next Green candle downwards is 'B' (ignore interim reds)
           if c["color"] == "Green":
             target_b_low = c["low"]
             level_b_ref = c["high"]
-            self.sell_annotations.append((c["id"], "B", c["high"]))
             sell_state = 3
         elif sell_state == 3:
-          # Step 4: Next Green candle downwards is 'A' (ignore interim reds)
           if c["color"] == "Green":
             level_a_ref = c["high"]
-            self.sell_annotations.append((c["id"], "A", c["high"]))
-            sell_state = 4  # D, C, B, A fully mapped!
+            sell_state = 4
         elif sell_state == 4:
-          # Step 5: Wait for a Red candle whose low breaks below 'B' lower wick
           if c["color"] == "Red" and c["low"] < target_b_low:
-            sell_state = 5  # B broken, now wait for Green candle
+            sell_state = 5
         elif sell_state == 5:
-          # Step 6: Wait for 1 Green candle to form after the breakdown
           if c["color"] == "Green":
             sell_state = 6
         elif sell_state == 6:
-          # Step 7: Next Red candle that crosses/closes below A and B levels gives SELL ENTRY!
-          if c["color"] == "Red" and (c["close"] < level_a_ref or c["close"] < level_b_ref):
+          if c["color"] == "Red" and (
+              c["close"] < level_a_ref or c["close"] < level_b_ref
+          ):
             sl = round(c["high"] + (1.2 * atr), dec)
             tp1 = round(c["close"] - (1.2 * atr), dec)
             tp2 = round(c["close"] - (2.5 * atr), dec)
@@ -383,8 +385,13 @@ class TWTRobustDCBAEngine:
                 "Time": c["time"],
                 "Candle #": c["id"],
                 "Type": "SELL 🔴",
-                "Setup": "D->C->B->A (Red Ignored) -> B Low Break -> Green -> Red Crosses A & B Short Entry",
-                "Action": "Sell / Short (S) [Robust D-C-B-A Reversal] 🔴",
+                "Setup": (
+                    "D->C->B->A (Red Ignored) -> B Low Break -> Green -> Red"
+                    " Short Entry"
+                ),
+                "Action": (
+                    "Sell / Short (S) [Saiyan Secret D-C-B-A Reversal] 🔴"
+                ),
                 "Entry Price": round(c["close"], dec),
                 "Stop Loss (SL)": sl,
                 "TP 1": tp1,
@@ -392,14 +399,14 @@ class TWTRobustDCBAEngine:
                 "TP 3": tp3,
                 "Is_Within_1hr": c["is_within_1hr"],
             })
-            sell_state = 7  # LOCKED for resistance cycle
+            sell_state = 7
 
 
 # ---------------------------------------------------------
 # MASTER SCANNER (Global Feed for Top Dashboard)
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("🔥 TWT Master Live Signal Dashboard (Last 1 Hour)")
+st.subheader("🔥 TWT Saiyan Master Live Signal Dashboard (Last 1 Hour)")
 
 master_signals = []
 asset_engines = {}
@@ -408,7 +415,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTRobustDCBAEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTSaiyanSecretEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -416,7 +423,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets for Robust Dual-Engine setups..."):
+with st.spinner("⚡ Scanning all 20 assets with Super Saiyan Power..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -429,33 +436,35 @@ with st.spinner("⚡ Scanning all 20 assets for Robust Dual-Engine setups..."):
         master_signals.append(latest)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} active dual-engine setup(s)!")
+  st.success(f"✅ Found {len(master_signals)} active Saiyan setup(s)!")
   df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
   st.info(
-      "ℹ️ No active signals in the last 1 hour. Waiting for Buy or Sell setups..."
+      "ℹ️ No active signals in the last 1 hour. Waiting for setup triggers..."
   )
 
 # ---------------------------------------------------------
 # MANUAL ASSET SELECTOR & CHART VIEWER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("📊 Manual Asset Inspector & Chart")
+st.subheader("📊 Saiyan Chart Inspector (Tags Hidden)")
 
 selected_symbol = st.selectbox(
     "🔍 Select Asset to Load Chart & Complete History",
     options=ASSET_LIST,
-    index=18,  # Default to FIL
+    index=18,
 )
 
 if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTRobustDCBAEngine(df_5, df_4, df_6, selected_symbol, active_tz)
+  bot = TWTSaiyanSecretEngine(
+      df_5, df_4, df_6, selected_symbol, active_tz
+  )
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -471,7 +480,11 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Robust DCBA Engine Active")
+    st.metric(
+        label="Theme Status",
+        value="Goku Edition",
+        delta="Secret Mode Active",
+    )
 
   if bot.signals:
     latest_sig = bot.signals[-1]
@@ -484,37 +497,42 @@ if bot.df_5 is not None and not bot.df_5.empty:
     if is_buy:
       st.success(
           f"🟢 **TWT BUY SETUP: {latest_sig['Action']}**\n\n"
-          f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle #{latest_sig['Candle #']})\n"
+          f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
+          f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
-          f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:** `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`"
+          f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
+          f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`"
       )
     else:
       st.error(
           f"🔴 **TWT SELL SETUP: {latest_sig['Action']}**\n\n"
-          f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle #{latest_sig['Candle #']})\n"
+          f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
+          f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
-          f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:** `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`"
+          f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
+          f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`"
       )
   else:
     st.warning(
         "🟡 **STATUS: WAITING FOR SETUP**\n\n"
-        "📌 *Instructions:* Monitoring support for Buy and resistance for Sell setups."
+        "📌 *Instructions:* Monitoring support for Buy and resistance for Sell"
+        " setups (Strategy tags hidden from chart)."
     )
 
   # Complete Signal History
   if bot.signals:
     st.markdown("---")
     st.subheader(
-        f"📋 Complete Signal History for {selected_symbol} (Robust DCBA Engine)"
+        f"📋 Complete Signal History for {selected_symbol} (Saiyan Edition)"
     )
     df_history = pd.DataFrame(bot.signals).drop(
         columns=["Is_Within_1hr"], errors="ignore"
     )
     st.dataframe(df_history, width="stretch")
 
-  # Chart Rendering
+  # Chart Rendering (Clean & Tag-Free)
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
   for c in bot.candles:
     col = "#26a69a" if c["color"] == "Green" else "#ef5350"
@@ -532,7 +550,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
 
   ax.axhline(
       bot.resistance_lvl,
-      color="#ffeb3b",
+      color="#FF7F00",
       linestyle="--",
       linewidth=2,
       label="4H Resistance",
@@ -541,14 +559,14 @@ if bot.df_5 is not None and not bot.df_5.empty:
       2,
       bot.resistance_lvl,
       f"  4H Resistance ({bot.resistance_lvl:.1f})",
-      color="#ffeb3b",
+      color="#FF7F00",
       weight="bold",
       fontsize=10,
   )
 
   ax.axhline(
       bot.support_lvl,
-      color="#26a69a",
+      color="#00E676",
       linestyle="--",
       linewidth=2,
       label="6H Support",
@@ -557,7 +575,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
       2,
       bot.support_lvl,
       f"  6H Support ({bot.support_lvl:.1f})",
-      color="#26a69a",
+      color="#00E676",
       weight="bold",
       fontsize=10,
   )
@@ -575,33 +593,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
       margin = curr_p * 0.005
     ax.set_ylim(min(lows) - margin, max(highs) + margin)
 
-  # Plot Buy Count Numbers (Red counting 1 to 5)
-  for cid, cnt, hp in bot.buy_annotations:
-    ax.text(
-        cid,
-        hp + (margin * 0.03),
-        str(cnt),
-        color="#ff5252",
-        weight="bold",
-        fontsize=9,
-        ha="center",
-        va="bottom",
-    )
-
-  # Plot Sell Labels (D, C, B, A below resistance)
-  for cid, label_str, hp in bot.sell_annotations:
-    ax.text(
-        cid,
-        hp + (margin * 0.03),
-        label_str,
-        color="#00e676",
-        weight="bold",
-        fontsize=9,
-        ha="center",
-        va="bottom",
-    )
-
-  # Plot Signals ('B' for Buy, 'S' for Sell)
+  # Only Final Entries ('B' and 'S') are shown cleanly. All strategy text tags are fully hidden!
   for sig in bot.signals:
     is_b = "BUY" in sig["Type"]
     bg_col = "#00e676" if is_b else "#ff5252"
@@ -618,18 +610,19 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Robust DCBA Engine ({tz_short})",
-      color="white",
+      f"{selected_symbol} 5m — TWT GOKU EDITION ({tz_short})",
+      color="#FF7F00",
       fontsize=14,
+      weight="bold",
   )
-  ax.set_facecolor("#131722")
-  fig.patch.set_facecolor("#1e222d")
+  ax.set_facecolor("#121824")
+  fig.patch.set_facecolor("#0B0E14")
   ax.tick_params(colors="white")
   ax.xaxis.label.set_color("white")
   ax.yaxis.label.set_color("white")
   for spine in ax.spines.values():
-    spine.set_color("#363a45")
-  ax.grid(color="#2a2e39", linestyle="--", linewidth=0.5)
+    spine.set_color("#1E293B")
+  ax.grid(color="#1E293B", linestyle="--", linewidth=0.5)
 
   st.pyplot(fig)
 else:
