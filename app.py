@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — D, C, B, A Resistance Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Robust D,C,B,A Resistance Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -92,7 +92,7 @@ st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
 st.sidebar.text("Buy Logic        : 5 Red -> Green -> Red -> Green Wick Entry")
-st.sidebar.text("Sell Logic       : D(Resistance) -> C -> B -> A -> Red breaks B low -> Green -> Red crosses A & B -> Short Entry")
+st.sidebar.text("Sell Logic       : D->C->B->A (Ignoring Red gaps) -> B Low break -> Green -> Red crosses A & B Short")
 st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss        : ATR Managed")
 
@@ -161,7 +161,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTDCCBAEngine:
+class TWTRobustDCBAEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -265,10 +265,8 @@ class TWTDCCBAEngine:
     buy_red_count = 0
     ref_red_wick = 0.0
 
-    # --- SELL STATE MACHINE (D, C, B, A) ---
+    # --- SELL STATE MACHINE (Robust D, C, B, A ignoring intervening reds) ---
     sell_state = 0
-    c_b = None
-    c_a = None
     target_b_low = 0.0
     level_a_ref = 0.0
     level_b_ref = 0.0
@@ -335,39 +333,37 @@ class TWTDCCBAEngine:
             buy_state = 5
 
       # ---------------------------------------------------------
-      # SELL ENGINE PROCESSING (D -> C -> B -> A Setup)
+      # SELL ENGINE PROCESSING (D -> C -> B -> A with Red Ignore)
       # ---------------------------------------------------------
-      if sell_state != 5 and c["close"] <= self.resistance_lvl - (atr * 2.0):
+      if sell_state != 5 and c["close"] <= self.resistance_lvl - (atr * 2.5):
         sell_state = 0
 
       if sell_state != 5:
         if sell_state == 0:
-          # Step 1: Candle touching/crossing resistance is 'D' (Green)
+          # Step 1: Green candle touching/crossing resistance is 'D'
           if (c["high"] >= self.resistance_lvl or c["close"] >= self.resistance_lvl) and c["color"] == "Green":
             self.sell_annotations.append((c["id"], "D", c["high"]))
             sell_state = 1
         elif sell_state == 1:
-          # Step 2: Next downward green candle is 'C'
+          # Step 2: Next Green candle downwards is 'C' (ignore any interim red candles)
           if c["color"] == "Green":
             self.sell_annotations.append((c["id"], "C", c["high"]))
             sell_state = 2
         elif sell_state == 2:
-          # Step 3: Next downward green candle is 'B'
+          # Step 3: Next Green candle downwards is 'B' (ignore interim reds)
           if c["color"] == "Green":
-            c_b = c
-            self.sell_annotations.append((c_b["id"], "B", c_b["high"]))
-            target_b_low = c_b["low"]      # Lower wick / low of B
-            level_b_ref = c_b["high"]     # Reference level for B
+            target_b_low = c["low"]
+            level_b_ref = c["high"]
+            self.sell_annotations.append((c["id"], "B", c["high"]))
             sell_state = 3
         elif sell_state == 3:
-          # Step 4: Next downward green candle is 'A'
+          # Step 4: Next Green candle downwards is 'A' (ignore interim reds)
           if c["color"] == "Green":
-            c_a = c
-            self.sell_annotations.append((c_a["id"], "A", c_a["high"]))
-            level_a_ref = c_a["high"]     # Reference level for A
-            sell_state = 4  # Sequence D, C, B, A complete!
+            level_a_ref = c["high"]
+            self.sell_annotations.append((c["id"], "A", c["high"]))
+            sell_state = 4  # D, C, B, A fully mapped!
         elif sell_state == 4:
-          # Step 5: Wait for Red candle to break B's lower wick
+          # Step 5: Wait for a Red candle whose low breaks below 'B' lower wick
           if c["color"] == "Red" and c["low"] < target_b_low:
             sell_state = 5  # B broken, now wait for Green candle
         elif sell_state == 5:
@@ -387,8 +383,8 @@ class TWTDCCBAEngine:
                 "Time": c["time"],
                 "Candle #": c["id"],
                 "Type": "SELL 🔴",
-                "Setup": "D->C->B->A -> B Low Break -> Green -> Red Crosses A & B Short Entry",
-                "Action": "Sell / Short (S) [D-C-B-A Reversal] 🔴",
+                "Setup": "D->C->B->A (Red Ignored) -> B Low Break -> Green -> Red Crosses A & B Short Entry",
+                "Action": "Sell / Short (S) [Robust D-C-B-A Reversal] 🔴",
                 "Entry Price": round(c["close"], dec),
                 "Stop Loss (SL)": sl,
                 "TP 1": tp1,
@@ -412,7 +408,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTDCCBAEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTRobustDCBAEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -420,7 +416,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets for Dual-Engine setups..."):
+with st.spinner("⚡ Scanning all 20 assets for Robust Dual-Engine setups..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -452,14 +448,14 @@ st.subheader("📊 Manual Asset Inspector & Chart")
 selected_symbol = st.selectbox(
     "🔍 Select Asset to Load Chart & Complete History",
     options=ASSET_LIST,
-    index=16,  # Default to OP
+    index=18,  # Default to FIL
 )
 
 if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTDCCBAEngine(df_5, df_4, df_6, selected_symbol, active_tz)
+  bot = TWTRobustDCBAEngine(df_5, df_4, df_6, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -475,7 +471,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="D,C,B,A Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Robust DCBA Engine Active")
 
   if bot.signals:
     latest_sig = bot.signals[-1]
@@ -511,7 +507,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   if bot.signals:
     st.markdown("---")
     st.subheader(
-        f"📋 Complete Signal History for {selected_symbol} (D,C,B,A Engine)"
+        f"📋 Complete Signal History for {selected_symbol} (Robust DCBA Engine)"
     )
     df_history = pd.DataFrame(bot.signals).drop(
         columns=["Is_Within_1hr"], errors="ignore"
@@ -622,7 +618,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA D,C,B,A Engine ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Robust DCBA Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
