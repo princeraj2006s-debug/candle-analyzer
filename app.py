@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Strict Sequence & Pullback Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Resistance Rejection & Support Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -91,7 +91,7 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
-st.sidebar.text("Logic            : Support Cross -> Pullback Red -> Green Confirm")
+st.sidebar.text("Logic            : Resistance Wick Touch -> Failed Push -> Red Confirm")
 st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss        : ATR Managed")
 
@@ -154,7 +154,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTStrictSequenceEngine:
+class TWTWickRejectionEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -229,7 +229,7 @@ class TWTStrictSequenceEngine:
       })
 
     # =========================================================
-    # STRICT USER RULE IMPLEMENTATION
+    # EXACT WICK TOUCH & REJECTION RULES
     # =========================================================
     buy_signals = []
     sell_signals = []
@@ -241,16 +241,12 @@ class TWTStrictSequenceEngine:
 
       atr = c["atr"]
       dec = get_decimals(c["close"])
-      recent = self.candles[i - 8:i]  # previous 8 candles context
+      recent = self.candles[i - 8:i]
 
-      # --- BUY / LONG STRICT RULE ---
-      # 1. Price went below support recently
-      # 2. Buyers pushed price above support
-      # 3. Seller pullback happened (at least 2 consecutive Red candles pulling down)
-      # 4. Current candle is Green confirming the bounce
+      # --- BUY / LONG RULE (Support Bounce) ---
       crossed_below = any(x["low"] < self.support_lvl for x in recent[:4])
       crossed_above = any(x["close"] > self.support_lvl for x in recent[3:6])
-      seller_pullback_reds = all(x["color"] == "Red" for x in recent[-3:-1])  # 2 red pullback candles
+      seller_pullback_reds = all(x["color"] == "Red" for x in recent[-3:-1])
       green_confirmation = (c["color"] == "Green") and (c["close"] > c["open"]) and (c["close"] >= self.support_lvl)
 
       if crossed_below and crossed_above and seller_pullback_reds and green_confirmation:
@@ -263,7 +259,7 @@ class TWTStrictSequenceEngine:
             "Asset": self.symbol,
             "Time": c["time"],
             "Candle #": c["id"],
-            "Setup": "Support Cross -> Pullback Red -> Green Confirm Long",
+            "Setup": "Support Bounce Long",
             "Action": "Buy / Long (B) 🟢",
             "Entry Price": round(c["close"], dec),
             "Stop Loss (SL)": sl,
@@ -273,17 +269,15 @@ class TWTStrictSequenceEngine:
             "Is_Within_1hr": c["is_within_1hr"],
         })
 
-      # --- SELL / SHORT STRICT RULE ---
-      # 1. Price went above resistance recently
-      # 2. Sellers pushed price below resistance
-      # 3. Buyer retest pullback happened (at least 2 consecutive Green candles pulling up)
-      # 4. Current candle is Red confirming the rejection
-      crossed_above_res = any(x["high"] > self.resistance_lvl for x in recent[:4])
-      crossed_below_res = any(x["close"] < self.resistance_lvl for x in recent[3:6])
-      buyer_pullback_greens = all(x["color"] == "Green" for x in recent[-3:-1])  # 2 green pullback candles
+      # --- SELL / SHORT RULE (Resistance Wick Touch + Failed Buyer Push + Red Candle) ---
+      # 1. Resistance upper wick touched recently
+      # 2. Buyers tried to push up (Green candle) but failed to cross resistance (stayed below resistance)
+      # 3. Current candle is Red closing downwards confirming rejection
+      wick_touched_res = any(x["high"] >= self.resistance_lvl - (0.8 * atr) for x in recent[:5])
+      failed_buyer_push = any((x["color"] == "Green" and x["high"] < self.resistance_lvl) for x in recent[-3:-1])
       red_confirmation = (c["color"] == "Red") and (c["close"] < c["open"]) and (c["close"] <= self.resistance_lvl)
 
-      if crossed_above_res and crossed_below_res and buyer_pullback_greens and red_confirmation:
+      if wick_touched_res and failed_buyer_push and red_confirmation:
         sl = round(self.resistance_lvl + (1.2 * atr), dec)
         tp1 = round(c["close"] - (1.2 * atr), dec)
         tp2 = round(c["close"] - (2.5 * atr), dec)
@@ -293,7 +287,7 @@ class TWTStrictSequenceEngine:
             "Asset": self.symbol,
             "Time": c["time"],
             "Candle #": c["id"],
-            "Setup": "Resistance Cross -> Retest Green -> Red Confirm Short",
+            "Setup": "Resistance Wick Touch -> Failed Push -> Red Short",
             "Action": "Sell / Short (S) 🔴",
             "Entry Price": round(c["close"], dec),
             "Stop Loss (SL)": sl,
@@ -303,7 +297,6 @@ class TWTStrictSequenceEngine:
             "Is_Within_1hr": c["is_within_1hr"],
         })
 
-    # Keep valid signals for history table and chart rendering
     if buy_signals:
       self.signals.extend(buy_signals[-2:])
     if sell_signals:
@@ -323,7 +316,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTStrictSequenceEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTWickRejectionEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -331,7 +324,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets with exact strict rule sequence..."):
+with st.spinner("⚡ Scanning all 20 assets with wick rejection rules..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -344,13 +337,13 @@ with st.spinner("⚡ Scanning all 20 assets with exact strict rule sequence...")
         master_signals.append(latest)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} active strict setup(s)!")
+  st.success(f"✅ Found {len(master_signals)} active rejection setup(s)!")
   df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active strict setups in the last 1 hour. Waiting for exact rule match...")
+  st.info("ℹ️ No active setups in the last 1 hour. Waiting for exact wick rejection rule match...")
 
 # ---------------------------------------------------------
 # MANUAL ASSET SELECTOR & CHART VIEWER
@@ -368,7 +361,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTStrictSequenceEngine(df_5, df_4, df_6, selected_symbol, active_tz)
+  bot = TWTWickRejectionEngine(df_5, df_4, df_6, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -384,7 +377,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Strict Sequence Active")
+    st.metric(label="Timezone", value=tz_short, delta="Rejection Engine Active")
 
   recent_signals = [s for s in bot.signals if s.get("Is_Within_1hr", False)]
 
@@ -398,37 +391,37 @@ if bot.df_5 is not None and not bot.df_5.empty:
 
     if is_buy:
       st.success(
-          f"🟢 **TWT STRICT SETUP: {latest_sig['Action']}**\n\n"
+          f"🟢 **TWT SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Support Cross -> Seller Pullback Red Candles -> Green Candle Confirmation!"
+          "📌 *Instructions:* Support Bounce + Green Candle Confirmation Verified!"
       )
     else:
       st.error(
-          f"🔴 **TWT STRICT SETUP: {latest_sig['Action']}**\n\n"
+          f"🔴 **TWT SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Resistance Cross -> Buyer Retest Green Candles -> Red Candle Confirmation!"
+          "📌 *Instructions:* Resistance Wick Touch -> Failed Buyer Push -> Red Candle Short Confirmed!"
       )
   else:
     st.warning(
-        "🟡 **STATUS: WAITING FOR EXACT SEQUENCE SETUP**\n\n"
-        "📌 *Instructions:* Monitoring precise support cross + pullback red candles for Buy, and resistance cross + retest green candles for Sell."
+        "🟡 **STATUS: WAITING FOR REJECTION SETUP**\n\n"
+        "📌 *Instructions:* Monitoring resistance wick touches with failed buyer pushes and red candle confirmations."
     )
 
   # Complete Signal History Table
   if bot.signals:
     st.markdown("---")
     st.subheader(
-        f"📋 Complete Signal History for {selected_symbol} (Strict Sequence)"
+        f"📋 Complete Signal History for {selected_symbol} (Rejection Engine)"
     )
     df_history = pd.DataFrame(bot.signals).drop(
         columns=["Is_Within_1hr"], errors="ignore"
@@ -509,7 +502,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Strict Engine ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Rejection Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
