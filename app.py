@@ -279,7 +279,7 @@ class TWTSingleEntryEngine:
         continue
 
       # If price goes back above support, reset states so a brand new support cycle can start fresh if needed
-      if c["close'] >= self.support_lvl:
+      if c["close"] >= self.support_lvl:
         state = 0
         red_count = 0
         continue
