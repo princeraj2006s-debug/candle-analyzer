@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Flexible Price Action Engine"
+    "⚡ TRADE WITH TUCKYAA (TUCKYAA) — Elite 2-Signal Master Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -91,7 +91,7 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Trading Strategy")
-st.sidebar.text("Logic            : Flexible Retest & Candle Direction")
+st.sidebar.text("Logic            : Only Best 1 Buyer & 1 Seller Point")
 st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss        : ATR Managed")
 
@@ -154,7 +154,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTFlexibleEngine:
+class TWTEliteEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -229,15 +229,12 @@ class TWTFlexibleEngine:
       })
 
     # =========================================================
-    # FLEXIBLE ENTRY ENGINE (Balanced Retest & Candle Direction)
+    # FIND ONLY THE 1 BEST BUYER & 1 BEST SELLER POINT IN HISTORY
     # =========================================================
-    cooldown = 0
+    buy_candidates = []
+    sell_candidates = []
 
     for i in range(10, len(self.candles)):
-      if cooldown > 0:
-        cooldown -= 1
-        continue
-
       c = self.candles[i]
       if time(1, 0) <= c["dt_ist"].time() <= time(6, 0):
         continue
@@ -246,21 +243,19 @@ class TWTFlexibleEngine:
       dec = get_decimals(c["close"])
       prev_c = self.candles[i - 1]
 
-      # --- BUY / LONG SETUP (Support / Rebound Area) ---
-      near_support = c["low"] <= self.support_lvl + (1.5 * atr) or c["close"] >= self.support_lvl
+      # Best Buyer Candidate (Support rebound / strong green confirmation)
+      near_support = c["low"] <= self.support_lvl + (2.0 * atr)
       buyer_momentum = (c["color"] == "Green") and (c["close"] > prev_c["high"]) and (c["close"] > c["open"])
-
       if near_support and buyer_momentum:
         sl = round(c["low"] - (1.2 * atr), dec)
         tp1 = round(c["close"] + (1.2 * atr), dec)
         tp2 = round(c["close"] + (2.5 * atr), dec)
         tp3 = round(c["close"] + (4.0 * atr), dec)
-
-        self.signals.append({
+        buy_candidates.append({
             "Asset": self.symbol,
             "Time": c["time"],
             "Candle #": c["id"],
-            "Setup": "Flexible Support Rebound Long",
+            "Setup": "Best Buyer Entry Point (Support Bounce)",
             "Action": "Buy / Long (B) 🟢",
             "Entry Price": round(c["close"], dec),
             "Stop Loss (SL)": sl,
@@ -269,24 +264,20 @@ class TWTFlexibleEngine:
             "TP 3": tp3,
             "Is_Within_1hr": c["is_within_1hr"],
         })
-        cooldown = 8  # Prevent spamming
-        continue
 
-      # --- SELL / SHORT SETUP (Resistance / Rejection Area) ---
-      near_resistance = c["high"] >= self.resistance_lvl - (1.5 * atr) or c["close"] <= self.resistance_lvl
+      # Best Seller Candidate (Resistance rejection / strong red confirmation)
+      near_resistance = c["high"] >= self.resistance_lvl - (2.0 * atr)
       seller_momentum = (c["color"] == "Red") and (c["close"] < prev_c["low"]) and (c["close"] < c["open"])
-
       if near_resistance and seller_momentum:
         sl = round(c["high"] + (1.2 * atr), dec)
         tp1 = round(c["close"] - (1.2 * atr), dec)
         tp2 = round(c["close"] - (2.5 * atr), dec)
-        tp3 = round(c["close"] - (4.0 * atr), dec)
-
-        self.signals.append({
+        tp3 = round(c["close"] - (3.8 * atr), dec)
+        sell_candidates.append({
             "Asset": self.symbol,
             "Time": c["time"],
             "Candle #": c["id"],
-            "Setup": "Flexible Resistance Rejection Short",
+            "Setup": "Best Seller Entry Point (Resistance Rejection)",
             "Action": "Sell / Short (S) 🔴",
             "Entry Price": round(c["close"], dec),
             "Stop Loss (SL)": sl,
@@ -295,8 +286,12 @@ class TWTFlexibleEngine:
             "TP 3": tp3,
             "Is_Within_1hr": c["is_within_1hr"],
         })
-        cooldown = 8  # Prevent spamming
-        continue
+
+    # Pick ONLY the single best/most recent buyer and single best seller entry
+    if buy_candidates:
+      self.signals.append(buy_candidates[-1])  # Most recent best buyer point
+    if sell_candidates:
+      self.signals.append(sell_candidates[-1])  # Most recent best seller point
 
 
 # ---------------------------------------------------------
@@ -312,7 +307,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTFlexibleEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTEliteEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -320,7 +315,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets with flexible rules..."):
+with st.spinner("⚡ Scanning all 20 assets for elite master points..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -333,13 +328,13 @@ with st.spinner("⚡ Scanning all 20 assets with flexible rules..."):
         master_signals.append(latest)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} active flexible setup(s)!")
+  st.success(f"✅ Found {len(master_signals)} active elite setup(s)!")
   df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active setups in the last 1 hour. Waiting for price action setup...")
+  st.info("ℹ️ No active elite setups in the last 1 hour. Checking historical points...")
 
 # ---------------------------------------------------------
 # MANUAL ASSET SELECTOR & CHART VIEWER
@@ -357,7 +352,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTFlexibleEngine(df_5, df_4, df_6, selected_symbol, active_tz)
+  bot = TWTEliteEngine(df_5, df_4, df_6, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -373,7 +368,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Flexible Active")
+    st.metric(label="Timezone", value=tz_short, delta="Elite 2-Signal Active")
 
   recent_signals = [s for s in bot.signals if s.get("Is_Within_1hr", False)]
 
@@ -387,37 +382,37 @@ if bot.df_5 is not None and not bot.df_5.empty:
 
     if is_buy:
       st.success(
-          f"🟢 **TWT SETUP: {latest_sig['Action']}**\n\n"
+          f"🟢 **TWT ELITE SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Support Rebound + Green Candle Momentum Confirmed!"
+          "📌 *Instructions:* Best Buyer Support Bounce Point Confirmed!"
       )
     else:
       st.error(
-          f"🔴 **TWT SETUP: {latest_sig['Action']}**\n\n"
+          f"🔴 **TWT ELITE SETUP: {latest_sig['Action']}**\n\n"
           f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
           f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
           f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`\n\n"
-          "📌 *Instructions:* Resistance Rejection + Red Candle Momentum Confirmed!"
+          "📌 *Instructions:* Best Seller Resistance Rejection Point Confirmed!"
       )
   else:
     st.warning(
-        "🟡 **STATUS: WAITING FOR MARKET SETUP**\n\n"
-        "📌 *Instructions:* Monitoring price action near support and resistance zones."
+        "🟡 **STATUS: ELITE MASTER POINTS LOADED IN HISTORY**\n\n"
+        "📌 *Instructions:* Displaying the best 1 Buyer and 1 Seller historical points on chart."
     )
 
-  # Complete Signal History (Old & New entries)
+  # Complete Signal History (Only the Best Buyer & Seller points)
   if bot.signals:
     st.markdown("---")
     st.subheader(
-        f"📋 Complete Signal History for {selected_symbol} (Old & New Entries)"
+        f"📋 Elite Signal History for {selected_symbol} (Best Buyer & Seller)"
     )
     df_history = pd.DataFrame(bot.signals).drop(
         columns=["Is_Within_1hr"], errors="ignore"
@@ -498,8 +493,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Flexible Engine"
-      f" ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Elite Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
