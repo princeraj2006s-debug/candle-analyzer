@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (PRO) — Refined Buyer & Flexible BTC/ETH Engine"
+    "⚡ TRADE WITH TUCKYAA (PRO) — Engulfing Seller & Refined Buyer Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -91,8 +91,8 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Strategy Settings")
-st.sidebar.text("Refined Buy Logic: 7 Red Exhaustion + Weak Red Dip + Green Recovery")
-st.sidebar.text("Flexible BTC/ETH : Adjusted proximity for large caps")
+st.sidebar.text("Sell Rule        : 3 Green Candles + Engulfing Red Candle Entry")
+st.sidebar.text("Buy Rule         : 7 Red Exhaustion + Weak Dip + Recovery")
 st.sidebar.text("Strict Lock      : Single First Entry Only")
 
 
@@ -160,7 +160,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTFlexibleRefinedEngine:
+class TWTEngulfingEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -272,8 +272,7 @@ class TWTFlexibleRefinedEngine:
     is_major_coin = self.symbol in ["BTC/USDT", "ETH/USDT"]
     zone_multiplier = 3.5 if is_major_coin else 2.5
 
-    # Scan candles for Buy & Sell setups
-    for i in range(len(self.candles) - 1):
+    for i in range(len(self.candles)):
       c = self.candles[i]
       if time(1, 0) <= c["dt_ist"].time() <= time(6, 0):
         continue
@@ -282,18 +281,16 @@ class TWTFlexibleRefinedEngine:
       dec = get_decimals(c["close"])
 
       # -------------------------------------------------------------
-      # 1. REFINED BUY LOGIC: 7 Red Exhaustion -> Dip further (2-3 weak red) -> Green Recovery Breakout
+      # 1. BUY LOGIC: 7 Red Exhaustion + Weak Dip + Recovery Breakout
       # -------------------------------------------------------------
       if c["close"] <= self.support_lvl + (atr * zone_multiplier):
-        # Look for 7 red exhaustion sequence ending around index i
         if i >= 7:
           red_count = 0
           for k in range(i - 6, i + 1):
             if self.candles[k]["color"] == "Red":
               red_count += 1
           
-          if red_count >= 6:  # Near 7 red exhaustion
-            # Now check if next 2-3 candles dip further with weak red candles, followed by strong green breakout
+          if red_count >= 6:
             for m in range(i + 1, min(i + 5, len(self.candles))):
               cm = self.candles[m]
               if cm["color"] == "Green" and cm["close"] > self.candles[m - 1]["high"]:
@@ -307,8 +304,8 @@ class TWTFlexibleRefinedEngine:
                     "Time": cm["time"],
                     "Candle #": cm["id"],
                     "Type": "BUY 🟢",
-                    "Setup": "Refined 7-Red Dip & Weakness Breakout",
-                    "Action": "Buy / Long (B) [Refined Exhaustion Bounce] 🟢",
+                    "Setup": "7-Red Exhaustion & Recovery",
+                    "Action": "Buy / Long (B) [Exhaustion Bounce] 🟢",
                     "Entry Price": round(cm["close"], dec),
                     "Stop Loss (SL)": sl,
                     "TP 1": tp1,
@@ -321,38 +318,46 @@ class TWTFlexibleRefinedEngine:
           break
 
       # -------------------------------------------------------------
-      # 2. SELLER LOGIC: Resistance Zone + Wick Rejection + Low Break (Flexible for BTC/ETH)
+      # 2. SELLER LOGIC: 3 Green Candles followed by an Engulfing Red Candle
       # -------------------------------------------------------------
-      is_in_resistance_zone = c["high"] >= self.resistance_lvl - (atr * zone_multiplier)
-      if is_in_resistance_zone:
-        body_size = abs(c["close"] - c["open"])
-        upper_wick = c["high"] - max(c["open"], c["close"])
-        is_rejection = (upper_wick >= body_size * 0.9) or (c["color"] == "Red")
-        closes_below = c["close"] <= self.resistance_lvl + (atr * 0.5)
+      if i >= 3:
+        # Check if previous 3 candles (i-3, i-2, i-1) are ALL GREEN
+        c1 = self.candles[i - 3]
+        c2 = self.candles[i - 2]
+        c3 = self.candles[i - 1]
+        curr = self.candles[i] # Current candle must be RED and engulf previous Green (c3)
 
-        if is_rejection and closes_below:
-          next_c = self.candles[i + 1]
-          if next_c["low"] <= c["low"] or next_c["close"] < c["low"]:
-            sl = round(c["high"] + (1.5 * atr), dec)
-            tp1 = round(next_c["close"] - (1.2 * atr), dec)
-            tp2 = round(next_c["close"] - (2.5 * atr), dec)
-            tp3 = round(next_c["close"] - (4.0 * atr), dec)
+        if c1["color"] == "Green" and c2["color"] == "Green" and c3["color"] == "Green":
+          if curr["color"] == "Red":
+            # Check Bearish Engulfing: Current Red body completely covers previous Green body
+            prev_green_body_top = max(c3["open"], c3["close"])
+            prev_green_body_bot = min(c3["open"], c3["close"])
+            curr_red_body_top = max(curr["open"], curr["close"])
+            curr_red_body_bot = min(curr["open"], curr["close"])
 
-            found_signal = {
-                "Asset": self.symbol,
-                "Time": next_c["time"],
-                "Candle #": next_c["id"],
-                "Type": "SELL 🔴",
-                "Setup": "Resistance Wick Rejection & Low Break",
-                "Action": "Sell / Short (S) [Resistance Rejection] 🔴",
-                "Entry Price": round(next_c["close"], dec),
-                "Stop Loss (SL)": sl,
-                "TP 1": tp1,
-                "TP 2": tp2,
-                "TP 3": tp3,
-                "Is_Within_1hr": next_c["is_within_1hr"],
-            }
-            break
+            is_engulfing = (curr_red_body_top >= prev_green_body_top) and (curr_red_body_bot <= prev_green_body_bot)
+
+            if is_engulfing:
+              sl = round(curr["high"] + (1.5 * atr), dec)
+              tp1 = round(curr["close"] - (1.2 * atr), dec)
+              tp2 = round(curr["close"] - (2.5 * atr), dec)
+              tp3 = round(curr["close"] - (4.0 * atr), dec)
+
+              found_signal = {
+                  "Asset": self.symbol,
+                  "Time": curr["time"],
+                  "Candle #": curr["id"],
+                  "Type": "SELL 🔴",
+                  "Setup": "3 Green Candles + Engulfing Red Reversal",
+                  "Action": "Sell / Short (S) [3-Green Engulfing] 🔴",
+                  "Entry Price": round(curr["close"], dec),
+                  "Stop Loss (SL)": sl,
+                  "TP 1": tp1,
+                  "TP 2": tp2,
+                  "TP 3": tp3,
+                  "Is_Within_1hr": curr["is_within_1hr"],
+              }
+              break
 
       if found_signal:
         break
@@ -378,7 +383,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTFlexibleRefinedEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTEngulfingEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[0] if recent_sigs else None
@@ -386,7 +391,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning with Refined Buyer & Flexible BTC/ETH Engine..."):
+with st.spinner("⚡ Scanning with Engulfing Seller Logic..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -416,7 +421,7 @@ st.markdown("---")
 st.subheader("📊 Manual Asset Inspector & Chart")
 
 selected_symbol = st.selectbox(
-    "🔍 Select Asset to Load Chart & Verified Entry",
+    "🔍 Select Asset to Load Chart & Engulfing Entry",
     options=ASSET_LIST,
     index=0,
 )
@@ -425,7 +430,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTFlexibleRefinedEngine(
+  bot = TWTEngulfingEngine(
       df_5, df_4, df_6, selected_symbol, active_tz
   )
   bot.calculate_and_scan()
@@ -443,7 +448,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Refined & Flexible Active")
+    st.metric(label="Timezone", value=tz_short, delta="Engulfing Logic Active")
 
   if bot.signals:
     latest_sig = bot.signals[0]
@@ -476,10 +481,10 @@ if bot.df_5 is not None and not bot.df_5.empty:
   else:
     st.warning(
         "🟡 **STATUS: WAITING FOR SETUP**\n\n"
-        "📌 *Instructions:* Monitoring refined exhaustion buy & flexible resistance sell setups."
+        "📌 *Instructions:* Monitoring 3-Green followed by Engulfing Red for Sell, and 7-Red exhaustion for Buy."
     )
 
-  # Complete Single History Table (Fixed for both Buy and Sell)
+  # Complete Single History Table
   if bot.history_signals:
     st.markdown("---")
     st.subheader(
@@ -563,7 +568,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Refined Engine ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Engulfing Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
