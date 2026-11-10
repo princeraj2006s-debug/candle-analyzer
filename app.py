@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (PRO) — Optimized Single-Cycle Engine"
+    "⚡ TRADE WITH TUCKYAA (PRO) — Safe 2nd-Red Pullback Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -92,7 +92,7 @@ st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Strategy Settings")
 st.sidebar.text("Optimized Buy    : Support Rebound after Red Exhaustion")
-st.sidebar.text("Optimized Sell   : Resistance Test -> Wick Break -> Pullback -> Red Entry")
+st.sidebar.text("Safe Sell Filter : Resistance Test -> C Break -> Green Pullback -> 2nd Red Entry")
 st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss        : ATR Managed")
 
@@ -161,7 +161,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTOptimizedSingleCycleEngine:
+class TWTSafeSecondRedEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -299,7 +299,7 @@ class TWTOptimizedSingleCycleEngine:
           })
           buy_state = 5
 
-    # --- OPTIMIZED SINGLE-CYCLE SELL ENGINE SCANNER ---
+    # --- SAFE 2ND-RED PULLBACK REJECTION SELL ENGINE SCANNER ---
     for i in range(len(self.candles)):
       c_curr = self.candles[i]
       if time(1, 0) <= c_curr["dt_ist"].time() <= time(6, 0):
@@ -309,8 +309,8 @@ class TWTOptimizedSingleCycleEngine:
 
       # Flexible Resistance Proximity Test
       if (
-          c_curr["high"] >= self.resistance_lvl - (atr_val * 2.0)
-          or c_curr["close"] >= self.resistance_lvl - (atr_val * 2.0)
+          c_curr["high"] >= self.resistance_lvl - (atr_val * 2.5)
+          or c_curr["close"] >= self.resistance_lvl - (atr_val * 2.5)
       ) and c_curr["color"] == "Green":
         
         ref_level = c_curr["low"] # Reference level from C candle
@@ -320,15 +320,19 @@ class TWTOptimizedSingleCycleEngine:
         for m in range(i + 1, len(self.candles)):
           cm = self.candles[m]
           if sell_state == 1:
-            # Step 1: Red candle breaks below ref_level (using low for wick sensitivity)
-            if cm["color"] == "Red" and cm["low"] <= ref_level + (cm["atr"] * 0.2):
+            # Step 1: Red candle breaks below ref_level
+            if cm["color"] == "Red" and cm["low"] <= ref_level + (cm["atr"] * 0.3):
               sell_state = 2
           elif sell_state == 2:
             # Step 2: Green candle pulls back up towards ref_level
             if cm["color"] == "Green" and cm["high"] >= ref_level - (cm["atr"] * 0.8):
               sell_state = 3
           elif sell_state == 3:
-            # Step 3: Red rejection candle -> SELL ENTRY (Executes ONCE per cycle)
+            # Step 3: First red candle after pullback (Waits for safety)
+            if cm["color"] == "Red":
+              sell_state = 4
+          elif sell_state == 4:
+            # Step 4: Second red candle confirmation -> SAFE SELL ENTRY! (Executes ONCE per cycle)
             if cm["color"] == "Red":
               atr = (
                   cm["atr"]
@@ -346,8 +350,8 @@ class TWTOptimizedSingleCycleEngine:
                   "Time": cm["time"],
                   "Candle #": cm["id"],
                   "Type": "SELL 🔴",
-                  "Setup": "Optimized Single-Cycle Pullback Rejection",
-                  "Action": "Sell / Short (S) [Optimized Rejection Entry] 🔴",
+                  "Setup": "Safe 2nd-Red Pullback Rejection",
+                  "Action": "Sell / Short (S) [Safe 2nd-Red Entry] 🔴",
                   "Entry Price": round(cm["close"], dec),
                   "Stop Loss (SL)": sl,
                   "TP 1": tp1,
@@ -374,7 +378,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTOptimizedSingleCycleEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTSafeSecondRedEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -382,7 +386,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets with Optimized Engine..."):
+with st.spinner("⚡ Scanning all 20 assets with Safe Engine..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -414,14 +418,14 @@ st.subheader("📊 Manual Asset Inspector & Chart")
 selected_symbol = st.selectbox(
     "🔍 Select Asset to Load Chart & Complete History",
     options=ASSET_LIST,
-    index=3,  # Default to SOL
+    index=7,  # Default to SUI
 )
 
 if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTOptimizedSingleCycleEngine(
+  bot = TWTSafeSecondRedEngine(
       df_5, df_4, df_6, selected_symbol, active_tz
   )
   bot.calculate_and_scan()
@@ -439,7 +443,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Optimized Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Safe Engine Active")
 
   if bot.signals:
     latest_sig = bot.signals[-1]
@@ -480,7 +484,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   if bot.signals:
     st.markdown("---")
     st.subheader(
-        f"📋 Complete Signal History for {selected_symbol} (Optimized Edition)"
+        f"📋 Complete Signal History for {selected_symbol} (Safe Edition)"
     )
     df_history = pd.DataFrame(bot.signals).drop(
         columns=["Is_Within_1hr"], errors="ignore"
@@ -564,7 +568,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Optimized Single-Cycle ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Safe 2nd-Red Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
