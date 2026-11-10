@@ -334,7 +334,7 @@ class TWTUltimateStrictEngine:
             if cm["color"] == "Red" and cm["low"] <= ref_level + (cm["atr"] * 0.3):
               sell_state = 2
           elif sell_state == 2:
-            if cm["color"] == "Green" and cm["high'] >= ref_level - (cm["atr"] * 0.8):
+            if cm["color"] == "Green" and cm["high"] >= ref_level - (cm["atr"] * 0.8):
               sell_state = 3
           elif sell_state == 3:
             if cm["color"] == "Red":
