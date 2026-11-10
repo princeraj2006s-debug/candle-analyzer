@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (PRO EDITION) — Corrected D-C-B-A Engine"
+    "⚡ TRADE WITH TUCKYAA (PRO) — Strict Pullback Reversal Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -92,7 +92,7 @@ st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Strategy Settings")
 st.sidebar.text("Optimized Buy    : Support Rebound after Red Exhaustion")
-st.sidebar.text("Corrected Sell   : A->B->C->D Uprising -> Break B Low -> Green -> Red Cross")
+st.sidebar.text("Strict Pullback  : A->B->C->D -> Strict B Low Break -> Green -> Red Cross")
 st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss        : ATR Managed")
 
@@ -161,7 +161,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTTrainingEngineFinal:
+class TWTTrainingEngineStrictPullback:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -299,7 +299,7 @@ class TWTTrainingEngineFinal:
           })
           buy_state = 5
 
-    # --- SELL ENGINE SCANNER (Corrected Uprising A,B,C,D + Forward Trigger) ---
+    # --- STRICT PULLBACK SELL ENGINE SCANNER ---
     for i in range(3, len(self.candles)):
       c_d = self.candles[i]
       if time(1, 0) <= c_d["dt_ist"].time() <= time(6, 0):
@@ -310,7 +310,7 @@ class TWTTrainingEngineFinal:
           c_d["high"] >= self.resistance_lvl - (c_d["atr"] * 0.3)
           or c_d["close"] >= self.resistance_lvl - (c_d["atr"] * 0.3)
       ) and c_d["color"] == "Green":
-        # Look backward to find 3 preceding green candles (C, B, A)
+        # Look backward for 3 preceding green candles (C, B, A)
         green_indices = []
         for k in range(i - 1, -1, -1):
           if self.candles[k]["color"] == "Green":
@@ -319,7 +319,6 @@ class TWTTrainingEngineFinal:
               break
 
         if len(green_indices) == 3:
-          # green_indices[0] is C, green_indices[1] is B, green_indices[2] is A
           idx_c = green_indices[0]
           idx_b = green_indices[1]
           idx_a = green_indices[2]
@@ -331,20 +330,21 @@ class TWTTrainingEngineFinal:
           level_b_ref = c_b["high"]
           level_a_ref = c_a["high"]
 
-          # Now look forward from i (D onwards) for breakdown sequence
+          # Strictly wait for pull-back sequence from D onwards
           state_sell = 1
           triggered = False
           for m in range(i + 1, len(self.candles)):
             cm = self.candles[m]
             if state_sell == 1:
-              if cm["color"] == "Red" and cm["low"] <= target_b_low + (
-                  cm["atr"] * 0.2
-              ):
+              # Step 1: Strict Red candle breaking B's low
+              if cm["color"] == "Red" and cm["close"] < target_b_low:
                 state_sell = 2
             elif state_sell == 2:
+              # Step 2: Confirmation Green candle after breaking B low
               if cm["color"] == "Green":
                 state_sell = 3
             elif state_sell == 3:
+              # Step 3: Final Red candle crossing A & B levels -> SELL ENTRY!
               if cm["color"] == "Red" and (
                   cm["close"] <= level_a_ref or cm["close"] <= level_b_ref
               ):
@@ -365,10 +365,10 @@ class TWTTrainingEngineFinal:
                     "Candle #": cm["id"],
                     "Type": "SELL 🔴",
                     "Setup": (
-                        "A->B->C->D Pattern -> B Low Break -> Green -> Red"
-                        " Cross Entry"
+                        "Strict Pullback: A->B->C->D -> Strict B Low Break ->"
+                        " Green -> Red Cross"
                     ),
-                    "Action": "Sell / Short (S) [D-C-B-A Reversal] 🔴",
+                    "Action": "Sell / Short (S) [Strict Pullback Reversal] 🔴",
                     "Entry Price": round(cm["close"], dec),
                     "Stop Loss (SL)": sl,
                     "TP 1": tp1,
@@ -395,7 +395,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTTrainingEngineFinal(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTTrainingEngineStrictPullback(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -403,7 +403,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets with Corrected Engine..."):
+with st.spinner("⚡ Scanning all 20 assets with Strict Pullback Engine..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -435,14 +435,14 @@ st.subheader("📊 Manual Asset Inspector & Chart")
 selected_symbol = st.selectbox(
     "🔍 Select Asset to Load Chart & Complete History",
     options=ASSET_LIST,
-    index=3,  # Default to SOL
+    index=16,  # Default to OP
 )
 
 if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTTrainingEngineFinal(
+  bot = TWTTrainingEngineStrictPullback(
       df_5, df_4, df_6, selected_symbol, active_tz
   )
   bot.calculate_and_scan()
@@ -460,7 +460,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Final Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Strict Engine Active")
 
   if bot.signals:
     latest_sig = bot.signals[-1]
@@ -501,7 +501,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   if bot.signals:
     st.markdown("---")
     st.subheader(
-        f"📋 Complete Signal History for {selected_symbol} (Final Edition)"
+        f"📋 Complete Signal History for {selected_symbol} (Strict Edition)"
     )
     df_history = pd.DataFrame(bot.signals).drop(
         columns=["Is_Within_1hr"], errors="ignore"
@@ -585,7 +585,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Final Edition ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Strict Edition ({tz_short})",
       color="white",
       fontsize=14,
   )
