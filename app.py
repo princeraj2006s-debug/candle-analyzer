@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (PRO) — Flexible History-Enabled Engine"
+    "⚡ TRADE WITH TUCKYAA (PRO) — Multi-Pullback 2nd Candle Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -90,9 +90,10 @@ st.sidebar.text("No-Trade Zone      ———  01:00 ➔ 06:00 IST")
 st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Strategy Settings")
-st.sidebar.text("Flexible Mode    : Balanced Support Bounce & Resistance Rejection")
-st.sidebar.text("History Logging  : Active for all historical signals")
+st.sidebar.markdown("#### Strategy Rules")
+st.sidebar.text("Buy Rule         : Support + 3-4 Small Reds + 1 Medium Green -> 2nd Green Entry")
+st.sidebar.text("Sell Rule        : Resistance + 3-4 Small Greens + 1 Medium Red -> 2nd Red Entry")
+st.sidebar.text("Clean History    : Selective high-precision entries only")
 
 
 def get_decimals(price):
@@ -159,7 +160,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTFlexibleEngine:
+class TWTPrecisionPullbackEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -221,7 +222,7 @@ class TWTFlexibleEngine:
     elif self.df_4 is not None and not self.df_4.empty:
       self.support_lvl = float(self.df_4["Low"].iloc[-1])
 
-    # 2. ATR & Indicators
+    # 2. Indicators & Candle Classification
     self.df_5["TR"] = np.maximum(
         self.df_5["High"] - self.df_5["Low"],
         np.maximum(
@@ -230,6 +231,8 @@ class TWTFlexibleEngine:
         ),
     )
     self.df_5["ATR"] = self.df_5["TR"].rolling(14).mean()
+    self.df_5["Body"] = abs(self.df_5["Close"] - self.df_5["Open"])
+    self.df_5["AvgBody"] = self.df_5["Body"].rolling(10).mean()
 
     for idx, row in enumerate(self.df_5.iterrows()):
       dt_utc = row[0]
@@ -248,9 +251,11 @@ class TWTFlexibleEngine:
           float(r["Volume"]),
       )
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
+      body = float(r["Body"])
+      avg_body = float(r["AvgBody"]) if not pd.isna(r["AvgBody"]) else body
 
-      age_minutes = (current_utc_time - dt_utc).total_seconds() / 60.0
-      is_within_1hr = age_minutes <= 60.0
+      is_small = body <= (avg_body * 0.7)
+      is_medium = (body > (avg_body * 0.7)) and (body <= (avg_body * 1.5))
 
       self.candles.append({
           "id": idx + 1,
@@ -263,15 +268,17 @@ class TWTFlexibleEngine:
           "low": l,
           "close": c,
           "volume": v,
+          "body": body,
+          "is_small": is_small,
+          "is_medium": is_medium,
           "atr": atr,
-          "is_within_1hr": is_within_1hr,
       })
 
-    all_found_signals = []
+    all_signals = []
     is_major_coin = self.symbol in ["BTC/USDT", "ETH/USDT"]
-    zone_mult = 4.5 if is_major_coin else 3.0
+    zone_mult = 4.0 if is_major_coin else 2.5
 
-    # Scan through all candles to collect historical signals
+    # Scanning candles for precise multi-pullback 2nd candle entries
     for i in range(10, len(self.candles)):
       c = self.candles[i]
       if time(1, 0) <= c["dt_ist"].time() <= time(6, 0):
@@ -281,62 +288,67 @@ class TWTFlexibleEngine:
       dec = get_decimals(c["close"])
 
       # -------------------------------------------------------------
-      # FLEXIBLE BUY LOGIC (Near / Below Support Bounce)
+      # 1. BUYER ENTRY LOGIC (Support + 3-4 Small Reds + 1 Medium Green -> 2nd Green Entry)
       # -------------------------------------------------------------
-      if c["low"] <= self.support_lvl + (atr * 1.5):
-        if c["color"] == "Green" and (c["close"] > c["open"]):
-          sl = round(c["low"] - (1.2 * atr), dec)
-          tp1 = round(c["close"] + (1.2 * atr), dec)
-          tp2 = round(c["close"] + (2.5 * atr), dec)
-          tp3 = round(c["close"] + (4.0 * atr), dec)
+      if c["low"] <= self.support_lvl + (atr * 1.2):
+        if i >= 6:
+          # Check for 3-4 small red pullback candles preceding
+          small_reds = sum(1 for k in range(i - 5, i - 1) if self.candles[k]["color"] == "Red" and self.candles[k]["is_small"])
+          prev_medium_green = self.candles[i - 1]["color"] == "Green" and self.candles[i - 1]["is_medium"]
 
-          all_found_signals.append({
-              "Asset": self.symbol,
-              "Time": c["time"],
-              "Candle #": c["id"],
-              "Type": "BUY 🟢",
-              "Setup": "Flexible Support Bounce",
-              "Action": "Buy / Long (B) [Support Bounce] 🟢",
-              "Entry Price": round(c["close"], dec),
-              "Stop Loss (SL)": sl,
-              "TP 1": tp1,
-              "TP 2": tp2,
-              "TP 3": tp3,
-              "Is_Within_1hr": c["is_within_1hr"],
-          })
-          continue
+          if small_reds >= 3 and prev_medium_green and c["color"] == "Green":
+            sl = round(min(self.candles[i - 1]["low"], c["low"]) - (1.0 * atr), dec)
+            tp1 = round(c["close"] + (1.2 * atr), dec)
+            tp2 = round(c["close"] + (2.5 * atr), dec)
+            tp3 = round(c["close"] + (4.0 * atr), dec)
+
+            all_signals.append({
+                "Asset": self.symbol,
+                "Time": c["time"],
+                "Candle #": c["id"],
+                "Type": "BUY 🟢",
+                "Setup": "Support Multi-Pullback 2nd Green Entry",
+                "Action": "Buy / Long (B) [Support Pullback 2nd Green] 🟢",
+                "Entry Price": round(c["close"], dec),
+                "Stop Loss (SL)": sl,
+                "TP 1": tp1,
+                "TP 2": tp2,
+                "TP 3": tp3,
+            })
+            continue
 
       # -------------------------------------------------------------
-      # FLEXIBLE SELL LOGIC (Near Resistance Rejection)
+      # 2. SELLER ENTRY LOGIC (Resistance + 3-4 Small Greens + 1 Medium Red -> 2nd Red Entry)
       # -------------------------------------------------------------
       if c["high"] >= self.resistance_lvl - (atr * zone_mult):
-        body_size = abs(c["close"] - c["open"])
-        upper_wick = c["high"] - max(c["open"], c["close"])
-        if (c["color"] == "Red") or (upper_wick >= body_size * 0.5):
-          sl = round(c["high"] + (1.5 * atr), dec)
-          tp1 = round(c["close"] - (1.2 * atr), dec)
-          tp2 = round(c["close"] - (2.5 * atr), dec)
-          tp3 = round(c["close"] - (4.0 * atr), dec)
+        if i >= 6:
+          # Check for 3-4 small green pullback candles preceding near resistance
+          small_greens = sum(1 for k in range(i - 5, i - 1) if self.candles[k]["color"] == "Green" and self.candles[k]["is_small"])
+          prev_medium_red = self.candles[i - 1]["color"] == "Red" and self.candles[i - 1]["is_medium"]
 
-          all_found_signals.append({
-              "Asset": self.symbol,
-              "Time": c["time"],
-              "Candle #": c["id"],
-              "Type": "SELL 🔴",
-              "Setup": "Flexible Resistance Rejection",
-              "Action": "Sell / Short (S) [Resistance Rejection] 🔴",
-              "Entry Price": round(c["close"], dec),
-              "Stop Loss (SL)": sl,
-              "TP 1": tp1,
-              "TP 2": tp2,
-              "TP 3": tp3,
-              "Is_Within_1hr": c["is_within_1hr"],
-          })
-          continue
+          if small_greens >= 3 and prev_medium_red and c["color"] == "Red":
+            sl = round(max(self.candles[i - 1]["high"], c["high"]) + (1.2 * atr), dec)
+            tp1 = round(c["close"] - (1.2 * atr), dec)
+            tp2 = round(c["close"] - (2.5 * atr), dec)
+            tp3 = round(c["close"] - (4.0 * atr), dec)
 
-    self.history_signals = all_found_signals
-    recent_sigs = [s for s in all_found_signals if s.get("Is_Within_1hr", False)]
-    self.signals = [recent_sigs[-1]] if recent_sigs else (all_found_signals[-1:] if all_found_signals else [])
+            all_signals.append({
+                "Asset": self.symbol,
+                "Time": c["time"],
+                "Candle #": c["id"],
+                "Type": "SELL 🔴",
+                "Setup": "Resistance Multi-Pullback 2nd Red Entry",
+                "Action": "Sell / Short (S) [Resistance Pullback 2nd Red] 🔴",
+                "Entry Price": round(c["close"], dec),
+                "Stop Loss (SL)": sl,
+                "TP 1": tp1,
+                "TP 2": tp2,
+                "TP 3": tp3,
+            })
+            continue
+
+    self.history_signals = all_signals
+    self.signals = [all_signals[-1]] if all_signals else []
 
 
 # ---------------------------------------------------------
@@ -352,15 +364,13 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTFlexibleEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTPrecisionPullbackEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
-    recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
-    latest = recent_sigs[0] if recent_sigs else (engine.signals[0] if engine.signals else None)
-    return sym, engine, latest
+    return sym, engine, (engine.signals[0] if engine.signals else None)
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning with Flexible History-Enabled Engine..."):
+with st.spinner("⚡ Scanning with Multi-Pullback 2nd Candle Engine..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -374,9 +384,7 @@ with st.spinner("⚡ Scanning with Flexible History-Enabled Engine..."):
 
 if master_signals:
   st.success(f"✅ Found {len(master_signals)} active setup(s)!")
-  df_display = pd.DataFrame(master_signals).drop(
-      columns=["Is_Within_1hr"], errors="ignore"
-  )
+  df_display = pd.DataFrame(master_signals)
   st.dataframe(df_display, width="stretch")
 else:
   st.info(
@@ -399,7 +407,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTFlexibleEngine(
+  bot = TWTPrecisionPullbackEngine(
       df_5, df_4, df_6, selected_symbol, active_tz
   )
   bot.calculate_and_scan()
@@ -417,7 +425,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Flexible Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="2nd Candle Engine Active")
 
   if bot.signals:
     latest_sig = bot.signals[0]
@@ -450,7 +458,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   else:
     st.warning(
         "🟡 **STATUS: WAITING FOR SETUP**\n\n"
-        "📌 *Instructions:* Monitoring flexible support bounces and resistance rejections."
+        "📌 *Instructions:* Monitoring multi-pullback 2nd candle entries for Buy and Sell."
     )
 
   # Complete Single History Table
@@ -459,9 +467,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     st.subheader(
         f"📋 Complete Entry History for {selected_symbol}"
     )
-    df_history = pd.DataFrame(bot.history_signals).drop(
-        columns=["Is_Within_1hr"], errors="ignore"
-    )
+    df_history = pd.DataFrame(bot.history_signals)
     st.dataframe(df_history, width="stretch")
 
   # --- CLEAN CANDLESTICK CHART RENDERING ---
@@ -537,7 +543,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Flexible Engine ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA 2nd Candle Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
