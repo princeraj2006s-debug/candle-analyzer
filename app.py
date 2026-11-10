@@ -126,7 +126,7 @@ def fetch_twt_delta_data(symbol, tf):
     return None, None, None
 
 # ==========================================================
-# TWT ADVANCED PULLBACK ENGINE (FLEXIBLE STRATEGY)
+# TWT ADVANCED PULLBACK ENGINE (STRICT FILTER & COOLDOWN)
 # ==========================================================
 class TWTSafeSecondRedEngine:
     def __init__(self, df_5, df_4, df_6, symbol, user_tz):
@@ -206,16 +206,24 @@ class TWTSafeSecondRedEngine:
                 "is_within_1hr": is_within_1hr,
             })
 
-        # --- FLEXIBLE ADVANCED PULLBACK ENGINE SCANNER ---
+        # --- STRICT FILTERED PULLBACK ENGINE (COOLDOWN & LEVEL TEST) ---
+        last_signal_candle_id = -999
+
         for i in range(2, len(self.candles)):
             c = self.candles[i]
             prev1 = self.candles[i-1]
             prev2 = self.candles[i-2]
+            
+            # Enforce Cooldown: At least 25 candles gap between signals to prevent spamming
+            if (c["id"] - last_signal_candle_id) < 25:
+                continue
+
             dec = get_decimals(c["close"])
             atr = c["atr"] if not np.isnan(c["atr"]) else (c["close"] * 0.002)
 
-            # Flexible Seller Setup (Pullback / Rejection logic)
-            if c["color"] == "Red" and (prev1["color"] == "Red" or prev2["color"] == "Green"):
+            # Strict Seller Setup: Only near Resistance with Upper Wick Rejection (> 35%)
+            near_resistance = self.resistance_lvl > 0 and c["high"] >= self.resistance_lvl - (3.0 * atr)
+            if near_resistance and c["color"] == "Red" and prev2["upper_wick_pct"] >= 35.0:
                 sl = round(c["high"] + (1.2 * atr), dec)
                 tp1 = round(c["close"] - (1.2 * atr), dec)
                 tp2 = round(c["close"] - (2.5 * atr), dec)
@@ -231,9 +239,9 @@ class TWTSafeSecondRedEngine:
                     "Pullback": "Pullback 3",
                     "State": "SIGNAL_VALID",
                     "SellerStrength": "Confirmed",
-                    "BuyerWeakness": "Confirmed (Flexible Mode)",
+                    "BuyerWeakness": "Confirmed (Resistance Rejection)",
                     "WickRejection": f"Upper Wick {prev2['upper_wick_pct']:.1f}%",
-                    "Confirmation": "Bearish Retracement Rejection",
+                    "Confirmation": "Strict Resistance Rejection",
                     "Entry Price": round(c["close"], dec),
                     "Stop Loss (SL)": sl,
                     "TP 1": tp1,
@@ -241,13 +249,14 @@ class TWTSafeSecondRedEngine:
                     "TP 3": tp3,
                     "Target": tp1,
                     "RR": f"1:{rr:.2f}",
-                    "Score": 85,
+                    "Score": 90,
                     "Status": "VALID",
                     "Is_Within_1hr": c["is_within_1hr"]
                 })
+                last_signal_candle_id = c["id"]
 
-            # Flexible Buyer Setup (Support Rebound logic)
-            elif c["color"] == "Green" and (prev1["color"] == "Green" or prev2["color"] == "Red"):
+            # Strict Buyer Setup: Only near Support with Lower Wick Rejection (> 35%)
+            elif self.support_lvl > 0 and c["low"] <= self.support_lvl + (3.0 * atr) and c["color"] == "Green" and prev2["lower_wick_pct"] >= 35.0:
                 sl = round(c["low"] - (1.2 * atr), dec)
                 tp1 = round(c["close"] + (1.2 * atr), dec)
                 tp2 = round(c["close"] + (2.5 * atr), dec)
@@ -263,9 +272,9 @@ class TWTSafeSecondRedEngine:
                     "Pullback": "Pullback 3",
                     "State": "SIGNAL_VALID",
                     "BuyerStrength": "Confirmed",
-                    "SellerWeakness": "Confirmed (Flexible Mode)",
+                    "SellerWeakness": "Confirmed (Support Rebound)",
                     "WickRejection": f"Lower Wick {prev2['lower_wick_pct']:.1f}%",
-                    "Confirmation": "Bullish Retracement Rejection",
+                    "Confirmation": "Strict Support Rebound",
                     "Entry Price": round(c["close"], dec),
                     "Stop Loss (SL)": sl,
                     "TP 1": tp1,
@@ -273,10 +282,11 @@ class TWTSafeSecondRedEngine:
                     "TP 3": tp3,
                     "Target": tp1,
                     "RR": f"1:{rr:.2f}",
-                    "Score": 85,
+                    "Score": 90,
                     "Status": "VALID",
                     "Is_Within_1hr": c["is_within_1hr"]
                 })
+                last_signal_candle_id = c["id"]
 
 # ==========================================================
 # MASTER SCANNER (Global Feed for Top Dashboard)
@@ -297,7 +307,7 @@ def scan_single_asset(sym):
         return sym, engine, latest
     return sym, None, None
 
-with st.spinner("⚡ Scanning all 20 assets with Advanced Flexible Engine..."):
+with st.spinner("⚡ Scanning assets with Strict Filter Engine..."):
     with ThreadPoolExecutor(max_workers=5) as executor:
         futures = {executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST}
         for future in as_completed(futures):
@@ -308,11 +318,11 @@ with st.spinner("⚡ Scanning all 20 assets with Advanced Flexible Engine..."):
                 master_signals.append(latest)
 
 if master_signals:
-    st.success(f"✅ Found {len(master_signals)} active setup(s)!")
+    st.success(f"✅ Found {len(master_signals)} high-conviction setup(s)!")
     df_display = pd.DataFrame(master_signals).drop(columns=["Is_Within_1hr"], errors="ignore")
     st.dataframe(df_display, use_container_width=True)
 else:
-    st.info("ℹ️ No active signals in the last 1 hour. Waiting for setup triggers...")
+    st.info("ℹ️ No high-conviction signals in the last 1 hour. Waiting for clear levels...")
 
 # ==========================================================
 # MANUAL ASSET SELECTOR & CHART VIEWER (ISOLATED)
@@ -326,7 +336,6 @@ selected_symbol = st.selectbox(
     index=0
 )
 
-# Isolate paper trades per asset
 if f"paper_trades_{selected_symbol}" not in st.session_state:
     st.session_state[f"paper_trades_{selected_symbol}"] = []
 
@@ -342,13 +351,13 @@ if bot.df_5 is not None and not bot.df_5.empty:
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric(label="4H Resistance (01:30 High)", value=f"{bot.resistance_lvl:.2f}")
+        st.metric(label="4H Resistance", value=f"{bot.resistance_lvl:.2f}")
     with col2:
-        st.metric(label="6H Support (05:30 Low)", value=f"{bot.support_lvl:.2f}")
+        st.metric(label="6H Support", value=f"{bot.support_lvl:.2f}")
     with col3:
         st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
     with col4:
-        st.metric(label="Timezone", value=tz_short, delta="Flexible Engine Active")
+        st.metric(label="Timezone", value=tz_short, delta="Strict Filter Active")
 
     if bot.signals:
         latest_sig = bot.signals[-1]
@@ -385,7 +394,7 @@ Target: {latest_sig['Target']}
 Risk-to-Reward: {latest_sig['RR']}
 Signal Status: VALID (Score: {latest_sig['Score']}/100)""", language="text")
     else:
-        st.warning(f"🟡 **STATUS: WAITING FOR SETUP ON {selected_symbol}**")
+        st.warning(f"🟡 **STATUS: WAITING FOR CLEAR LEVEL SETUP ON {selected_symbol}**")
 
     # ==========================================================
     # INTERACTIVE PAPER TRADING DESK (ISOLATED)
