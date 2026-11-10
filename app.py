@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (PRO) — Safe 2nd-Red Pullback Engine"
+    "⚡ TRADE WITH TUCKYAA (PRO) — Strict Resistance Rejection Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -92,7 +92,7 @@ st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Strategy Settings")
 st.sidebar.text("Optimized Buy    : Support Rebound after Red Exhaustion")
-st.sidebar.text("Safe Sell Filter : Resistance Test -> C Break -> Green Pullback -> 2nd Red Entry")
+st.sidebar.text("Strict Sell Filter : Resistance Rejection -> C Break -> Pullback -> 2nd Red Entry")
 st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss        : ATR Managed")
 
@@ -154,14 +154,14 @@ def fetch_twt_delta_data(symbol, tf):
               else df_4.copy()
           )
           df_6["timestamp"] = pd.to_datetime(df_6["timestamp"], unit="ms")
-          df_6 = df_6.set_index("timestamp")
+          df_6_6 = df_6.set_index("timestamp")
           return df_5, df_4, df_6
     except Exception:
       continue
   return None, None, None
 
 
-class TWTSafeSecondRedEngine:
+class TWTStrictResistanceRejectionEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -299,7 +299,7 @@ class TWTSafeSecondRedEngine:
           })
           buy_state = 5
 
-    # --- SAFE 2ND-RED PULLBACK REJECTION SELL ENGINE SCANNER ---
+    # --- STRICT RESISTANCE REJECTION SELL ENGINE SCANNER ---
     for i in range(len(self.candles)):
       c_curr = self.candles[i]
       if time(1, 0) <= c_curr["dt_ist"].time() <= time(6, 0):
@@ -307,32 +307,36 @@ class TWTSafeSecondRedEngine:
 
       atr_val = c_curr["atr"] if not np.isnan(c_curr["atr"]) else (c_curr["close"] * 0.002)
 
-      # Flexible Resistance Proximity Test
+      # 1. Must test resistance from below or near resistance level (Strictly rejecting downwards)
       if (
-          c_curr["high"] >= self.resistance_lvl - (atr_val * 2.5)
-          or c_curr["close"] >= self.resistance_lvl - (atr_val * 2.5)
+          (self.resistance_lvl - (atr_val * 2.0) <= c_curr["high"] <= self.resistance_lvl + (atr_val * 0.5))
+          or (self.resistance_lvl - (atr_val * 2.0) <= c_curr["close"] <= self.resistance_lvl + (atr_val * 0.5))
       ) and c_curr["color"] == "Green":
         
-        ref_level = c_curr["low"] # Reference level from C candle
+        c_ref_level = c_curr["low"] # Key C level reference
 
         sell_state = 1
         triggered = False
         for m in range(i + 1, len(self.candles)):
           cm = self.candles[m]
+          # Ensure price stays below resistance during the short setup
+          if cm["high"] > self.resistance_lvl + (atr_val * 0.5):
+            break # Invalidated if price breaks out above resistance
+
           if sell_state == 1:
-            # Step 1: Red candle breaks below ref_level
-            if cm["color"] == "Red" and cm["low"] <= ref_level + (cm["atr"] * 0.3):
+            # Step 1: Red candle breaks below C level
+            if cm["color"] == "Red" and cm["low"] <= c_ref_level + (cm["atr"] * 0.3):
               sell_state = 2
           elif sell_state == 2:
-            # Step 2: Green candle pulls back up towards ref_level
-            if cm["color"] == "Green" and cm["high"] >= ref_level - (cm["atr"] * 0.8):
+            # Step 2: Green candle pulls back up towards C level
+            if cm["color"] == "Green" and cm["high"] >= c_ref_level - (cm["atr"] * 0.8):
               sell_state = 3
           elif sell_state == 3:
-            # Step 3: First red candle after pullback (Waits for safety)
+            # Step 3: First red candle after pullback
             if cm["color"] == "Red":
               sell_state = 4
           elif sell_state == 4:
-            # Step 4: Second red candle confirmation -> SAFE SELL ENTRY! (Executes ONCE per cycle)
+            # Step 4: Second red candle confirmation -> STRICT SELL ENTRY! (Executes ONCE per cycle)
             if cm["color"] == "Red":
               atr = (
                   cm["atr"]
@@ -350,8 +354,8 @@ class TWTSafeSecondRedEngine:
                   "Time": cm["time"],
                   "Candle #": cm["id"],
                   "Type": "SELL 🔴",
-                  "Setup": "Safe 2nd-Red Pullback Rejection",
-                  "Action": "Sell / Short (S) [Safe 2nd-Red Entry] 🔴",
+                  "Setup": "Strict Resistance Rejection (2nd Red Entry)",
+                  "Action": "Sell / Short (S) [Strict Rejection Entry] 🔴",
                   "Entry Price": round(cm["close"], dec),
                   "Stop Loss (SL)": sl,
                   "TP 1": tp1,
@@ -378,7 +382,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTSafeSecondRedEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTStrictResistanceRejectionEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -386,7 +390,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets with Safe Engine..."):
+with st.spinner("⚡ Scanning all 20 assets with Strict Engine..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -418,14 +422,14 @@ st.subheader("📊 Manual Asset Inspector & Chart")
 selected_symbol = st.selectbox(
     "🔍 Select Asset to Load Chart & Complete History",
     options=ASSET_LIST,
-    index=7,  # Default to SUI
+    index=14,  # Default to APT
 )
 
 if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTSafeSecondRedEngine(
+  bot = TWTStrictResistanceRejectionEngine(
       df_5, df_4, df_6, selected_symbol, active_tz
   )
   bot.calculate_and_scan()
@@ -443,7 +447,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Safe Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Strict Engine Active")
 
   if bot.signals:
     latest_sig = bot.signals[-1]
@@ -484,7 +488,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   if bot.signals:
     st.markdown("---")
     st.subheader(
-        f"📋 Complete Signal History for {selected_symbol} (Safe Edition)"
+        f"📋 Complete Signal History for {selected_symbol} (Strict Edition)"
     )
     df_history = pd.DataFrame(bot.signals).drop(
         columns=["Is_Within_1hr"], errors="ignore"
@@ -568,7 +572,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Safe 2nd-Red Engine ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Strict Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
