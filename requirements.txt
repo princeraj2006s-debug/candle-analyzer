@@ -1,6 +1,6 @@
 streamlit
-streamlit-autorefresh
+plotly
 ccxt
-matplotlib
-numpy
 pandas
+numpy
+streamlit-autorefresh
