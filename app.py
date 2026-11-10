@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (PRO) — Absolute Single Entry Engine"
+    "⚡ TRADE WITH TUCKYAA (PRO) — Ultimate First-Entry Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -91,9 +91,9 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Strategy Settings")
-st.sidebar.text("Strict Rule      : ONLY ONE ENTRY PER DAY (First come, strictly locked)")
+st.sidebar.text("Strict Lock      : ABSOLUTE FIRST ENTRY ONLY (No duplicates)")
 st.sidebar.text("Optimized Buy    : Support Rebound after Red Exhaustion")
-st.sidebar.text("Safe Sell Filter : Resistance Test -> Green Pullback -> 2nd Red Entry")
+st.sidebar.text("Safe Sell Filter : Resistance Test -> C Break -> Pullback -> 2nd Red Entry")
 st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss        : ATR Managed")
 
@@ -162,7 +162,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTStrictSingleDayEngine:
+class TWTUltimateStrictEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -172,6 +172,7 @@ class TWTStrictSingleDayEngine:
     self.user_tz = user_tz
     self.candles = []
     self.signals = []
+    self.history_signals = []
     self.resistance_lvl = 0
     self.support_lvl = 0
 
@@ -269,10 +270,9 @@ class TWTStrictSingleDayEngine:
           "is_within_1hr": is_within_1hr,
       })
 
-    # --- COLLECT ALL VALID SIGNALS ACROSS THE TIMELINE ---
-    all_detected_signals = []
+    detected = []
 
-    # A. Scan Buy Signals
+    # --- SCAN BUY SIGNAL ---
     buy_state = 0
     red_streak = 0
     for i in range(len(self.candles)):
@@ -297,7 +297,7 @@ class TWTStrictSingleDayEngine:
           tp2 = round(c["close"] + (2.5 * atr), dec)
           tp3 = round(c["close"] + (4.0 * atr), dec)
 
-          all_detected_signals.append({
+          detected.append({
               "Asset": self.symbol,
               "Time": c["time"],
               "Candle #": c["id"],
@@ -313,7 +313,7 @@ class TWTStrictSingleDayEngine:
           })
           buy_state = 5
 
-    # B. Scan Sell Signals (Safe 2nd Red Pullback)
+    # --- SCAN SELL SIGNAL (Strict Pullback + 2nd Red) ---
     for i in range(len(self.candles)):
       c_curr = self.candles[i]
       if time(1, 0) <= c_curr["dt_ist"].time() <= time(6, 0):
@@ -334,7 +334,7 @@ class TWTStrictSingleDayEngine:
             if cm["color"] == "Red" and cm["low"] <= ref_level + (cm["atr"] * 0.3):
               sell_state = 2
           elif sell_state == 2:
-            if cm["color"] == "Green" and cm["high"] >= ref_level - (cm["atr"] * 0.8):
+            if cm["color"] == "Green" and cm["high'] >= ref_level - (cm["atr"] * 0.8):
               sell_state = 3
           elif sell_state == 3:
             if cm["color"] == "Red":
@@ -352,7 +352,7 @@ class TWTStrictSingleDayEngine:
               tp2 = round(cm["close"] - (2.5 * cm_atr), cm_dec)
               tp3 = round(cm["close"] - (4.0 * cm_atr), cm_dec)
 
-              all_detected_signals.append({
+              detected.append({
                   "Asset": self.symbol,
                   "Time": cm["time"],
                   "Candle #": cm["id"],
@@ -368,15 +368,14 @@ class TWTStrictSingleDayEngine:
               })
               break
 
-    # --- STRICT RULE: KEEP ONLY THE VERY FIRST EARLIEST SIGNAL ---
-    if all_detected_signals:
-      # Sort by Candle # ascending so the earliest candle comes first
-      sorted_sigs = sorted(all_detected_signals, key=lambda x: x["Candle #"])
+    if detected:
+      # Sort strictly by Candle # to get chronological order
+      df_temp = pd.DataFrame(detected).drop_duplicates(subset=["Time", "Type"])
+      sorted_sigs = df_temp.sort_values(by="Candle #").to_dict("records")
       
-      # 1. Store full history of signals for the table
+      # Keep history table clean and unique
       self.history_signals = sorted_sigs
-      
-      # 2. But on the chart and top alert, STRICTLY show ONLY THE FIRST ONE!
+      # Chart and Main Banner gets ONLY THE ABSOLUTE FIRST ENTRY
       self.signals = [sorted_sigs[0]]
     else:
       self.history_signals = []
@@ -396,16 +395,15 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTStrictSingleDayEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTUltimateStrictEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
-    # For master feed, only take the absolute first signal if it's within 1 hour
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[0] if recent_sigs else None
     return sym, engine, latest
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets for Strict First Entry..."):
+with st.spinner("⚡ Scanning all 20 assets for Absolute First Entry..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -421,7 +419,7 @@ if master_signals:
   st.success(f"✅ Found {len(master_signals)} active setup(s)!")
   df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
-  )
+  ).drop_duplicates(subset=["Asset", "Time", "Type"])
   st.dataframe(df_display, width="stretch")
 else:
   st.info(
@@ -444,7 +442,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTStrictSingleDayEngine(
+  bot = TWTUltimateStrictEngine(
       df_5, df_4, df_6, selected_symbol, active_tz
   )
   bot.calculate_and_scan()
@@ -462,7 +460,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Strict First-Only Active")
+    st.metric(label="Timezone", value=tz_short, delta="Strict First-Only Locked")
 
   if bot.signals:
     latest_sig = bot.signals[0]
@@ -499,15 +497,15 @@ if bot.df_5 is not None and not bot.df_5.empty:
         " setups (Strategy tags hidden)."
     )
 
-  # Complete Signal History Table
+  # Complete Signal History Table (Unique & Clean)
   if bot.history_signals:
     st.markdown("---")
     st.subheader(
-        f"📋 Complete Signal History for {selected_symbol}"
+        f"📋 Complete Unique Signal History for {selected_symbol}"
     )
     df_history = pd.DataFrame(bot.history_signals).drop(
         columns=["Is_Within_1hr"], errors="ignore"
-    )
+    ).drop_duplicates(subset=["Time", "Type"])
     st.dataframe(df_history, width="stretch")
 
   # Chart Rendering
@@ -588,7 +586,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Strict Single Entry ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Ultimate First-Entry Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
