@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (PRO) — Master Single-Entry Engine"
+    "⚡ TRADE WITH TUCKYAA (PRO) — Support Zone Verified Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -91,8 +91,9 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Strategy Rules")
-st.sidebar.text("Trend Priority   : Dominant Power Filter (No Weak Entries)")
-st.sidebar.text("Signal Lock      : Exactly ONE Best Recent Entry per Asset")
+st.sidebar.text("Buy Rule         : Above Support Zone Close + Multi-Pullback")
+st.sidebar.text("Sell Rule        : Near Resistance Zone + Multi-Pullback")
+st.sidebar.text("Spam Control     : Exactly ONE Dominant Entry per Asset")
 
 
 def get_decimals(price):
@@ -159,7 +160,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTMasterEngine:
+class TWTSupportZoneEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -293,10 +294,13 @@ class TWTMasterEngine:
       dec = get_decimals(c["close"])
 
       # -------------------------------------------------------------
-      # BUYER ENTRY: Only when price is near/below Support with valid pullback
+      # BUYER ENTRY: Strictly ABOVE Support Zone Close + Multi-Pullback
       # -------------------------------------------------------------
-      if c["low"] <= self.support_lvl + (atr * 1.2):
-        small_reds = sum(1 for k in range(i - 5, i - 1) if self.candles[k]["color"] == "Red" and (self.candles[k]["is_small"] or self.candles[k]["is_medium"]))
+      if c["close"] >= self.support_lvl:
+        small_reds = sum(
+            1 for k in range(i - 5, i - 1)
+            if self.candles[k]["color"] == "Red" and (self.candles[k]["is_small"] or self.candles[k]["is_medium"])
+        )
         prev_medium_green = self.candles[i - 1]["color"] == "Green" and self.candles[i - 1]["is_medium"]
 
         if small_reds >= 2 and prev_medium_green and c["color"] == "Green":
@@ -310,8 +314,8 @@ class TWTMasterEngine:
               "Time": c["time"],
               "Candle #": c["id"],
               "Type": "BUY 🟢",
-              "Setup": "Support Multi-Pullback Entry",
-              "Action": "Buy / Long (B) [Support Valid Pullback] 🟢",
+              "Setup": "Above Support Zone Pullback Entry",
+              "Action": "Buy / Long (B) [Support Above Close Entry] 🟢",
               "Entry Price": round(c["close"], dec),
               "Stop Loss (SL)": sl,
               "TP 1": tp1,
@@ -321,10 +325,13 @@ class TWTMasterEngine:
           })
 
       # -------------------------------------------------------------
-      # SELLER ENTRY: Only when price is near/below Resistance with valid pullback
+      # SELLER ENTRY: Near Resistance Zone + Multi-Pullback
       # -------------------------------------------------------------
       if c["high"] >= self.resistance_lvl - (atr * zone_mult):
-        small_greens = sum(1 for k in range(i - 5, i - 1) if self.candles[k]["color"] == "Green" and (self.candles[k]["is_small"] or self.candles[k]["is_medium"]))
+        small_greens = sum(
+            1 for k in range(i - 5, i - 1)
+            if self.candles[k]["color"] == "Green" and (self.candles[k]["is_small"] or self.candles[k]["is_medium"])
+        )
         prev_medium_red = self.candles[i - 1]["color"] == "Red" and self.candles[i - 1]["is_medium"]
 
         if small_greens >= 2 and prev_medium_red and c["color"] == "Red":
@@ -338,7 +345,7 @@ class TWTMasterEngine:
               "Time": c["time"],
               "Candle #": c["id"],
               "Type": "SELL 🔴",
-              "Setup": "Resistance Multi-Pullback Entry",
+              "Setup": "Resistance Zone Multi-Pullback Entry",
               "Action": "Sell / Short (S) [Resistance Valid Pullback] 🔴",
               "Entry Price": round(c["close"], dec),
               "Stop Loss (SL)": sl,
@@ -350,10 +357,9 @@ class TWTMasterEngine:
 
     self.history_signals = all_found
     
-    # FILTER: Select ONLY ONE absolute latest signal within the last 1 hour (No simultaneous double entries)
+    # FILTER: Select ONLY ONE absolute latest signal within the last 1 hour
     recent_sigs = [s for s in all_found if s.get("Is_Within_1hr", False)]
     if recent_sigs:
-      # Take the latest candle ID among recent signals
       latest_sig = max(recent_sigs, key=lambda x: x["Candle #"])
       self.signals = [latest_sig]
     else:
@@ -373,14 +379,14 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTMasterEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTSupportZoneEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     return sym, engine, (recent[0] if recent else None)
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning with Master Single-Entry Engine..."):
+with st.spinner("⚡ Scanning with Support Zone Engine..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -419,7 +425,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTMasterEngine(
+  bot = TWTSupportZoneEngine(
       df_5, df_4, df_6, selected_symbol, active_tz
   )
   bot.calculate_and_scan()
@@ -437,10 +443,9 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Master Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Support Zone Engine Active")
 
   if bot.signals:
-    # Display only the single dominant active signal
     sig = bot.signals[0]
     is_buy = "BUY" in sig["Type"]
     entry_p = sig["Entry Price"]
@@ -471,7 +476,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   else:
     st.warning(
         "🟡 **STATUS: WAITING FOR SETUP**\n\n"
-        "📌 *Instructions:* Monitoring dominant trend and pullbacks near Support/Resistance."
+        "📌 *Instructions:* Monitoring Support above-close for Buy and Resistance rejection for Sell."
     )
 
   # Complete Single History Table
@@ -558,7 +563,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Master Engine ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Support Zone Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
