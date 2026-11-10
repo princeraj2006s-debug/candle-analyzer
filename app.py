@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (PRO) — Symmetric Pullback Engine"
+    "⚡ TRADE WITH TUCKYAA (PRO) — Institutional Double Pullback Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -90,9 +90,9 @@ st.sidebar.text("No-Trade Zone      ———  01:00 ➔ 06:00 IST")
 st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Strategy Settings")
-st.sidebar.text("Sell Rule        : Resistance + Weak Green Pullback + 2nd Red Entry")
-st.sidebar.text("Buy Rule         : Below Support + Weak Red Dip + 2nd Green Entry")
+st.sidebar.markdown("#### Strategy Rules")
+st.sidebar.text("Buy Rule         : Below Support -> 4-5 Green -> Engulf -> 2nd Green Medium")
+st.sidebar.text("Sell Rule        : 3rd Phase Buyer Exhaustion -> Small Green -> 2nd Red Medium")
 st.sidebar.text("Strict Lock      : Single First Entry Only")
 
 
@@ -160,7 +160,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTSymmetricEngine:
+class TWTInstitutionalEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -181,7 +181,7 @@ class TWTSymmetricEngine:
     IST = timezone(timedelta(hours=5, minutes=30))
     current_utc_time = datetime.now(timezone.utc)
 
-    # 1. Calculate Key Levels
+    # 1. Key Levels Calculation
     if self.df_4 is not None and not self.df_4.empty:
       dt_index_4 = (
           self.df_4.index
@@ -222,7 +222,7 @@ class TWTSymmetricEngine:
     elif self.df_4 is not None and not self.df_4.empty:
       self.support_lvl = float(self.df_4["Low"].iloc[-1])
 
-    # 2. Indicators Calculation (ATR & Body Size)
+    # 2. Indicators & Candle Classification
     self.df_5["TR"] = np.maximum(
         self.df_5["High"] - self.df_5["Low"],
         np.maximum(
@@ -254,7 +254,11 @@ class TWTSymmetricEngine:
       body = float(r["Body"])
       avg_body = float(r["AvgBody"]) if not pd.isna(r["AvgBody"]) else body
 
-      is_long_medium = body >= (avg_body * 0.6)
+      # Candle Size Categories
+      is_small = body <= (avg_body * 0.6)
+      is_medium = (body > (avg_body * 0.6)) and (body <= (avg_body * 1.3))
+      is_long = body > (avg_body * 1.3)
+      upper_wick = h - max(o, c)
 
       self.candles.append({
           "id": idx + 1,
@@ -268,7 +272,10 @@ class TWTSymmetricEngine:
           "close": c,
           "volume": v,
           "body": body,
-          "is_long_medium": is_long_medium,
+          "is_small": is_small,
+          "is_medium": is_medium,
+          "is_long": is_long,
+          "upper_wick": upper_wick,
           "atr": atr,
       })
 
@@ -276,7 +283,7 @@ class TWTSymmetricEngine:
     is_major_coin = self.symbol in ["BTC/USDT", "ETH/USDT"]
     zone_multiplier = 4.0 if is_major_coin else 2.5
 
-    for i in range(15, len(self.candles)):
+    for i in range(20, len(self.candles)):
       c = self.candles[i]
       if time(1, 0) <= c["dt_ist"].time() <= time(6, 0):
         continue
@@ -285,49 +292,74 @@ class TWTSymmetricEngine:
       dec = get_decimals(c["close"])
 
       # -------------------------------------------------------------
-      # 1. BUYER LOGIC (Below Support + Weak Red Dip + 2nd Green Entry)
+      # 1. NEW BUYER ENTRY LOGIC (Below Support + 4-5 Green + Engulfing + 2nd Green Medium Entry)
       # -------------------------------------------------------------
-      if c["low"] <= self.support_lvl + (atr * 1.0):
-        if i >= 5:
-          # Strong initial red drop, followed by weak red pullback, then green confirmation on 2nd green
-          initial_drop = any(self.candles[k]["color"] == "Red" and self.candles[k]["is_long_medium"] for k in range(i - 4, i - 1))
-          if initial_drop:
-            # Check if recent candles show weak red dip (small/medium candles) followed by green
-            if self.candles[i - 1]["color"] == "Red" and not self.candles[i - 1]["is_long_medium"] and c["color"] == "Green":
-              sl = round(min(self.candles[i - 1]["low"], c["low"]) - (1.0 * atr), dec)
-              tp1 = round(c["close"] + (1.2 * atr), dec)
-              tp2 = round(c["close"] + (2.5 * atr), dec)
-              tp3 = round(c["close"] + (4.0 * atr), dec)
+      # Step A: Price was below support level
+      if any(self.candles[k]["low"] <= self.support_lvl for k in range(i - 12, i - 6)):
+        # Step B: 4-5 green candles above support
+        green_count_above = sum(
+            1 for k in range(i - 8, i - 3)
+            if self.candles[k]["color"] == "Green" and self.candles[k]["close"] > self.support_lvl
+        )
+        if green_count_above >= 4:
+          # Step C: Red pullback candle crossing below support & weak red candle engulfed by green
+          weak_red_engulfed = (
+              self.candles[i - 3]["color"] == "Red"
+              and self.candles[i - 3]["is_small"]
+              and self.candles[i - 2]["color"] == "Green"
+              and self.candles[i - 2]["close"] > self.candles[i - 3]["open"]
+          )
+          if weak_red_engulfed:
+            # Step D: Red pullback -> Medium Green Candle -> Entry on 2nd Green Candle
+            if self.candles[i - 1]["color"] == "Green" and (self.candles[i - 1]["is_medium"] or self.candles[i - 1]["is_long"]):
+              if c["color"] == "Green":
+                sl = round(min(self.candles[i - 3]["low"], self.candles[i - 1]["low"], c["low"]) - (1.0 * atr), dec)
+                tp1 = round(c["close"] + (1.2 * atr), dec)
+                tp2 = round(c["close"] + (2.5 * atr), dec)
+                tp3 = round(c["close"] + (4.0 * atr), dec)
 
-              found_signal = {
-                  "Asset": self.symbol,
-                  "Time": c["time"],
-                  "Candle #": c["id"],
-                  "Type": "BUY 🟢",
-                  "Setup": "Below Support Weak Dip 2nd Green Entry",
-                  "Action": "Buy / Long (B) [Support Weak Dip] 🟢",
-                  "Entry Price": round(c["close"], dec),
-                  "Stop Loss (SL)": sl,
-                  "TP 1": tp1,
-                  "TP 2": tp2,
-                  "TP 3": tp3,
-              }
-              break
+                found_signal = {
+                    "Asset": self.symbol,
+                    "Time": c["time"],
+                    "Candle #": c["id"],
+                    "Type": "BUY 🟢",
+                    "Setup": "Support Sweep Engulfing + 2nd Green Entry",
+                    "Action": "Buy / Long (B) [Double Pullback Engulfing] 🟢",
+                    "Entry Price": round(c["close"], dec),
+                    "Stop Loss (SL)": sl,
+                    "TP 1": tp1,
+                    "TP 2": tp2,
+                    "TP 3": tp3,
+                }
+                break
         if found_signal:
           break
 
       # -------------------------------------------------------------
-      # 2. SELLER LOGIC (Resistance Zone + Weak Green Pullback + 2nd Red Entry)
+      # 2. NEW SELLER ENTRY LOGIC (3rd Phase Buyer Exhaustion + 2nd Red Entry)
       # -------------------------------------------------------------
       is_near_resistance = c["high"] >= self.resistance_lvl - (atr * zone_multiplier)
       if is_near_resistance:
-        if i >= 5:
-          # Strong initial green rally, followed by weak green pullback, then red confirmation on 2nd red
-          initial_rally = any(self.candles[k]["color"] == "Green" and self.candles[k]["is_long_medium"] for k in range(i - 4, i - 1))
-          if initial_rally:
-            # Check if previous candle was weak green and current candle is red confirming the rejection
-            if self.candles[i - 1]["color"] == "Green" and not self.candles[i - 1]["is_long_medium"] and c["color"] == "Red":
-              sl = round(max(self.candles[i - 1]["high"], c["high"]) + (1.2 * atr), dec)
+        # Phase 1 check: Initial rally with long/medium green candles (Ignore 1st pullback)
+        phase1_strong = any(
+            self.candles[k]["color"] == "Green" and (self.candles[k]["is_long"] or self.candles[k]["is_medium"])
+            for k in range(i - 15, i - 9)
+        )
+        if phase1_strong:
+          # Phase 2 check: 2nd recovery has small/medium green candles with upper wicks (Ignore 2nd pullback)
+          phase2_weak = any(
+              self.candles[k]["color"] == "Green"
+              and (self.candles[k]["is_small"] or self.candles[k]["is_medium"])
+              and (self.candles[k]["upper_wick"] > self.candles[k]["body"] * 0.4)
+              for k in range(i - 8, i - 3)
+          )
+          if phase2_weak:
+            # Phase 3 check: Buyer makes small green candle, Seller makes medium red candle -> Entry on 2nd Red Candle
+            buyer_small_green = self.candles[i - 2]["color"] == "Green" and self.candles[i - 2]["is_small"]
+            seller_medium_red = self.candles[i - 1]["color"] == "Red" and (self.candles[i - 1]["is_medium"] or self.candles[i - 1]["is_long"])
+            
+            if buyer_small_green and seller_medium_red and c["color"] == "Red":
+              sl = round(max(self.candles[i - 2]["high"], self.candles[i - 1]["high"], c["high"]) + (1.2 * atr), dec)
               tp1 = round(c["close"] - (1.2 * atr), dec)
               tp2 = round(c["close"] - (2.5 * atr), dec)
               tp3 = round(c["close"] - (4.0 * atr), dec)
@@ -337,8 +369,8 @@ class TWTSymmetricEngine:
                   "Time": c["time"],
                   "Candle #": c["id"],
                   "Type": "SELL 🔴",
-                  "Setup": "Resistance Weak Pullback 2nd Red Entry",
-                  "Action": "Sell / Short (S) [Resistance Weak Pullback] 🔴",
+                  "Setup": "3rd Phase Buyer Exhaustion + 2nd Red Entry",
+                  "Action": "Sell / Short (S) [3rd Phase Exhaustion Drop] 🔴",
                   "Entry Price": round(c["close"], dec),
                   "Stop Loss (SL)": sl,
                   "TP 1": tp1,
@@ -373,13 +405,13 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTSymmetricEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTInstitutionalEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     return sym, engine, (engine.signals[0] if engine.signals else None)
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning with Symmetric Pullback Engine..."):
+with st.spinner("⚡ Scanning with Institutional Double Pullback Engine..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -416,7 +448,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTSymmetricEngine(
+  bot = TWTInstitutionalEngine(
       df_5, df_4, df_6, selected_symbol, active_tz
   )
   bot.calculate_and_scan()
@@ -434,7 +466,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Symmetric Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Institutional Engine Active")
 
   if bot.signals:
     latest_sig = bot.signals[0]
@@ -467,7 +499,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   else:
     st.warning(
         "🟡 **STATUS: WAITING FOR SETUP**\n\n"
-        "📌 *Instructions:* Monitoring symmetric weak-pullback 2nd candle entries for Buy and Sell."
+        "📌 *Instructions:* Monitoring Support Sweep Engulfing for Buy and 3rd Phase Buyer Exhaustion for Sell."
     )
 
   # Complete Single History Table
@@ -552,7 +584,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Symmetric Engine ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Institutional Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
