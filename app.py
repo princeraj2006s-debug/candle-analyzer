@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (PRO EDITION) — Optimized Dual Engine"
+    "⚡ TRADE WITH TUCKYAA (ULTRA PRO) — Flexible Dual Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -91,8 +91,8 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Strategy Settings")
-st.sidebar.text("Optimized Buy    : Red Exhaustion -> Flexible Green Rebound")
-st.sidebar.text("Hidden Sell      : D->C->B->A (Secret Mode Active)")
+st.sidebar.text("Flexible Buy     : Red Exhaustion -> Fast Rebound")
+st.sidebar.text("Flexible Sell    : D->C->B->A (Optimized Flow)")
 st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss        : ATR Managed")
 
@@ -161,7 +161,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTTrainingEnginePro:
+class TWTTrainingEngineUltra:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -258,12 +258,11 @@ class TWTTrainingEnginePro:
           "is_within_1hr": is_within_1hr,
       })
 
-    # --- HIGHLY SENSITIVE & ROBUST BUY STATE MACHINE ---
+    # --- ULTRA FLEXIBLE BUY STATE MACHINE ---
     buy_state = 0
     red_streak = 0
-    last_red_high = 0.0
 
-    # --- SELL STATE MACHINE ---
+    # --- ULTRA FLEXIBLE SELL STATE MACHINE ---
     sell_state = 0
     target_b_low = 0.0
     level_a_ref = 0.0
@@ -277,20 +276,17 @@ class TWTTrainingEnginePro:
       atr = c["atr"] if not np.isnan(c["atr"]) else (c["close"] * 0.002)
       dec = get_decimals(c["close"])
 
-      # BUY ENGINE (Optimized & Non-Missable)
+      # BUY ENGINE (Sensitive & Non-Missable)
       if buy_state != 5 and c["close"] >= self.support_lvl:
         buy_state = 0
         red_streak = 0
-        last_red_high = 0.0
 
-      if buy_state != 5 and c["close"] < self.support_lvl:
+      if buy_state != 5 and c["close"] < self.support_lvl + (atr * 0.5):
         if c["color"] == "Red":
           red_streak += 1
-          last_red_high = c["high"]
-          if red_streak >= 3:
-            buy_state = 1  # Exhaustion reached after 3+ red candles
+          if red_streak >= 2:
+            buy_state = 1
         elif c["color"] == "Green" and buy_state >= 1:
-          # Trigger Buy as soon as green candle appears after red streak near support
           sl = round(c["low"] - (1.2 * atr), dec)
           tp1 = round(c["close"] + (1.2 * atr), dec)
           tp2 = round(c["close"] + (2.5 * atr), dec)
@@ -301,8 +297,8 @@ class TWTTrainingEnginePro:
               "Time": c["time"],
               "Candle #": c["id"],
               "Type": "BUY 🟢",
-              "Setup": "Red Exhaustion -> Green Rebound Entry",
-              "Action": "Buy / Long (B) [Optimized Rebound] 🟢",
+              "Setup": "Flexible Support Rebound",
+              "Action": "Buy / Long (B) [Ultra Flexible Rebound] 🟢",
               "Entry Price": round(c["close"], dec),
               "Stop Loss (SL)": sl,
               "TP 1": tp1,
@@ -310,17 +306,18 @@ class TWTTrainingEnginePro:
               "TP 3": tp3,
               "Is_Within_1hr": c["is_within_1hr"],
           })
-          buy_state = 5  # Locked for support cycle
+          buy_state = 5
 
-      # SELL ENGINE (D -> C -> B -> A with Red Ignore)
-      if sell_state != 5 and c["close"] <= self.resistance_lvl - (atr * 2.5):
+      # SELL ENGINE (Flexible D -> C -> B -> A with Tolerant Thresholds)
+      if sell_state != 5 and c["close"] <= self.resistance_lvl - (atr * 3.0):
         sell_state = 0
 
       if sell_state != 5:
         if sell_state == 0:
+          # Allow close proximity to resistance (within 0.3% or touch/cross)
           if (
-              c["high"] >= self.resistance_lvl
-              or c["close"] >= self.resistance_lvl
+              c["high"] >= self.resistance_lvl - (atr * 0.5)
+              or c["close"] >= self.resistance_lvl - (atr * 0.5)
           ) and c["color"] == "Green":
             sell_state = 1
         elif sell_state == 1:
@@ -336,14 +333,16 @@ class TWTTrainingEnginePro:
             level_a_ref = c["high"]
             sell_state = 4
         elif sell_state == 4:
-          if c["color"] == "Red" and c["low"] < target_b_low:
+          # Break of B's low (with small tolerance)
+          if c["color"] == "Red" and c["low"] <= target_b_low + (atr * 0.1):
             sell_state = 5
         elif sell_state == 5:
           if c["color"] == "Green":
             sell_state = 6
         elif sell_state == 6:
+          # Final Red confirmation crossing A & B levels
           if c["color"] == "Red" and (
-              c["close"] < level_a_ref or c["close"] < level_b_ref
+              c["close"] <= level_a_ref or c["close"] <= level_b_ref
           ):
             sl = round(c["high"] + (1.2 * atr), dec)
             tp1 = round(c["close"] - (1.2 * atr), dec)
@@ -355,13 +354,8 @@ class TWTTrainingEnginePro:
                 "Time": c["time"],
                 "Candle #": c["id"],
                 "Type": "SELL 🔴",
-                "Setup": (
-                    "D->C->B->A (Red Ignored) -> B Low Break -> Green -> Red"
-                    " Short Entry"
-                ),
-                "Action": (
-                    "Sell / Short (S) [Secret D-C-B-A Reversal] 🔴"
-                ),
+                "Setup": "Flexible D->C->B->A Reversal Breakdown",
+                "Action": "Sell / Short (S) [Ultra Flexible Reversal] 🔴",
                 "Entry Price": round(c["close"], dec),
                 "Stop Loss (SL)": sl,
                 "TP 1": tp1,
@@ -385,7 +379,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTTrainingEnginePro(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTTrainingEngineUltra(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -393,7 +387,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets for optimized setups..."):
+with st.spinner("⚡ Scanning all 20 assets with Ultra Flexibility..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -425,14 +419,14 @@ st.subheader("📊 Manual Asset Inspector & Chart")
 selected_symbol = st.selectbox(
     "🔍 Select Asset to Load Chart & Complete History",
     options=ASSET_LIST,
-    index=1,  # Default to ETH
+    index=3,  # Default to SOL
 )
 
 if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTTrainingEnginePro(df_5, df_4, df_6, selected_symbol, active_tz)
+  bot = TWTTrainingEngineUltra(df_5, df_4, df_6, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -448,7 +442,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Pro Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Ultra Engine Active")
 
   if bot.signals:
     latest_sig = bot.signals[-1]
@@ -482,21 +476,21 @@ if bot.df_5 is not None and not bot.df_5.empty:
     st.warning(
         "🟡 **STATUS: WAITING FOR SETUP**\n\n"
         "📌 *Instructions:* Monitoring support for Buy and resistance for Sell"
-        " setups (Strategy tags hidden from chart)."
+        " setups (Strategy tags hidden)."
     )
 
   # Complete Signal History
   if bot.signals:
     st.markdown("---")
     st.subheader(
-        f"📋 Complete Signal History for {selected_symbol} (Pro Edition)"
+        f"📋 Complete Signal History for {selected_symbol} (Ultra Edition)"
     )
     df_history = pd.DataFrame(bot.signals).drop(
         columns=["Is_Within_1hr"], errors="ignore"
     )
     st.dataframe(df_history, width="stretch")
 
-  # Chart Rendering (Clean & Tag-Free, Original Dark TradingView Theme)
+  # Chart Rendering
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
   for c in bot.candles:
     col = "#26a69a" if c["color"] == "Green" else "#ef5350"
@@ -557,7 +551,6 @@ if bot.df_5 is not None and not bot.df_5.empty:
       margin = curr_p * 0.005
     ax.set_ylim(min(lows) - margin, max(highs) + margin)
 
-  # Only Final Entries ('B' and 'S') are shown cleanly. All strategy text tags are hidden!
   for sig in bot.signals:
     is_b = "BUY" in sig["Type"]
     bg_col = "#00e676" if is_b else "#ff5252"
@@ -574,7 +567,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Pro Edition ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Ultra Edition ({tz_short})",
       color="white",
       fontsize=14,
   )
