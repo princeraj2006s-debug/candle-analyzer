@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (PRO) — Anti-Pullback & Volume Guard Engine"
+    "⚡ TRADE WITH TUCKYAA (PRO) — Smart Pullback Strength Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -91,7 +91,7 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Strategy Settings")
-st.sidebar.text("Anti-Pullback Guard: Volume Spike + Close Buffer Protection")
+st.sidebar.text("Pullback Analyzer: Waits if Green Pullback is strong; enters on 2nd Red when weak")
 st.sidebar.text("Strict Lock      : Single First Entry Only")
 st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss        : ATR Managed")
@@ -143,7 +143,7 @@ def fetch_twt_delta_data(symbol, tf):
                   ohlcv_6h,
                   columns=[
                       "timestamp",
-                      "Open",
+                  "Open",
                       "High",
                       "Low",
                       "Close",
@@ -161,7 +161,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTAntiPullbackEngine:
+class TWTSmartPullbackEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -223,7 +223,7 @@ class TWTAntiPullbackEngine:
     elif self.df_4 is not None and not self.df_4.empty:
       self.support_lvl = float(self.df_4["Low"].iloc[-1])
 
-    # 2. Indicators Calculation (ATR & Volume SMA)
+    # 2. Indicators Calculation (ATR & Average Body Size)
     self.df_5["TR"] = np.maximum(
         self.df_5["High"] - self.df_5["Low"],
         np.maximum(
@@ -232,7 +232,8 @@ class TWTAntiPullbackEngine:
         ),
     )
     self.df_5["ATR"] = self.df_5["TR"].rolling(14).mean()
-    self.df_5["Vol_SMA"] = self.df_5["Volume"].rolling(10).mean()
+    self.df_5["BodySize"] = abs(self.df_5["Close"] - self.df_5["Open"])
+    self.df_5["AvgBody"] = self.df_5["BodySize"].rolling(10).mean()
 
     for idx, row in enumerate(self.df_5.iterrows()):
       dt_utc = row[0]
@@ -251,7 +252,8 @@ class TWTAntiPullbackEngine:
           float(r["Volume"]),
       )
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
-      vol_sma = float(r["Vol_SMA"]) if not pd.isna(r["Vol_SMA"]) else v
+      body = abs(c - o)
+      avg_body = float(r["AvgBody"]) if not pd.isna(r["AvgBody"]) else body
 
       age_minutes = (current_utc_time - dt_utc).total_seconds() / 60.0
       is_within_1hr = age_minutes <= 60.0
@@ -259,7 +261,7 @@ class TWTAntiPullbackEngine:
       self.candles.append({
           "id": idx + 1,
           "time": timestamp_str,
-      "dt_ist": dt_ist,
+          "dt_ist": dt_ist,
           "dt_user": dt_user_tz,
           "color": "Green" if c >= o else "Red",
           "open": o,
@@ -267,7 +269,8 @@ class TWTAntiPullbackEngine:
           "low": l,
           "close": c,
           "volume": v,
-          "vol_sma": vol_sma,
+          "body": body,
+          "avg_body": avg_body,
           "atr": atr,
           "is_within_1hr": is_within_1hr,
       })
@@ -282,44 +285,53 @@ class TWTAntiPullbackEngine:
       atr = c["atr"] if not np.isnan(c["atr"]) else (c["close"] * 0.002)
       dec = get_decimals(c["close"])
 
-      # -------------------------------------------------------------
-      # ANTI-PULLBACK STRICT SELL FILTER
-      # -------------------------------------------------------------
-      # 1. Price must approach resistance closely but CLOSE BELOW it (No above-resistance fakes)
-      # 2. Rejection candle volume must be solid (greater than or near volume average)
-      is_resistance_touched = (
-          c["high"] >= self.resistance_lvl - (atr * 1.5)
-          and c["close"] <= self.resistance_lvl
-      )
+      # Check if price tests Resistance Zone
+      is_resistance_touched = c["high"] >= self.resistance_lvl - (atr * 2.0)
 
-      if is_resistance_touched and c["color"] == "Red" and c["volume"] >= (c["vol_sma"] * 0.7):
-        # Additional safety check: Ensure next 2 candles do not break above resistance (Anti-Pullback Guard)
-        confirmed_safe = True
-        for check_idx in range(i + 1, min(i + 3, len(self.candles))):
-          if self.candles[check_idx]["high"] > self.resistance_lvl + (atr * 0.5):
-            confirmed_safe = False
-            break
+      if is_resistance_touched:
+        # Scan subsequent candles to evaluate Green Pullback Strength & Weakness
+        red_count = 0
+        sell_triggered = False
 
-        if confirmed_safe:
-          sl = round(c["high"] + (1.5 * atr), dec)
-          tp1 = round(c["close"] - (1.2 * atr), dec)
-          tp2 = round(c["close"] - (2.5 * atr), dec)
-          tp3 = round(c["close"] - (4.0 * atr), dec)
+        for m in range(i + 1, min(i + 15, len(self.candles))):
+          cm = self.candles[m]
 
-          found_signal = {
-              "Asset": self.symbol,
-              "Time": c["time"],
-              "Candle #": c["id"],
-              "Type": "SELL 🔴",
-              "Setup": "Anti-Pullback Volume Rejection",
-              "Action": "Sell / Short (S) [Anti-Pullback Guard] 🔴",
-              "Entry Price": round(c["close"], dec),
-              "Stop Loss (SL)": sl,
-              "TP 1": tp1,
-              "TP 2": tp2,
-              "TP 3": tp3,
-              "Is_Within_1hr": c["is_within_1hr"],
-          }
+          if cm["color"] == "Green":
+            # Check if Green Pullback is STRONG (Large body > avg body or high volume)
+            is_strong_green = cm["body"] > cm["avg_body"] * 1.1
+            if is_strong_green:
+              # Strong pullback -> IGNORE and wait further for weakness!
+              red_count = 0  
+              continue
+
+          elif cm["color"] == "Red":
+            # Red candle appeared after pullback check
+            red_count += 1
+            # Once green pullback becomes WEAK (or absent) and we get 2nd Red candle confirmation:
+            if red_count >= 2:
+              sl = round(cm["high"] + (1.2 * atr), dec)
+              tp1 = round(cm["close"] - (1.2 * atr), dec)
+              tp2 = round(cm["close"] - (2.5 * atr), dec)
+              tp3 = round(cm["close"] - (4.0 * atr), dec)
+
+              found_signal = {
+                  "Asset": self.symbol,
+                  "Time": cm["time"],
+                  "Candle #": cm["id"],
+                  "Type": "SELL 🔴",
+                  "Setup": "Smart Weak-Pullback 2nd Red Entry",
+                  "Action": "Sell / Short (S) [Weak Pullback Filter] 🔴",
+                  "Entry Price": round(cm["close"], dec),
+                  "Stop Loss (SL)": sl,
+                  "TP 1": tp1,
+                  "TP 2": tp2,
+                  "TP 3": tp3,
+                  "Is_Within_1hr": cm["is_within_1hr"],
+              }
+              sell_triggered = True
+              break
+
+        if sell_triggered:
           break
 
     if found_signal:
@@ -343,7 +355,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTAntiPullbackEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTSmartPullbackEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[0] if recent_sigs else None
@@ -351,7 +363,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning with Anti-Pullback Guard..."):
+with st.spinner("⚡ Scanning with Smart Pullback Strength Analyzer..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -381,7 +393,7 @@ st.markdown("---")
 st.subheader("📊 Manual Asset Inspector & Chart")
 
 selected_symbol = st.selectbox(
-    "🔍 Select Asset to Load Chart & Anti-Pullback Entry",
+    "🔍 Select Asset to Load Chart & Smart Pullback Entry",
     options=ASSET_LIST,
     index=0,
 )
@@ -390,7 +402,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTAntiPullbackEngine(
+  bot = TWTSmartPullbackEngine(
       df_5, df_4, df_6, selected_symbol, active_tz
   )
   bot.calculate_and_scan()
@@ -408,7 +420,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Anti-Pullback Guard Active")
+    st.metric(label="Timezone", value=tz_short, delta="Smart Pullback Filter Active")
 
   if bot.signals:
     latest_sig = bot.signals[0]
@@ -441,14 +453,14 @@ if bot.df_5 is not None and not bot.df_5.empty:
   else:
     st.warning(
         "🟡 **STATUS: WAITING FOR SETUP**\n\n"
-        "📌 *Instructions:* Monitoring anti-pullback rejection & volume confirmation."
+        "📌 *Instructions:* Monitoring pullback strength and waiting for weak pullback confirmation."
     )
 
   # Complete Single History Table
   if bot.history_signals:
     st.markdown("---")
     st.subheader(
-        f"📋 Single Protected History for {selected_symbol}"
+        f"📋 Single Smart History for {selected_symbol}"
     )
     df_history = pd.DataFrame(bot.history_signals).drop(
         columns=["Is_Within_1hr"], errors="ignore"
@@ -528,7 +540,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Anti-Pullback Engine ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Smart Pullback Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
