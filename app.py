@@ -3,6 +3,7 @@ from zoneinfo import ZoneInfo
 import ccxt
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
@@ -170,12 +171,12 @@ class TWTAdvancedPullbackBot:
                 if not swings or swings[-1][0] != 'H':
                     swings.append(('H', i, highs[i]))
                 elif swings[-1][0] == 'H' and highs[i] > swings[-1][2]:
-                    swings[-1] = ('H', i, highs[i]) # Update with higher high
+                    swings[-1] = ('H', i, highs[i])
             elif is_low and not is_high:
                 if not swings or swings[-1][0] != 'L':
                     swings.append(('L', i, lows[i]))
                 elif swings[-1][0] == 'L' and lows[i] < swings[-1][2]:
-                    swings[-1] = ('L', i, lows[i]) # Update with lower low
+                    swings[-1] = ('L', i, lows[i])
         return swings
 
     def analyze_market_structure(self, df):
@@ -285,77 +286,61 @@ class TWTAdvancedPullbackBot:
         weakness_confirmed = body_shrinking and upper_wick_ok
         return weakness_confirmed, len(greens)
 
-    # ==========================================================
-    # SEPARATE PULLBACK EVALUATION HANDLERS (3, 4, 5)
-    # ==========================================================
     def evaluate_buyer_pullback_3(self, df, trend):
         prev1 = df.iloc[-2]
         prev2 = df.iloc[-3]
         weakness_ok, count = self.evaluate_buyer_weakness(df)
-        
         valid_wick = prev2["LowerWickPct"] > 25 or prev2["LowerWick"] > prev2["Body"] * 0.5
         first_med_green = prev2["Color"] == "Green" and prev2["SizeClass"] in ["Medium", "Long"]
         second_conf_green = prev1["Color"] == "Green" and prev1["Close"] > prev2["High"]
-        
         return weakness_ok and valid_wick and first_med_green and second_conf_green, count
 
     def evaluate_buyer_pullback_4(self, df, trend):
         prev1 = df.iloc[-2]
         prev2 = df.iloc[-3]
         weakness_ok, count = self.evaluate_buyer_weakness(df)
-        
         valid_wick = prev2["LowerWickPct"] > 30
         first_med_green = prev2["Color"] == "Green" and prev2["SizeClass"] in ["Medium", "Long", "Abnormally Large"]
         second_conf_green = prev1["Color"] == "Green" and prev1["Close"] > prev2["High"] and prev1["Body"] >= prev2["Body"] * 0.7
-        
         return weakness_ok and valid_wick and first_med_green and second_conf_green, count
 
     def evaluate_buyer_pullback_5(self, df, trend):
         prev1 = df.iloc[-2]
         prev2 = df.iloc[-3]
         weakness_ok, count = self.evaluate_buyer_weakness(df)
-        
         valid_wick = prev2["LowerWickPct"] > 35
         first_med_green = prev2["Color"] == "Green" and prev2["SizeClass"] in ["Medium", "Long"]
         second_conf_green = prev1["Color"] == "Green" and prev1["Close"] > prev2["High"]
-        
         return weakness_ok and valid_wick and first_med_green and second_conf_green, count
 
     def evaluate_seller_pullback_3(self, df, trend):
         prev1 = df.iloc[-2]
         prev2 = df.iloc[-3]
         weakness_ok, count = self.evaluate_seller_weakness(df)
-        
         valid_wick = prev2["UpperWickPct"] > 25 or prev2["UpperWick"] > prev2["Body"] * 0.5
         first_med_red = prev2["Color"] == "Red" and prev2["SizeClass"] in ["Medium", "Long"]
         second_conf_red = prev1["Color"] == "Red" and prev1["Close"] < prev2["Low"]
-        
         return weakness_ok and valid_wick and first_med_red and second_conf_red, count
 
     def evaluate_seller_pullback_4(self, df, trend):
         prev1 = df.iloc[-2]
         prev2 = df.iloc[-3]
         weakness_ok, count = self.evaluate_seller_weakness(df)
-        
         valid_wick = prev2["UpperWickPct"] > 30
         first_med_red = prev2["Color"] == "Red" and prev2["SizeClass"] in ["Medium", "Long", "Abnormally Large"]
         second_conf_red = prev1["Color"] == "Red" and prev1["Close"] < prev2["Low"] and prev1["Body"] >= prev2["Body"] * 0.7
-        
         return weakness_ok and valid_wick and first_med_red and second_conf_red, count
 
     def evaluate_seller_pullback_5(self, df, trend):
         prev1 = df.iloc[-2]
         prev2 = df.iloc[-3]
         weakness_ok, count = self.evaluate_seller_weakness(df)
-        
         valid_wick = prev2["UpperWickPct"] > 35
         first_med_red = prev2["Color"] == "Red" and prev2["SizeClass"] in ["Medium", "Long"]
         second_conf_red = prev1["Color"] == "Red" and prev1["Close"] < prev2["Low"]
-        
         return weakness_ok and valid_wick and first_med_red and second_conf_red, count
 
     def calculate_stop_loss_and_target(self, df, is_buyer, entry_price):
-        """Calculate structural stop loss and target with strict validation."""
         dec = 4 if entry_price < 1 else (2 if entry_price > 10 else 3)
         completed_df = df.iloc[:-1]
         
@@ -364,10 +349,8 @@ class TWTAdvancedPullbackBot:
             sl = round(swing_low - (completed_df.iloc[-1]["Range"] * 0.2), dec)
             if sl >= entry_price:
                 sl = round(entry_price - (completed_df.iloc[-1]["Range"] * 1.0), dec)
-            
             resistance = completed_df.iloc[-20:-1]["High"].max()
             tp = round(resistance if resistance > entry_price else entry_price + ((entry_price - sl) * 2.0), dec)
-            
             risk = entry_price - sl
             reward = tp - entry_price
         else:
@@ -375,10 +358,8 @@ class TWTAdvancedPullbackBot:
             sl = round(swing_high + (completed_df.iloc[-1]["Range"] * 0.2), dec)
             if sl <= entry_price:
                 sl = round(entry_price + (completed_df.iloc[-1]["Range"] * 1.0), dec)
-            
             support = completed_df.iloc[-20:-1]["Low"].min()
             tp = round(support if support < entry_price else entry_price - ((sl - entry_price) * 2.0), dec)
-            
             risk = sl - entry_price
             reward = entry_price - tp
 
@@ -386,20 +367,13 @@ class TWTAdvancedPullbackBot:
         return sl, tp, rr_ratio
 
     def calculate_signal_score(self, trend, pb_num, weakness_ok, wick_ok, conf_ok, rr_ratio):
-        """Transparent factor-based scoring system (Max 100 points)."""
         score = 0
-        if "Uptrend" in trend or "Downtrend" in trend:
-            score += 20
-        if pb_num in [3, 4, 5]:
-            score += 20
-        if weakness_ok:
-            score += 20
-        if wick_ok:
-            score += 15
-        if conf_ok:
-            score += 15
-        if rr_ratio >= 1.5:
-            score += 10
+        if "Uptrend" in trend or "Downtrend" in trend: score += 20
+        if pb_num in [3, 4, 5]: score += 20
+        if weakness_ok: score += 20
+        if wick_ok: score += 15
+        if conf_ok: score += 15
+        if rr_ratio >= 1.5: score += 10
         return score
 
     def run_system(self):
@@ -419,18 +393,11 @@ class TWTAdvancedPullbackBot:
         dec = 4 if prev1["Close"] < 1 else (2 if prev1["Close"] > 10 else 3)
         entry_price = round(prev1["Close"], dec)
 
-        # ---------------------------------------------------------
-        # BUYER SIGNAL EVALUATION
-        # ---------------------------------------------------------
         if trend == "Downtrend":
-            if pb_num == 3:
-                valid, count = self.evaluate_buyer_pullback_3(df, trend)
-            elif pb_num == 4:
-                valid, count = self.evaluate_buyer_pullback_4(df, trend)
-            elif pb_num == 5:
-                valid, count = self.evaluate_buyer_pullback_5(df, trend)
-            else:
-                valid, count = False, 0
+            if pb_num == 3: valid, count = self.evaluate_buyer_pullback_3(df, trend)
+            elif pb_num == 4: valid, count = self.evaluate_buyer_pullback_4(df, trend)
+            elif pb_num == 5: valid, count = self.evaluate_buyer_pullback_5(df, trend)
+            else: valid, count = False, 0
 
             weakness_ok, _ = self.evaluate_buyer_weakness(df)
             if not weakness_ok:
@@ -448,34 +415,19 @@ class TWTAdvancedPullbackBot:
             score = self.calculate_signal_score(trend, pb_num, weakness_ok, wick_ok, True, rr_ratio)
 
             return {
-                "Type": "BUYER",
-                "Trend": trend,
-                "Pullback": pb_label,
-                "State": "SIGNAL_VALID",
-                "BuyerStrength": "Confirmed",
-                "SellerWeakness": f"Confirmed ({count} mild pullbacks)",
+                "Type": "BUYER", "Trend": trend, "Pullback": pb_label, "State": "SIGNAL_VALID",
+                "BuyerStrength": "Confirmed", "SellerWeakness": f"Confirmed ({count} mild pullbacks)",
                 "WickRejection": f"Lower Wick {df.iloc[-3]['LowerWickPct']:.1f}%",
                 "Confirmation": f"Two green candles (Pullback {pb_num} Rules)",
-                "Entry": entry_price,
-                "StopLoss": sl,
-                "Target": tp,
-                "RR": f"1:{rr_ratio:.2f}",
-                "Status": "VALID",
-                "Score": score
+                "Entry": entry_price, "StopLoss": sl, "Target": tp, "RR": f"1:{rr_ratio:.2f}",
+                "Status": "VALID", "Score": score
             }
 
-        # ---------------------------------------------------------
-        # SELLER SIGNAL EVALUATION
-        # ---------------------------------------------------------
         elif trend == "Uptrend":
-            if pb_num == 3:
-                valid, count = self.evaluate_seller_pullback_3(df, trend)
-            elif pb_num == 4:
-                valid, count = self.evaluate_seller_pullback_4(df, trend)
-            elif pb_num == 5:
-                valid, count = self.evaluate_seller_pullback_5(df, trend)
-            else:
-                valid, count = False, 0
+            if pb_num == 3: valid, count = self.evaluate_seller_pullback_3(df, trend)
+            elif pb_num == 4: valid, count = self.evaluate_seller_pullback_4(df, trend)
+            elif pb_num == 5: valid, count = self.evaluate_seller_pullback_5(df, trend)
+            else: valid, count = False, 0
 
             weakness_ok, _ = self.evaluate_seller_weakness(df)
             if not weakness_ok:
@@ -493,53 +445,36 @@ class TWTAdvancedPullbackBot:
             score = self.calculate_signal_score(trend, pb_num, weakness_ok, wick_ok, True, rr_ratio)
 
             return {
-                "Type": "SELLER",
-                "Trend": trend,
-                "Pullback": pb_label,
-                "State": "SIGNAL_VALID",
-                "SellerStrength": "Confirmed",
-                "BuyerWeakness": f"Confirmed ({count} mild pullbacks)",
+                "Type": "SELLER", "Trend": trend, "Pullback": pb_label, "State": "SIGNAL_VALID",
+                "SellerStrength": "Confirmed", "BuyerWeakness": f"Confirmed ({count} mild pullbacks)",
                 "WickRejection": f"Upper Wick {df.iloc[-3]['UpperWickPct']:.1f}%",
                 "Confirmation": f"Two red candles (Pullback {pb_num} Rules)",
-                "Entry": entry_price,
-                "StopLoss": sl,
-                "Target": tp,
-                "RR": f"1:{rr_ratio:.2f}",
-                "Status": "VALID",
-                "Score": score
+                "Entry": entry_price, "StopLoss": sl, "Target": tp, "RR": f"1:{rr_ratio:.2f}",
+                "Status": "VALID", "Score": score
             }
 
         return {"Status": "NO ENTRY — WAIT FOR A VALID PULLBACK", "Trend": trend, "Pullback": "N/A", "State": "WAITING_FOR_TREND"}
 
     def run_backtest(self):
-        """True historical backtesting simulation with no look-ahead bias and exact Gross/Net Profit Factor metrics."""
         df = self.classify_candles()
-        if len(df) < 60:
-            return None
-
+        if len(df) < 60: return None
         trades = []
         fee_pct = 0.0004 
         last_trade_exit_bar = -1
 
         for i in range(50, len(df) - 6):
-            if i <= last_trade_exit_bar:
-                continue
-
+            if i <= last_trade_exit_bar: continue
             sub_df = df.iloc[:i+1].copy()
             temp_bot = TWTAdvancedPullbackBot(sub_df, self.symbol)
             sub_df = temp_bot.classify_candles()
             temp_bot.df = sub_df
             
             trend, _, _ = temp_bot.analyze_market_structure(sub_df)
-            if "RANGING" in trend or "REVERSAL" in trend:
-                continue
+            if "RANGING" in trend or "REVERSAL" in trend: continue
             pb_num, _, _ = temp_bot.detect_structural_pullbacks(sub_df, trend)
-            if pb_num < 3:
-                continue
+            if pb_num < 3: continue
 
             prev1 = sub_df.iloc[-2]
-            dec = 4 if prev1["Close"] < 1 else (2 if prev1["Close"] > 10 else 3)
-
             if trend == "Downtrend":
                 valid = False
                 if pb_num == 3: valid, _ = temp_bot.evaluate_buyer_pullback_3(sub_df, trend)
@@ -557,20 +492,11 @@ class TWTAdvancedPullbackBot:
                         for idx, (_, bar) in enumerate(future_bars.iterrows()):
                             current_bar_idx = i + 1 + idx
                             if bar["Low"] <= sl and bar["High"] >= tp:
-                                outcome = "Loss"
-                                net_pnl = - (entry - sl) - (entry * fee_pct * 2)
-                                exit_idx = current_bar_idx
-                                break
+                                outcome = "Loss"; net_pnl = - (entry - sl) - (entry * fee_pct * 2); exit_idx = current_bar_idx; break
                             elif bar["Low"] <= sl:
-                                outcome = "Loss"
-                                net_pnl = - (entry - sl) - (entry * fee_pct * 2)
-                                exit_idx = current_bar_idx
-                                break
+                                outcome = "Loss"; net_pnl = - (entry - sl) - (entry * fee_pct * 2); exit_idx = current_bar_idx; break
                             elif bar["High"] >= tp:
-                                outcome = "Win"
-                                net_pnl = (tp - entry) - (entry * fee_pct * 2)
-                                exit_idx = current_bar_idx
-                                break
+                                outcome = "Win"; net_pnl = (tp - entry) - (entry * fee_pct * 2); exit_idx = current_bar_idx; break
                         trades.append({"Type": "BUYER", "Outcome": outcome, "NetPnL": net_pnl})
                         last_trade_exit_bar = exit_idx
 
@@ -591,26 +517,15 @@ class TWTAdvancedPullbackBot:
                         for idx, (_, bar) in enumerate(future_bars.iterrows()):
                             current_bar_idx = i + 1 + idx
                             if bar["High"] >= sl and bar["Low"] <= tp:
-                                outcome = "Loss"
-                                net_pnl = - (sl - entry) - (entry * fee_pct * 2)
-                                exit_idx = current_bar_idx
-                                break
+                                outcome = "Loss"; net_pnl = - (sl - entry) - (entry * fee_pct * 2); exit_idx = current_bar_idx; break
                             elif bar["High"] >= sl:
-                                outcome = "Loss"
-                                net_pnl = - (sl - entry) - (entry * fee_pct * 2)
-                                exit_idx = current_bar_idx
-                                break
+                                outcome = "Loss"; net_pnl = - (sl - entry) - (entry * fee_pct * 2); exit_idx = current_bar_idx; break
                             elif bar["Low"] <= tp:
-                                outcome = "Win"
-                                net_pnl = (entry - tp) - (entry * fee_pct * 2)
-                                exit_idx = current_bar_idx
-                                break
+                                outcome = "Win"; net_pnl = (entry - tp) - (entry * fee_pct * 2); exit_idx = current_bar_idx; break
                         trades.append({"Type": "SELLER", "Outcome": outcome, "NetPnL": net_pnl})
                         last_trade_exit_bar = exit_idx
 
-        if not trades:
-            return None
-
+        if not trades: return None
         total = len(trades)
         wins = sum(1 for t in trades if t["Outcome"] == "Win")
         losses = sum(1 for t in trades if t["Outcome"] == "Loss")
@@ -621,20 +536,15 @@ class TWTAdvancedPullbackBot:
         gross_loss = abs(sum(t["NetPnL"] for t in trades if t["NetPnL"] < 0))
         profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else (float('inf') if gross_profit > 0 else 0.0)
 
-        return {
-            "Total": total,
-            "Wins": wins,
-            "Losses": losses,
-            "Ambiguous": ambiguous,
-            "WinRate": win_rate,
-            "ProfitFactor": profit_factor
-        }
+        return {"Total": total, "Wins": wins, "Losses": losses, "Ambiguous": ambiguous, "WinRate": win_rate, "ProfitFactor": profit_factor}
 
 # ==========================================================
 # STREAMLIT UI EXECUTION & SESSION STATE
 # ==========================================================
 if "signal_history" not in st.session_state:
     st.session_state.signal_history = []
+if "paper_trades" not in st.session_state:
+    st.session_state.paper_trades = []
 
 selected_symbol = st.selectbox("🔍 Select Asset", options=ASSET_LIST, index=0)
 
@@ -643,6 +553,31 @@ df_asset, active_exchange = fetch_data(selected_symbol, selected_tf)
 if df_asset is not None and not df_asset.empty:
     df_display = df_asset.copy()
     df_display.index = df_display.index.tz_convert(active_tz)
+
+    # ---------------------------------------------------------
+    # LIVE PLOTLY CANDLESTICK CHART DISPLAY
+    # ---------------------------------------------------------
+    st.markdown("---")
+    st.subheader(f"📈 Live Market Price Chart — {selected_symbol} ({selected_tf})")
+    
+    chart_df = df_display.tail(100)
+    fig = go.Figure(data=[go.Candlestick(
+        x=chart_df.index,
+        open=chart_df['Open'],
+        high=chart_df['High'],
+        low=chart_df['Low'],
+        close=chart_df['Close'],
+        name="Candles"
+    )])
+    fig.update_layout(
+        title=f"{selected_symbol} Live Chart",
+        xaxis_title="Time",
+        yaxis_title="Price (USDT)",
+        template="plotly_dark",
+        height=450,
+        margin=dict(l=20, r=20, t=40, b=20)
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
     bot = TWTAdvancedPullbackBot(df_asset, selected_symbol)
     result = bot.run_system()
@@ -698,6 +633,80 @@ Signal Status: VALID (Score: {result['Score']}/100)""", language="text")
         st.write(f"Current detected market structure trend: **{result.get('Trend', 'Unknown')}** | Pullback Count: **{result.get('Pullback', 'N/A')}** | State: **{result.get('State', 'WAITING')}**. Diagnostic reason: *{status_msg}*.")
 
     # ==========================================================
+    # INTERACTIVE PAPER TRADING DESK
+    # ==========================================================
+    st.markdown("---")
+    st.subheader("⚡ Interactive Paper Trading Desk")
+    
+    current_live_price = float(df_asset['Close'].iloc[-1])
+    suggested_entry = result.get('Entry', current_live_price) if result.get("Status") == "VALID" else current_live_price
+    suggested_sl = result.get('StopLoss', current_live_price * 0.99) if result.get("Status") == "VALID" else current_live_price * 0.99
+    suggested_tp = result.get('Target', current_live_price * 1.02) if result.get("Status") == "VALID" else current_live_price * 1.02
+    suggested_type = result.get('Type', 'BUYER') if result.get("Status") == "VALID" else 'BUYER'
+
+    with st.form("paper_trading_form"):
+        c1, c2, c3, c4, c5 = st.columns(5)
+        trade_type = c1.selectbox("Order Type", options=["BUYER", "SELLER"], index=0 if suggested_type=="BUYER" else 1)
+        entry_input = c2.number_input("Entry Price", value=float(suggested_entry), format="%.4f")
+        sl_input = c3.number_input("Stop Loss (SL)", value=float(suggested_sl), format="%.4f")
+        tp_input = c4.number_input("Target (TP)", value=float(suggested_tp), format="%.4f")
+        amount_input = c5.number_input("Position Size (USDT)", value=100.0, min_value=10.0, step=10.0)
+        
+        submitted = st.form_submit_button("🚀 Place Paper Trade")
+        if submitted:
+            new_trade = {
+                "id": f"{selected_symbol}_{datetime.now(timezone.utc).timestamp()}",
+                "Asset": selected_symbol,
+                "Type": trade_type,
+                "Entry": entry_input,
+                "SL": sl_input,
+                "TP": tp_input,
+                "Amount": amount_input,
+                "Status": "OPEN",
+                "PnL": 0.0,
+                "Time": datetime.now(active_tz).strftime('%Y-%m-%d %H:%M:%S')
+            }
+            st.session_state.paper_trades.insert(0, new_trade)
+            st.success(f"Paper Trade Executed Successfully for {selected_symbol} at {entry_input}!")
+
+    # Evaluate open paper trades against current live price
+    if st.session_state.paper_trades:
+        st.write("### Active & Closed Paper Trades")
+        updated_trades = []
+        for t in st.session_state.paper_trades:
+            if t["Status"] == "OPEN":
+                # Calculate floating PnL
+                if t["Type"] == "BUYER":
+                    if current_live_price <= t["SL"]:
+                        t["Status"] = "CLOSED (SL HIT)"
+                        t["PnL"] = - (t["Entry"] - t["SL"]) * (t["Amount"] / t["Entry"])
+                    elif current_live_price >= t["TP"]:
+                        t["Status"] = "CLOSED (TP HIT)"
+                        t["PnL"] = (t["TP"] - t["Entry"]) * (t["Amount"] / t["Entry"])
+                    else:
+                        t["PnL"] = (current_live_price - t["Entry"]) * (t["Amount"] / t["Entry"])
+                else: # SELLER
+                    if current_live_price >= t["SL"]:
+                        t["Status"] = "CLOSED (SL HIT)"
+                        t["PnL"] = - (t["SL"] - t["Entry"]) * (t["Amount"] / t["Entry"])
+                    elif current_live_price <= t["TP"]:
+                        t["Status"] = "CLOSED (TP HIT)"
+                        t["PnL"] = (t["Entry"] - t["TP"]) * (t["Amount"] / t["Entry"])
+                    else:
+                        t["PnL"] = (t["Entry"] - current_live_price) * (t["Amount"] / t["Entry"])
+            updated_trades.append(t)
+        st.session_state.paper_trades = updated_trades
+        
+        paper_df = pd.DataFrame(st.session_state.paper_trades)
+        st.dataframe(paper_df[["Time", "Asset", "Type", "Entry", "SL", "TP", "Amount", "Status", "PnL"]], use_container_width=True)
+        
+        if st.button("🗑️ Clear Paper Trade History"):
+            st.session_state.paper_trades = []
+            st.rerun()
+    else:
+        st.info("No paper trades placed yet. Use the form above to enter simulated positions.")
+
+    # ==========================================================
     # DASHBOARD DIAGNOSTICS METRICS
     # ==========================================================
     st.markdown("---")
@@ -712,12 +721,12 @@ Signal Status: VALID (Score: {result['Score']}/100)""", language="text")
     # PAPER TRADING & SIGNAL HISTORY LOG
     # ==========================================================
     st.markdown("---")
-    st.subheader("📋 Paper Trading & Signal History Log")
+    st.subheader("📋 Bot Signal History Log")
     if st.session_state.signal_history:
         history_df = pd.DataFrame(st.session_state.signal_history)
         st.dataframe(history_df[["Timestamp", "Asset", "Exchange", "Type", "Pullback", "State", "Entry", "StopLoss", "Target", "RR", "Score", "Status"]], use_container_width=True)
     else:
-        st.info("No confirmed signals logged in the paper-trading history buffer yet for this session.")
+        st.info("No confirmed signals logged in the bot signal history buffer yet for this session.")
 
     # ==========================================================
     # HISTORICAL BACKTESTING PERFORMANCE SUMMARY
