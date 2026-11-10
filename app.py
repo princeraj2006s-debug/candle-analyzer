@@ -154,7 +154,7 @@ def fetch_twt_delta_data(symbol, tf):
               else df_4.copy()
           )
           df_6["timestamp"] = pd.to_datetime(df_6["timestamp"], unit="ms")
-          df_6_6 = df_6.set_index("timestamp")
+          df_6 = df_6.set_index("timestamp")
           return df_5, df_4, df_6
     except Exception:
       continue
@@ -181,12 +181,17 @@ class TWTStrictResistanceRejectionEngine:
     IST = timezone(timedelta(hours=5, minutes=30))
     current_utc_time = datetime.now(timezone.utc)
 
-    # 1. Calculate Key Levels
+    # 1. Calculate Key Levels (with Safe Index Datetime & TZ Checks)
     if self.df_4 is not None and not self.df_4.empty:
+      dt_index_4 = (
+          self.df_4.index
+          if isinstance(self.df_4.index, pd.DatetimeIndex)
+          else pd.to_datetime(self.df_4.index)
+      )
       idx_utc = (
-          self.df_4.index.tz_localize("UTC")
-          if self.df_4.index.tz is None
-          else self.df_4.index
+          dt_index_4.tz_localize("UTC")
+          if dt_index_4.tz is None
+          else dt_index_4
       )
       df_4_ist = idx_utc.tz_convert(IST)
       filtered_4h = self.df_4[df_4_ist.hour == 1]
@@ -197,10 +202,15 @@ class TWTStrictResistanceRejectionEngine:
       )
 
     if self.df_6 is not None and not self.df_6.empty:
+      dt_index_6 = (
+          self.df_6.index
+          if isinstance(self.df_6.index, pd.DatetimeIndex)
+          else pd.to_datetime(self.df_6.index)
+      )
       idx_utc_6 = (
-          self.df_6.index.tz_localize("UTC")
-          if self.df_6.index.tz is None
-          else self.df_6.index
+          dt_index_6.tz_localize("UTC")
+          if dt_index_6.tz is None
+          else dt_index_6
       )
       df_6_ist = idx_utc_6.tz_convert(IST)
       filtered_6h = self.df_6[df_6_ist.hour == 5]
@@ -209,7 +219,7 @@ class TWTStrictResistanceRejectionEngine:
           if not filtered_6h.empty
           else float(self.df_6["Low"].iloc[-1])
       )
-    elif self.df_4 is not None:
+    elif self.df_4 is not None and not self.df_4.empty:
       self.support_lvl = float(self.df_4["Low"].iloc[-1])
 
     # 2. Indicators Calculation
@@ -307,36 +317,30 @@ class TWTStrictResistanceRejectionEngine:
 
       atr_val = c_curr["atr"] if not np.isnan(c_curr["atr"]) else (c_curr["close"] * 0.002)
 
-      # 1. Must test resistance from below or near resistance level (Strictly rejecting downwards)
       if (
           (self.resistance_lvl - (atr_val * 2.0) <= c_curr["high"] <= self.resistance_lvl + (atr_val * 0.5))
           or (self.resistance_lvl - (atr_val * 2.0) <= c_curr["close"] <= self.resistance_lvl + (atr_val * 0.5))
       ) and c_curr["color"] == "Green":
         
-        c_ref_level = c_curr["low"] # Key C level reference
+        c_ref_level = c_curr["low"]
 
         sell_state = 1
         triggered = False
         for m in range(i + 1, len(self.candles)):
           cm = self.candles[m]
-          # Ensure price stays below resistance during the short setup
           if cm["high"] > self.resistance_lvl + (atr_val * 0.5):
-            break # Invalidated if price breaks out above resistance
+            break 
 
           if sell_state == 1:
-            # Step 1: Red candle breaks below C level
             if cm["color"] == "Red" and cm["low"] <= c_ref_level + (cm["atr"] * 0.3):
               sell_state = 2
           elif sell_state == 2:
-            # Step 2: Green candle pulls back up towards C level
             if cm["color"] == "Green" and cm["high"] >= c_ref_level - (cm["atr"] * 0.8):
               sell_state = 3
           elif sell_state == 3:
-            # Step 3: First red candle after pullback
             if cm["color"] == "Red":
               sell_state = 4
           elif sell_state == 4:
-            # Step 4: Second red candle confirmation -> STRICT SELL ENTRY! (Executes ONCE per cycle)
             if cm["color"] == "Red":
               atr = (
                   cm["atr"]
@@ -422,7 +426,7 @@ st.subheader("📊 Manual Asset Inspector & Chart")
 selected_symbol = st.selectbox(
     "🔍 Select Asset to Load Chart & Complete History",
     options=ASSET_LIST,
-    index=14,  # Default to APT
+    index=0,
 )
 
 if selected_symbol in asset_engines:
