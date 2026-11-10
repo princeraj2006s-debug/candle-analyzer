@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (PRO) — Ultra-Safe Multi-Pullback & News Filter Engine"
+    "⚡ TRADE WITH TUCKYAA (PRO) — Anti-Pullback & Volume Guard Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -91,8 +91,8 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Strategy Settings")
-st.sidebar.text("Pullback Logic   : Double Pullback & Rejection Confirmation")
-st.sidebar.text("News Guard       : High-Impact Volatility/News Filter Active")
+st.sidebar.text("Anti-Pullback Guard: Volume Spike + Close Buffer Protection")
+st.sidebar.text("Strict Lock      : Single First Entry Only")
 st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss        : ATR Managed")
 
@@ -161,7 +161,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTMultiPullbackAndNewsGuardEngine:
+class TWTAntiPullbackEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -174,15 +174,6 @@ class TWTMultiPullbackAndNewsGuardEngine:
     self.history_signals = []
     self.resistance_lvl = 0
     self.support_lvl = 0
-
-  def is_news_volatile_time(self, dt_ist):
-    # News & High Volatility Window Filter (Blocks major session overlaps & news spikes)
-    # e.g., US Market Open / Fed announcement windows (18:00 to 20:30 IST or similar high impact slots)
-    current_time = dt_ist.time()
-    # Example restriction: 18:00 to 19:30 IST (Major US data release windows)
-    if time(18, 0) <= current_time <= time(19, 30):
-      return True
-    return False
 
   def calculate_and_scan(self):
     if self.df_5 is None or self.df_5.empty:
@@ -232,7 +223,7 @@ class TWTMultiPullbackAndNewsGuardEngine:
     elif self.df_4 is not None and not self.df_4.empty:
       self.support_lvl = float(self.df_4["Low"].iloc[-1])
 
-    # 2. Indicators Calculation
+    # 2. Indicators Calculation (ATR & Volume SMA)
     self.df_5["TR"] = np.maximum(
         self.df_5["High"] - self.df_5["Low"],
         np.maximum(
@@ -241,6 +232,7 @@ class TWTMultiPullbackAndNewsGuardEngine:
         ),
     )
     self.df_5["ATR"] = self.df_5["TR"].rolling(14).mean()
+    self.df_5["Vol_SMA"] = self.df_5["Volume"].rolling(10).mean()
 
     for idx, row in enumerate(self.df_5.iterrows()):
       dt_utc = row[0]
@@ -259,6 +251,7 @@ class TWTMultiPullbackAndNewsGuardEngine:
           float(r["Volume"]),
       )
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
+      vol_sma = float(r["Vol_SMA"]) if not pd.isna(r["Vol_SMA"]) else v
 
       age_minutes = (current_utc_time - dt_utc).total_seconds() / 60.0
       is_within_1hr = age_minutes <= 60.0
@@ -266,7 +259,7 @@ class TWTMultiPullbackAndNewsGuardEngine:
       self.candles.append({
           "id": idx + 1,
           "time": timestamp_str,
-          "dt_ist": dt_ist,
+      "dt_ist": dt_ist,
           "dt_user": dt_user_tz,
           "color": "Green" if c >= o else "Red",
           "open": o,
@@ -274,76 +267,59 @@ class TWTMultiPullbackAndNewsGuardEngine:
           "low": l,
           "close": c,
           "volume": v,
+          "vol_sma": vol_sma,
           "atr": atr,
           "is_within_1hr": is_within_1hr,
       })
 
     found_signal = None
-    total_range = self.resistance_lvl - self.support_lvl if self.resistance_lvl > self.support_lvl else 1.0
 
     for i in range(len(self.candles)):
       c = self.candles[i]
-      
-      # No-Trade Zone & News Impact Filter Check
       if time(1, 0) <= c["dt_ist"].time() <= time(6, 0):
         continue
-      if self.is_news_volatile_time(c["dt_ist"]):
-        continue  # Skip entry during upcoming news/high impact window
 
       atr = c["atr"] if not np.isnan(c["atr"]) else (c["close"] * 0.002)
       dec = get_decimals(c["close"])
 
-      # ----------------------------------------------------
-      # STRICT SELL SETUP (Resistance Test + DOUBLE PULLBACK VALIDATION)
-      # ----------------------------------------------------
-      # Must test resistance strictly from below or near zone (Never above resistance)
-      is_valid_resistance_zone = (
-          self.resistance_lvl - (atr * 3.0) <= c["high"] <= self.resistance_lvl + (atr * 0.5)
+      # -------------------------------------------------------------
+      # ANTI-PULLBACK STRICT SELL FILTER
+      # -------------------------------------------------------------
+      # 1. Price must approach resistance closely but CLOSE BELOW it (No above-resistance fakes)
+      # 2. Rejection candle volume must be solid (greater than or near volume average)
+      is_resistance_touched = (
+          c["high"] >= self.resistance_lvl - (atr * 1.5)
+          and c["close"] <= self.resistance_lvl
       )
 
-      if is_valid_resistance_zone and c["color"] == "Green":
-        ref_level = c["low"]
-        pullback_count = 0
-        sell_locked = False
-
-        # Scan subsequent candles for Double Pullback Rejection confirmation
-        for m in range(i + 1, min(i + 12, len(self.candles))):
-          cm = self.candles[m]
-          
-          # Check Pullback phases (Require 2 distinct pullback rejections)
-          if cm["color"] == "Red" and cm["low"] <= ref_level:
-            pullback_count += 1
-          elif cm["color"] == "Green" and pullback_count == 1:
-            # Intermediate minor recovery before 2nd rejection
-            pass
-
-          # Trigger 2nd confirmed red pullback rejection
-          if pullback_count >= 2 and cm["color"] == "Red":
-            cm_atr = cm["atr"] if not np.isnan(cm["atr"]) else (cm["close"] * 0.002)
-            cm_dec = get_decimals(cm["close"])
-            sl = round(cm["high"] + (1.2 * cm_atr), cm_dec)
-            tp1 = round(cm["close"] - (1.2 * cm_atr), cm_dec)
-            tp2 = round(cm["close"] - (2.5 * cm_atr), cm_dec)
-            tp3 = round(cm["close"] - (4.0 * cm_atr), cm_dec)
-
-            found_signal = {
-                "Asset": self.symbol,
-                "Time": cm["time"],
-                "Candle #": cm["id"],
-                "Type": "SELL 🔴",
-                "Setup": "Strict Double-Pullback Rejection",
-                "Action": "Sell / Short (S) [Double Pullback Safe Entry] 🔴",
-                "Entry Price": round(cm["close"], cm_dec),
-                "Stop Loss (SL)": sl,
-                "TP 1": tp1,
-                "TP 2": tp2,
-                "TP 3": tp3,
-                "Is_Within_1hr": cm["is_within_1hr"],
-            }
-            sell_locked = True
+      if is_resistance_touched and c["color"] == "Red" and c["volume"] >= (c["vol_sma"] * 0.7):
+        # Additional safety check: Ensure next 2 candles do not break above resistance (Anti-Pullback Guard)
+        confirmed_safe = True
+        for check_idx in range(i + 1, min(i + 3, len(self.candles))):
+          if self.candles[check_idx]["high"] > self.resistance_lvl + (atr * 0.5):
+            confirmed_safe = False
             break
 
-        if sell_locked:
+        if confirmed_safe:
+          sl = round(c["high"] + (1.5 * atr), dec)
+          tp1 = round(c["close"] - (1.2 * atr), dec)
+          tp2 = round(c["close"] - (2.5 * atr), dec)
+          tp3 = round(c["close"] - (4.0 * atr), dec)
+
+          found_signal = {
+              "Asset": self.symbol,
+              "Time": c["time"],
+              "Candle #": c["id"],
+              "Type": "SELL 🔴",
+              "Setup": "Anti-Pullback Volume Rejection",
+              "Action": "Sell / Short (S) [Anti-Pullback Guard] 🔴",
+              "Entry Price": round(c["close"], dec),
+              "Stop Loss (SL)": sl,
+              "TP 1": tp1,
+              "TP 2": tp2,
+              "TP 3": tp3,
+              "Is_Within_1hr": c["is_within_1hr"],
+          }
           break
 
     if found_signal:
@@ -367,7 +343,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTMultiPullbackAndNewsGuardEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTAntiPullbackEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[0] if recent_sigs else None
@@ -375,7 +351,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning with Double Pullback & News Guard..."):
+with st.spinner("⚡ Scanning with Anti-Pullback Guard..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -405,7 +381,7 @@ st.markdown("---")
 st.subheader("📊 Manual Asset Inspector & Chart")
 
 selected_symbol = st.selectbox(
-    "🔍 Select Asset to Load Chart & Verified Protected Entry",
+    "🔍 Select Asset to Load Chart & Anti-Pullback Entry",
     options=ASSET_LIST,
     index=0,
 )
@@ -414,7 +390,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTMultiPullbackAndNewsGuardEngine(
+  bot = TWTAntiPullbackEngine(
       df_5, df_4, df_6, selected_symbol, active_tz
   )
   bot.calculate_and_scan()
@@ -432,7 +408,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="News Guard & Double Pullback Active")
+    st.metric(label="Timezone", value=tz_short, delta="Anti-Pullback Guard Active")
 
   if bot.signals:
     latest_sig = bot.signals[0]
@@ -465,14 +441,14 @@ if bot.df_5 is not None and not bot.df_5.empty:
   else:
     st.warning(
         "🟡 **STATUS: WAITING FOR SETUP**\n\n"
-        "📌 *Instructions:* Monitoring multi-pullback validation & news filter guard."
+        "📌 *Instructions:* Monitoring anti-pullback rejection & volume confirmation."
     )
 
   # Complete Single History Table
   if bot.history_signals:
     st.markdown("---")
     st.subheader(
-        f"📋 Single Verified History for {selected_symbol}"
+        f"📋 Single Protected History for {selected_symbol}"
     )
     df_history = pd.DataFrame(bot.history_signals).drop(
         columns=["Is_Within_1hr"], errors="ignore"
@@ -552,7 +528,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Multi-Pullback Engine ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Anti-Pullback Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
