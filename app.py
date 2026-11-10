@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (PRO) — Strictly Single First-Entry Engine"
+    "⚡ TRADE WITH TUCKYAA (PRO) — Clean Candle & Zone-Protected Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -91,9 +91,8 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Strategy Settings")
-st.sidebar.text("Strict Lock      : ONLY ONE ENTRY TOTAL (First valid signal locks forever)")
-st.sidebar.text("Optimized Buy    : Support Rebound after Red Exhaustion")
-st.sidebar.text("Safe Sell Filter : Resistance Test -> C Break -> Pullback -> 2nd Red Entry")
+st.sidebar.text("Strict Zone Filter : Sell only near Resistance | Buy only near Support")
+st.sidebar.text("Candle Fix       : Full body & wick rendering for all price ranges")
 st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss        : ATR Managed")
 
@@ -162,7 +161,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTStrictSingleEntryEngine:
+class TWTZoneProtectedEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -270,10 +269,12 @@ class TWTStrictSingleEntryEngine:
           "is_within_1hr": is_within_1hr,
       })
 
-    # --- STRICT CHRONOLOGICAL SCANNER (FINDS ONLY THE 1ST ENTRY AND STOPS) ---
     found_signal = None
     buy_state = 0
     red_streak = 0
+
+    # Range buffer for zone checking
+    total_range = self.resistance_lvl - self.support_lvl if self.resistance_lvl > self.support_lvl else 1.0
 
     for i in range(len(self.candles)):
       c = self.candles[i]
@@ -283,12 +284,17 @@ class TWTStrictSingleEntryEngine:
       atr = c["atr"] if not np.isnan(c["atr"]) else (c["close"] * 0.002)
       dec = get_decimals(c["close"])
 
-      # 1. Check Buy Setup
+      # ----------------------------------------------------
+      # 1. BUY SETUP (Must be in lower half near Support)
+      # ----------------------------------------------------
       if buy_state != 5 and c["close"] >= self.support_lvl:
         buy_state = 0
         red_streak = 0
 
-      if buy_state != 5 and c["close"] < self.support_lvl + (atr * 0.5):
+      # Zone check: Buy only if close is in the lower 60% of the range
+      is_near_support = c["close"] <= self.support_lvl + (total_range * 0.6)
+
+      if buy_state != 5 and is_near_support and c["close"] < self.support_lvl + (atr * 0.8):
         if c["color"] == "Red":
           red_streak += 1
           if red_streak >= 3:
@@ -315,20 +321,27 @@ class TWTStrictSingleEntryEngine:
           }
           break
 
-      # 2. Check Sell Setup (Resistance Test -> C Break -> Pullback -> 2nd Red)
-      if (
+      # ----------------------------------------------------
+      # 2. SELL SETUP (Must be in upper half near Resistance)
+      # ----------------------------------------------------
+      is_near_resistance = (
           c["high"] >= self.resistance_lvl - (atr * 2.5)
-          or c["close"] >= self.resistance_lvl - (atr * 2.5)
-      ) and c["color"] == "Green":
-        
+          or c["close"] >= self.support_lvl + (total_range * 0.4)
+      )
+
+      if is_near_resistance and c["color"] == "Green" and c["close"] >= self.support_lvl + (total_range * 0.35):
         ref_level = c["low"]
         sell_state = 1
         sell_locked = False
 
         for m in range(i + 1, len(self.candles)):
           cm = self.candles[m]
+          # Zone safety: Never sell if price drops down near support
+          if cm["close"] <= self.support_lvl + (total_range * 0.25):
+            break
+
           if sell_state == 1:
-            if cm["color"] == "Red" and cm["low"] <= ref_level + (cm["atr"] * 0.3):
+            if cm["color"] == "Red" and cm["low"] <= ref_level + (cm["atr"] * 0.4):
               sell_state = 2
           elif sell_state == 2:
             if cm["color"] == "Green" and cm["high"] >= ref_level - (cm["atr"] * 0.8):
@@ -369,7 +382,6 @@ class TWTStrictSingleEntryEngine:
         if sell_locked:
           break
 
-    # Assign ONLY the absolute single entry to signals and history
     if found_signal:
       self.signals = [found_signal]
       self.history_signals = [found_signal]
@@ -391,7 +403,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTStrictSingleEntryEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTZoneProtectedEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[0] if recent_sigs else None
@@ -399,7 +411,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets for Single First Entry..."):
+with st.spinner("⚡ Scanning all 20 assets with Zone Protection..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -429,7 +441,7 @@ st.markdown("---")
 st.subheader("📊 Manual Asset Inspector & Chart")
 
 selected_symbol = st.selectbox(
-    "🔍 Select Asset to Load Chart & Single First Entry",
+    "🔍 Select Asset to Load Clean Chart & Protected Entry",
     options=ASSET_LIST,
     index=0,
 )
@@ -438,7 +450,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTStrictSingleEntryEngine(
+  bot = TWTZoneProtectedEngine(
       df_5, df_4, df_6, selected_symbol, active_tz
   )
   bot.calculate_and_scan()
@@ -456,7 +468,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Single Entry Locked")
+    st.metric(label="Timezone", value=tz_short, delta="Zone Protection Active")
 
   if bot.signals:
     latest_sig = bot.signals[0]
@@ -504,21 +516,18 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
     st.dataframe(df_history, width="stretch")
 
-  # Chart Rendering
+  # --- CLEAN CANDLESTICK CHART RENDERING (FIXED FOR ALL COINS) ---
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
   for c in bot.candles:
-    col = "#26a69a" if c["color"] == "Green" else "#ef5350"
-    body_size = abs(c["close"] - c["open"])
-    min_body = curr_p * 0.0003
-    plot_height = max(body_size, min_body)
-    plot_bottom = (
-        min(c["open"], c["close"]) - ((min_body - body_size) / 2)
-        if body_size < min_body
-        else min(c["open"], c["close"])
-    )
+    col = "#26a69a" if c["close"] >= c["open"] else "#ef5350"
+    lower_val = min(c["open"], c["close"])
+    body_height = abs(c["close"] - c["open"])
+    if body_height == 0:
+      body_height = curr_p * 0.0005  # Ensure doji is visible
 
-    ax.bar(c["id"], plot_height, bottom=plot_bottom, color=col, width=0.7)
-    ax.vlines(c["id"], c["low"], c["high"], color="#b2b5be", linewidth=1.3)
+    # Draw full candlestick body and wicks cleanly
+    ax.bar(c["id"], body_height, bottom=lower_val, color=col, width=0.6, edgecolor=col)
+    ax.vlines(c["id"], c["low"], c["high"], color=col, linewidth=1.2)
 
   ax.axhline(
       bot.resistance_lvl,
@@ -530,7 +539,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   ax.text(
       2,
       bot.resistance_lvl,
-      f"  4H Resistance ({bot.resistance_lvl:.1f})",
+      f"  4H Resistance ({bot.resistance_lvl:.2f})",
       color="#ffeb3b",
       weight="bold",
       fontsize=10,
@@ -546,7 +555,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   ax.text(
       2,
       bot.support_lvl,
-      f"  6H Support ({bot.support_lvl:.1f})",
+      f"  6H Support ({bot.support_lvl:.2f})",
       color="#26a69a",
       weight="bold",
       fontsize=10,
@@ -565,7 +574,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
       margin = curr_p * 0.005
     ax.set_ylim(min(lows) - margin, max(highs) + margin)
 
-  # Plot ONLY the FIRST locked signal on the chart
+  # Plot the FIRST locked signal on the chart
   for sig in bot.signals:
     is_b = "BUY" in sig["Type"]
     bg_col = "#00e676" if is_b else "#ff5252"
@@ -582,7 +591,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Single First Entry Engine ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Zone Protected Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
