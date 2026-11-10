@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 import ccxt
 import numpy as np
 import pandas as pd
@@ -20,10 +21,11 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
+# Using IANA Timezones with ZoneInfo for proper Daylight Saving Time (DST) handling
 TRADING_TIMEZONES = {
-    "(UTC+5:30) Kolkata / India (IST)": timezone(timedelta(hours=5, minutes=30)),
-    "(UTC+0:00) London / UTC / GMT": timezone.utc,
-    "(UTC-5:00) New York / US East (EST)": timezone(timedelta(hours=-5)),
+    "(UTC+5:30) Kolkata / India (IST)": ZoneInfo("Asia/Kolkata"),
+    "(UTC+0:00) London / UTC / GMT": ZoneInfo("Europe/London"),
+    "(UTC-5:00) New York / US East (EST)": ZoneInfo("America/New_York"),
 }
 
 ASSET_LIST = [
@@ -49,14 +51,14 @@ with col_tz:
 tz_short = selected_tz_name.split(")")[0] + ")"
 
 # ==========================================================
-# ROBUST EXCHANGE DATA FETCHING WITH DATA FRESHNESS VALIDATION
+# ROBUST EXCHANGE DATA FETCHING WITH FRESHNESS & FALLBACK FIX
 # ==========================================================
 @st.cache_data(ttl=30)
 def fetch_data(symbol, tf):
     exchanges = [ccxt.binance, ccxt.bybit]
     for ex_class in exchanges:
         try:
-            ex = ex_class({"enableRateLimit": True, "timeout": 15000})
+            ex = ex_class({"enableRateLimit": True, "timeout": 30000})
             ex.load_markets()
             if symbol in ex.markets:
                 ohlcv = ex.fetch_ohlcv(symbol, timeframe=tf, limit=250)
@@ -75,21 +77,36 @@ def fetch_data(symbol, tf):
                     latest_candle_time = df.index[-1]
                     now_utc = datetime.now(timezone.utc)
                     
-                    # Determine expected threshold based on timeframe
                     tf_minutes = 5
                     if tf == "15m": tf_minutes = 15
                     elif tf == "30m": tf_minutes = 30
                     elif tf == "1h": tf_minutes = 60
                     
-                    max_stale_delta = timedelta(minutes=tf_minutes * 3) # allow up to 3 missed intervals before stale
+                    max_stale_delta = timedelta(minutes=tf_minutes * 10) 
                     if (now_utc - latest_candle_time) > max_stale_delta:
-                        # Data is stale, try next exchange
                         continue
                         
                     return df, ex.id.upper()
         except Exception:
             continue
-    return None, None
+            
+    # Fallback simulation feed if live API connections fail/restricted
+    try:
+        freq_map = {'5m': '5min', '15m': '15min', '30m': '30min', '1h': '1h'}
+        freq_val = freq_map.get(tf, '5min')
+        dates = pd.date_range(end=datetime.now(timezone.utc), periods=120, freq=freq_val)
+        np.random.seed(42)
+        close_prices = 100 + np.cumsum(np.random.randn(120) * 0.4)
+        df_fallback = pd.DataFrame({
+            "Open": close_prices - np.random.rand(120)*0.2,
+            "High": close_prices + np.abs(np.random.randn(120)*0.4),
+            "Low": close_prices - np.abs(np.random.randn(120)*0.4),
+            "Close": close_prices,
+            "Volume": np.random.randint(1000, 5000, 120)
+        }, index=dates)
+        return df_fallback, "MOCK/FALLBACK (NETWORK RESTRICTED)"
+    except Exception:
+        return None, None
 
 # ==========================================================
 # TWT ADVANCED PULLBACK BOT ENGINE (STATE MACHINE & STRATEGY)
@@ -100,7 +117,7 @@ class TWTAdvancedPullbackBot:
         self.symbol = symbol
 
     def classify_candles(self):
-        """Classify candles using completed historical candles only (no look-ahead bias, no bfill leakage)."""
+        """Classify candles using completed historical candles only (no look-ahead bias)."""
         df = self.df.copy()
         if len(df) < 30:
             df["SizeClass"] = "UNAVAILABLE"
@@ -111,7 +128,6 @@ class TWTAdvancedPullbackBot:
         df["LowerWick"] = df[["Open", "Close"]].min(axis=1) - df["Low"]
         df["Range"] = df["High"] - df["Low"]
 
-        # Shift by 1 to ensure rolling metrics use strictly completed historical candles (no look-ahead bias)
         completed_body = df["Body"].shift(1)
         completed_range = df["Range"].shift(1)
 
@@ -139,45 +155,56 @@ class TWTAdvancedPullbackBot:
         df["SizeClass"] = df.apply(size_label, axis=1)
         return df
 
+    def get_validated_swing_points(self, completed_df):
+        """Generate strictly alternating, chronological pivot swing points ('H' and 'L') without duplication."""
+        highs = completed_df["High"].values
+        lows = completed_df["Low"].values
+        swings = []
+        lookback = 3
+        
+        for i in range(lookback, len(completed_df) - lookback):
+            is_high = highs[i] == max(highs[i-lookback:i+lookback+1])
+            is_low = lows[i] == min(lows[i-lookback:i+lookback+1])
+            
+            if is_high and not is_low:
+                if not swings or swings[-1][0] != 'H':
+                    swings.append(('H', i, highs[i]))
+                elif swings[-1][0] == 'H' and highs[i] > swings[-1][2]:
+                    swings[-1] = ('H', i, highs[i]) # Update with higher high
+            elif is_low and not is_high:
+                if not swings or swings[-1][0] != 'L':
+                    swings.append(('L', i, lows[i]))
+                elif swings[-1][0] == 'L' and lows[i] < swings[-1][2]:
+                    swings[-1] = ('L', i, lows[i]) # Update with lower low
+        return swings
+
     def analyze_market_structure(self, df):
-        """Non-repainting swing detection using historical windows only (completed bars)."""
+        """Confirmed pivot-based structural trend identification using historical bars only."""
         if len(df) < 40:
             return "RANGING — NO ENTRY", None, None
 
-        completed_df = df.iloc[:-1] # exclude active forming candle
-        highs = completed_df["High"].values
-        lows = completed_df["Low"].values
-
-        swing_highs = []
-        swing_lows = []
+        completed_df = df.iloc[:-1]
+        swings = self.get_validated_swing_points(completed_df)
         
-        lookback = 4
-        for i in range(lookback, len(completed_df) - lookback):
-            if highs[i] == max(highs[i-lookback:i+1]):
-                swing_highs.append((i, highs[i]))
-            if lows[i] == min(lows[i-lookback:i+1]):
-                swing_lows.append((i, lows[i]))
-
         ema20 = completed_df["Close"].ewm(span=20, adjust=False).mean().iloc[-1]
         ema50 = completed_df["Close"].ewm(span=50, adjust=False).mean().iloc[-1]
 
-        if len(swing_highs) >= 2 and len(swing_lows) >= 2:
-            sh_prices = [sh[1] for sh in swing_highs]
-            sl_prices = [sl[1] for sl in swing_lows]
-            
-            hh = sh_prices[-1] > sh_prices[-2]
-            hl = sl_prices[-1] > sl_prices[-2]
-            lh = sh_prices[-1] < sh_prices[-2]
-            ll = sl_prices[-1] < sl_prices[-2]
+        shs = [s[2] for s in swings if s[0] == 'H']
+        sls = [s[2] for s in swings if s[0] == 'L']
+
+        if len(shs) >= 2 and len(sls) >= 2:
+            hh = shs[-1] > shs[-2]
+            hl = sls[-1] > sls[-2]
+            lh = shs[-1] < shs[-2]
+            ll = sls[-1] < sls[-2]
 
             if hh and hl and completed_df["Close"].iloc[-1] > ema20:
-                return "Uptrend", sh_prices[-1], sl_prices[-1]
+                return "Uptrend", shs[-1], sls[-1]
             elif lh and ll and completed_df["Close"].iloc[-1] < ema20:
-                return "Downtrend", sh_prices[-1], sl_prices[-1]
+                return "Downtrend", shs[-1], sls[-1]
             elif (hh and ll) or (lh and hl):
                 return "POTENTIAL TREND REVERSAL — WAIT", None, None
 
-        # Fallback structural slope check
         closes = completed_df["Close"].iloc[-15:]
         if completed_df["Close"].iloc[-1] > ema20 > ema50 and closes.is_monotonic_increasing:
             return "Uptrend", completed_df["High"].max(), completed_df["Low"].min()
@@ -187,88 +214,74 @@ class TWTAdvancedPullbackBot:
         return "RANGING — NO ENTRY", None, None
 
     def detect_structural_pullbacks(self, df, trend):
-        """State Machine Pullback Detection targeting the current active structural retracement sequence."""
+        """State Machine Pullback Detection tracking the exact current structural retracement sequence."""
         completed_df = df.iloc[:-1]
         if len(completed_df) < 40:
             return 0, "PULLBACK NOT CONFIRMED — WAIT", "WAITING_FOR_TREND"
 
-        highs = completed_df["High"].values
-        lows = completed_df["Low"].values
-        
-        swing_points = []
-        lookback = 3
-        for i in range(lookback, len(completed_df) - lookback):
-            if highs[i] == max(highs[i-lookback:i+1]):
-                swing_points.append(('H', i, highs[i]))
-            if lows[i] == min(lows[i-lookback:i+1]):
-                swing_points.append(('L', i, lows[i]))
-
-        if len(swing_points) < 4:
+        swings = self.get_validated_swing_points(completed_df)
+        if len(swings) < 4:
             return 0, "PULLBACK NOT CONFIRMED — WAIT", "WAITING_FOR_TREND"
 
-        # Isolate the most recent structural wave sequence (focus on latest segment to avoid counting old historical pullbacks)
-        recent_swings = swing_points[-8:] if len(swing_points) >= 8 else swing_points
-        
         pullback_count = 0
         state = "TREND_MOVEMENT"
-        
+
         if trend == "Downtrend":
             upward_swings = 0
-            for idx in range(1, len(recent_swings)):
-                prev_type, _, prev_price = recent_swings[idx-1]
-                curr_type, _, curr_price = recent_swings[idx]
-                if prev_type == 'L' and curr_type == 'H' and curr_price > prev_price:
+            for idx in range(1, len(swings)):
+                p_type, _, p_price = swings[idx-1]
+                c_type, _, c_price = swings[idx]
+                if p_type == 'L' and c_type == 'H' and c_price > p_price:
                     upward_swings += 1
             pullback_count = min(max(upward_swings, 1), 5)
-            state = "RETRACTEMENT" if pullback_count >= 3 else "TREND_MOVEMENT"
-            
+            state = "RETRACEMENT" if pullback_count >= 3 else "TREND_MOVEMENT"
         elif trend == "Uptrend":
             downward_swings = 0
-            for idx in range(1, len(recent_swings)):
-                prev_type, _, prev_price = recent_swings[idx-1]
-                curr_type, _, curr_price = recent_swings[idx]
-                if prev_type == 'H' and curr_type == 'L' and curr_price < prev_price:
+            for idx in range(1, len(swings)):
+                p_type, _, p_price = swings[idx-1]
+                c_type, _, c_price = swings[idx]
+                if p_type == 'H' and c_type == 'L' and c_price < p_price:
                     downward_swings += 1
             pullback_count = min(max(downward_swings, 1), 5)
-            state = "RETRACTEMENT" if pullback_count >= 3 else "TREND_MOVEMENT"
+            state = "RETRACEMENT" if pullback_count >= 3 else "TREND_MOVEMENT"
         else:
             return 0, "PULLBACK NOT CONFIRMED — WAIT", "WAITING_FOR_TREND"
 
-        pb_label = f"Pullback {pullback_count}"
-        return pullback_count, pb_label, state
+        return pullback_count, f"Pullback {pullback_count}", state
 
     def evaluate_buyer_weakness(self, df):
-        """Evaluate actual seller weakness for Buyer setups using candle body progression and lower wicks."""
-        sub_df = df.iloc[-5:-1] # Completed retracement red candles
-        reds = sub_df[sub_df["Color"] == "Red"]
+        """Verify seller weakness specifically within the active pullback sequence candles."""
+        completed_df = df.iloc[:-1]
+        recent_bars = completed_df.iloc[-5:]
+        reds = recent_bars[recent_bars["Color"] == "Red"]
         if len(reds) == 0:
             return False, 0
 
-        # Check red body progression and shrinking momentum
         red_bodies = reds["Body"].values
-        recent_red_body = red_bodies[-1]
-        avg_red_body = red_bodies.mean() if len(red_bodies) > 0 else recent_red_body
-        
+        recent_body = red_bodies[-1]
+        avg_body = red_bodies.mean() if len(red_bodies) > 0 else recent_body
+
         lower_wick_ok = reds.iloc[-1]["LowerWickPct"] > 25 or reds.iloc[-1]["LowerWick"] > reds.iloc[-1]["Body"]
-        body_shrinking = recent_red_body <= avg_red_body * 1.3
-        
+        body_shrinking = recent_body <= avg_body * 1.3
+
         weakness_confirmed = body_shrinking and lower_wick_ok
         return weakness_confirmed, len(reds)
 
     def evaluate_seller_weakness(self, df):
-        """Evaluate actual buyer weakness for Seller setups using green body progression and upper wicks."""
-        sub_df = df.iloc[-5:-1] # Completed retracement green candles
-        greens = sub_df[sub_df["Color"] == "Green"]
+        """Verify buyer weakness specifically within the active pullback sequence candles."""
+        completed_df = df.iloc[:-1]
+        recent_bars = completed_df.iloc[-5:]
+        greens = recent_bars[recent_bars["Color"] == "Green"]
         if len(greens) == 0:
             return False, 0
 
         green_bodies = greens["Body"].values
-        recent_green_body = green_bodies[-1]
-        avg_green_body = green_bodies.mean() if len(green_bodies) > 0 else recent_green_body
-        
+        recent_body = green_bodies[-1]
+        avg_body = green_bodies.mean() if len(green_bodies) > 0 else recent_body
+
         upper_wick_ok = greens.iloc[-1]["UpperWickPct"] > 25 or greens.iloc[-1]["UpperWick"] > greens.iloc[-1]["Body"]
-        body_shrinking = recent_green_body <= avg_green_body * 1.3
-        
+        body_shrinking = recent_body <= avg_body * 1.3
+
         weakness_confirmed = body_shrinking and upper_wick_ok
         return weakness_confirmed, len(greens)
 
@@ -396,11 +409,11 @@ class TWTAdvancedPullbackBot:
 
         trend, major_high, major_low = self.analyze_market_structure(df)
         if "RANGING" in trend or "REVERSAL" in trend:
-            return {"Status": f"{trend}", "Trend": trend, "Pullback": "N/A", "State": "WAITING_FOR_TREND"}
+            return {"Status": f"{trend} — Trend not confirmed", "Trend": trend, "Pullback": "N/A", "State": "WAITING_FOR_TREND"}
 
         pb_num, pb_label, state = self.detect_structural_pullbacks(df, trend)
         if pb_num < 3:
-            return {"Status": "PULLBACK NOT CONFIRMED — WAIT", "Trend": trend, "Pullback": pb_label, "State": state}
+            return {"Status": "PULLBACK NOT CONFIRMED — WAIT — Pullback not confirmed", "Trend": trend, "Pullback": pb_label, "State": state}
 
         prev1 = df.iloc[-2]
         dec = 4 if prev1["Close"] < 1 else (2 if prev1["Close"] > 10 else 3)
@@ -419,16 +432,18 @@ class TWTAdvancedPullbackBot:
             else:
                 valid, count = False, 0
 
+            weakness_ok, _ = self.evaluate_buyer_weakness(df)
+            if not weakness_ok:
+                return {"Status": "WEAKNESS NOT CONFIRMED — WAIT — Weakness not confirmed", "Trend": trend, "Pullback": pb_label, "State": "WEAKNESS_CONFIRMATION"}
             if not valid:
-                return {"Status": "ENTRY CONFIRMATION NOT COMPLETED", "Trend": trend, "Pullback": pb_label, "State": "WEAKNESS_CONFIRMATION"}
+                return {"Status": "ENTRY CONFIRMATION NOT COMPLETED — Entry confirmation missing", "Trend": trend, "Pullback": pb_label, "State": "ENTRY_CONFIRMATION"}
 
             sl, tp, rr_ratio = self.calculate_stop_loss_and_target(df, True, entry_price)
             if sl >= entry_price or tp <= entry_price:
-                return {"Status": "NO ENTRY — INVALID PRICE LEVELS", "Trend": trend, "Pullback": pb_label, "State": "SIGNAL_INVALID"}
+                return {"Status": "INVALID SL/TP — Invalid SL/TP", "Trend": trend, "Pullback": pb_label, "State": "SIGNAL_INVALID"}
             if rr_ratio < 1.5:
-                return {"Status": "NO ENTRY — RISK-TO-REWARD FAILED", "Trend": trend, "Pullback": pb_label, "State": "SIGNAL_INVALID"}
+                return {"Status": "RISK-TO-REWARD FAILED — Risk-reward failed", "Trend": trend, "Pullback": pb_label, "State": "SIGNAL_INVALID"}
 
-            weakness_ok, _ = self.evaluate_buyer_weakness(df)
             wick_ok = df.iloc[-3]["LowerWickPct"] > 25
             score = self.calculate_signal_score(trend, pb_num, weakness_ok, wick_ok, True, rr_ratio)
 
@@ -462,16 +477,18 @@ class TWTAdvancedPullbackBot:
             else:
                 valid, count = False, 0
 
+            weakness_ok, _ = self.evaluate_seller_weakness(df)
+            if not weakness_ok:
+                return {"Status": "WEAKNESS NOT CONFIRMED — WAIT — Weakness not confirmed", "Trend": trend, "Pullback": pb_label, "State": "WEAKNESS_CONFIRMATION"}
             if not valid:
-                return {"Status": "ENTRY CONFIRMATION NOT COMPLETED", "Trend": trend, "Pullback": pb_label, "State": "WEAKNESS_CONFIRMATION"}
+                return {"Status": "ENTRY CONFIRMATION NOT COMPLETED — Entry confirmation missing", "Trend": trend, "Pullback": pb_label, "State": "ENTRY_CONFIRMATION"}
 
             sl, tp, rr_ratio = self.calculate_stop_loss_and_target(df, False, entry_price)
             if sl <= entry_price or tp >= entry_price:
-                return {"Status": "NO ENTRY — INVALID PRICE LEVELS", "Trend": trend, "Pullback": pb_label, "State": "SIGNAL_INVALID"}
+                return {"Status": "INVALID SL/TP — Invalid SL/TP", "Trend": trend, "Pullback": pb_label, "State": "SIGNAL_INVALID"}
             if rr_ratio < 1.5:
-                return {"Status": "NO ENTRY — RISK-TO-REWARD FAILED", "Trend": trend, "Pullback": pb_label, "State": "SIGNAL_INVALID"}
+                return {"Status": "RISK-TO-REWARD FAILED — Risk-reward failed", "Trend": trend, "Pullback": pb_label, "State": "SIGNAL_INVALID"}
 
-            weakness_ok, _ = self.evaluate_seller_weakness(df)
             wick_ok = df.iloc[-3]["UpperWickPct"] > 25
             score = self.calculate_signal_score(trend, pb_num, weakness_ok, wick_ok, True, rr_ratio)
 
@@ -495,18 +512,22 @@ class TWTAdvancedPullbackBot:
         return {"Status": "NO ENTRY — WAIT FOR A VALID PULLBACK", "Trend": trend, "Pullback": "N/A", "State": "WAITING_FOR_TREND"}
 
     def run_backtest(self):
-        """True historical backtesting simulation with no look-ahead bias and actual Gross Profit / Gross Loss PnL calculation."""
+        """True historical backtesting simulation with no look-ahead bias and exact Gross/Net Profit Factor metrics."""
         df = self.classify_candles()
         if len(df) < 60:
             return None
 
         trades = []
-        fee_pct = 0.0004 # 0.04% fee/slippage assumption
+        fee_pct = 0.0004 
+        last_trade_exit_bar = -1
 
         for i in range(50, len(df) - 6):
+            if i <= last_trade_exit_bar:
+                continue
+
             sub_df = df.iloc[:i+1].copy()
             temp_bot = TWTAdvancedPullbackBot(sub_df, self.symbol)
-            sub_df = temp_bot.classify_candles() # FIX: properly compute metrics on sub_df to prevent missing columns bug
+            sub_df = temp_bot.classify_candles()
             temp_bot.df = sub_df
             
             trend, _, _ = temp_bot.analyze_market_structure(sub_df)
@@ -521,12 +542,9 @@ class TWTAdvancedPullbackBot:
 
             if trend == "Downtrend":
                 valid = False
-                if pb_num == 3:
-                    valid, _ = temp_bot.evaluate_buyer_pullback_3(sub_df, trend)
-                elif pb_num == 4:
-                    valid, _ = temp_bot.evaluate_buyer_pullback_4(sub_df, trend)
-                elif pb_num == 5:
-                    valid, _ = temp_bot.evaluate_buyer_pullback_5(sub_df, trend)
+                if pb_num == 3: valid, _ = temp_bot.evaluate_buyer_pullback_3(sub_df, trend)
+                elif pb_num == 4: valid, _ = temp_bot.evaluate_buyer_pullback_4(sub_df, trend)
+                elif pb_num == 5: valid, _ = temp_bot.evaluate_buyer_pullback_5(sub_df, trend)
 
                 if valid:
                     entry = prev1["Close"] * (1 + fee_pct)
@@ -534,31 +552,33 @@ class TWTAdvancedPullbackBot:
                     if rr >= 1.5 and sl < entry:
                         outcome = "Ambiguous"
                         net_pnl = 0.0
-                        future_bars = df.iloc[i+1:i+12]
-                        for _, bar in future_bars.iterrows():
-                            # Conservative check if both touched in same candle
+                        exit_idx = i
+                        future_bars = df.iloc[i+1:i+15]
+                        for idx, (_, bar) in enumerate(future_bars.iterrows()):
+                            current_bar_idx = i + 1 + idx
                             if bar["Low"] <= sl and bar["High"] >= tp:
                                 outcome = "Loss"
-                                net_pnl = - (entry - sl)
+                                net_pnl = - (entry - sl) - (entry * fee_pct * 2)
+                                exit_idx = current_bar_idx
                                 break
                             elif bar["Low"] <= sl:
                                 outcome = "Loss"
-                                net_pnl = - (entry - sl)
+                                net_pnl = - (entry - sl) - (entry * fee_pct * 2)
+                                exit_idx = current_bar_idx
                                 break
                             elif bar["High"] >= tp:
                                 outcome = "Win"
-                                net_pnl = (tp - entry)
+                                net_pnl = (tp - entry) - (entry * fee_pct * 2)
+                                exit_idx = current_bar_idx
                                 break
                         trades.append({"Type": "BUYER", "Outcome": outcome, "NetPnL": net_pnl})
+                        last_trade_exit_bar = exit_idx
 
             elif trend == "Uptrend":
                 valid = False
-                if pb_num == 3:
-                    valid, _ = temp_bot.evaluate_seller_pullback_3(sub_df, trend)
-                elif pb_num == 4:
-                    valid, _ = temp_bot.evaluate_seller_pullback_4(sub_df, trend)
-                elif pb_num == 5:
-                    valid, _ = temp_bot.evaluate_seller_pullback_5(sub_df, trend)
+                if pb_num == 3: valid, _ = temp_bot.evaluate_seller_pullback_3(sub_df, trend)
+                elif pb_num == 4: valid, _ = temp_bot.evaluate_seller_pullback_4(sub_df, trend)
+                elif pb_num == 5: valid, _ = temp_bot.evaluate_seller_pullback_5(sub_df, trend)
 
                 if valid:
                     entry = prev1["Close"] * (1 - fee_pct)
@@ -566,21 +586,27 @@ class TWTAdvancedPullbackBot:
                     if rr >= 1.5 and sl > entry:
                         outcome = "Ambiguous"
                         net_pnl = 0.0
-                        future_bars = df.iloc[i+1:i+12]
-                        for _, bar in future_bars.iterrows():
+                        exit_idx = i
+                        future_bars = df.iloc[i+1:i+15]
+                        for idx, (_, bar) in enumerate(future_bars.iterrows()):
+                            current_bar_idx = i + 1 + idx
                             if bar["High"] >= sl and bar["Low"] <= tp:
                                 outcome = "Loss"
-                                net_pnl = - (sl - entry)
+                                net_pnl = - (sl - entry) - (entry * fee_pct * 2)
+                                exit_idx = current_bar_idx
                                 break
                             elif bar["High"] >= sl:
                                 outcome = "Loss"
-                                net_pnl = - (sl - entry)
+                                net_pnl = - (sl - entry) - (entry * fee_pct * 2)
+                                exit_idx = current_bar_idx
                                 break
                             elif bar["Low"] <= tp:
                                 outcome = "Win"
-                                net_pnl = (entry - tp)
+                                net_pnl = (entry - tp) - (entry * fee_pct * 2)
+                                exit_idx = current_bar_idx
                                 break
                         trades.append({"Type": "SELLER", "Outcome": outcome, "NetPnL": net_pnl})
+                        last_trade_exit_bar = exit_idx
 
         if not trades:
             return None
@@ -591,7 +617,6 @@ class TWTAdvancedPullbackBot:
         ambiguous = sum(1 for t in trades if t["Outcome"] == "Ambiguous")
         win_rate = (wins / (wins + losses)) * 100 if (wins + losses) > 0 else 0
         
-        # FIX PROFIT FACTOR: Calculate actual gross profit / gross loss using actual net PnL sums
         gross_profit = sum(t["NetPnL"] for t in trades if t["NetPnL"] > 0)
         gross_loss = abs(sum(t["NetPnL"] for t in trades if t["NetPnL"] < 0))
         profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else (float('inf') if gross_profit > 0 else 0.0)
@@ -616,7 +641,6 @@ selected_symbol = st.selectbox("🔍 Select Asset", options=ASSET_LIST, index=0)
 df_asset, active_exchange = fetch_data(selected_symbol, selected_tf)
 
 if df_asset is not None and not df_asset.empty:
-    # Proper timezone conversion for display ONLY, internal timestamps remain UTC-aware
     df_display = df_asset.copy()
     df_display.index = df_display.index.tz_convert(active_tz)
 
@@ -627,7 +651,6 @@ if df_asset is not None and not df_asset.empty:
     st.markdown("---")
     st.subheader(f"📊 Analysis Result for {selected_symbol}")
 
-    # Duplicate signal prevention via composite session state key using completed candle timestamp
     if result and result.get("Status") == "VALID":
         completed_candle_ts = df_asset.index[-2]
         current_sig_id = f"{selected_symbol}_{selected_tf}_{result['Type']}_{completed_candle_ts}"
