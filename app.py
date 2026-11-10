@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (PRO) — Strict Resistance Rejection Engine"
+    "⚡ TRADE WITH TUCKYAA (PRO) — Optimized Robust Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -92,7 +92,7 @@ st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Strategy Settings")
 st.sidebar.text("Optimized Buy    : Support Rebound after Red Exhaustion")
-st.sidebar.text("Strict Sell Filter : Resistance Rejection -> C Break -> Pullback -> 2nd Red Entry")
+st.sidebar.text("Robust Sell Engine : Resistance Test -> Pullback Rejection -> Safe Entry")
 st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss        : ATR Managed")
 
@@ -161,7 +161,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTStrictResistanceRejectionEngine:
+class TWTRobustEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -309,68 +309,66 @@ class TWTStrictResistanceRejectionEngine:
           })
           buy_state = 5
 
-    # --- STRICT RESISTANCE REJECTION SELL ENGINE SCANNER ---
+    # --- ROBUST SINGLE-CYCLE SELL ENGINE SCANNER ---
+    sell_state = 0
+    c_ref_level = 0.0
+
     for i in range(len(self.candles)):
       c_curr = self.candles[i]
       if time(1, 0) <= c_curr["dt_ist"].time() <= time(6, 0):
         continue
 
       atr_val = c_curr["atr"] if not np.isnan(c_curr["atr"]) else (c_curr["close"] * 0.002)
+      dec = get_decimals(c_curr["close"])
 
-      if (
-          (self.resistance_lvl - (atr_val * 2.0) <= c_curr["high"] <= self.resistance_lvl + (atr_val * 0.5))
-          or (self.resistance_lvl - (atr_val * 2.0) <= c_curr["close"] <= self.resistance_lvl + (atr_val * 0.5))
-      ) and c_curr["color"] == "Green":
-        
-        c_ref_level = c_curr["low"]
+      if sell_state == 5:
+        # Reset cycle if price drops far below support or moves away
+        if c_curr["close"] < self.support_lvl or c_curr["high'] > self.resistance_lvl + (atr_val * 3):
+          sell_state = 0
 
-        sell_state = 1
-        triggered = False
-        for m in range(i + 1, len(self.candles)):
-          cm = self.candles[m]
-          if cm["high"] > self.resistance_lvl + (atr_val * 0.5):
-            break 
+      if sell_state == 0:
+        # Detect Resistance Test (C Candle)
+        if (
+            c_curr["high'] >= self.resistance_lvl - (atr_val * 2.0)
+            or c_curr["close"] >= self.resistance_lvl - (atr_val * 2.0)
+        ) and c_curr["color"] == "Green":
+          c_ref_level = c_curr["low"]
+          sell_state = 1
+      elif sell_state == 1:
+        # Step 1: Red candle breaks below C level
+        if c_curr["color"] == "Red" and c_curr["low'] <= c_ref_level + (atr_val * 0.3):
+          sell_state = 2
+      elif sell_state == 2:
+        # Step 2: Green candle pulls back up towards C level
+        if c_curr["color"] == "Green" and c_curr["high'] >= c_ref_level - (atr_val * 0.8):
+          sell_state = 3
+      elif sell_state == 3:
+        # Step 3: First red candle after pullback
+        if c_curr["color"] == "Red":
+          sell_state = 4
+      elif sell_state == 4:
+        # Step 4: Second red candle confirmation -> SAFE & ROBUST SELL ENTRY!
+        if c_curr["color"] == "Red":
+          sl = round(c_curr["high'] + (1.2 * atr_val), dec)
+          tp1 = round(c_curr["close"] - (1.2 * atr_val), dec)
+          tp2 = round(c_curr["close"] - (2.5 * atr_val), dec)
+          tp3 = round(c_curr["close"] - (4.0 * atr_val), dec)
 
-          if sell_state == 1:
-            if cm["color"] == "Red" and cm["low"] <= c_ref_level + (cm["atr"] * 0.3):
-              sell_state = 2
-          elif sell_state == 2:
-            if cm["color"] == "Green" and cm["high"] >= c_ref_level - (cm["atr"] * 0.8):
-              sell_state = 3
-          elif sell_state == 3:
-            if cm["color"] == "Red":
-              sell_state = 4
-          elif sell_state == 4:
-            if cm["color"] == "Red":
-              atr = (
-                  cm["atr"]
-                  if not np.isnan(cm["atr"])
-                  else (cm["close"] * 0.002)
-              )
-              dec = get_decimals(cm["close"])
-              sl = round(cm["high"] + (1.2 * atr), dec)
-              tp1 = round(cm["close"] - (1.2 * atr), dec)
-              tp2 = round(cm["close"] - (2.5 * atr), dec)
-              tp3 = round(cm["close"] - (4.0 * atr), dec)
-
-              self.signals.append({
-                  "Asset": self.symbol,
-                  "Time": cm["time"],
-                  "Candle #": cm["id"],
-                  "Type": "SELL 🔴",
-                  "Setup": "Strict Resistance Rejection (2nd Red Entry)",
-                  "Action": "Sell / Short (S) [Strict Rejection Entry] 🔴",
-                  "Entry Price": round(cm["close"], dec),
-                  "Stop Loss (SL)": sl,
-                  "TP 1": tp1,
-                  "TP 2": tp2,
-                  "TP 3": tp3,
-                  "Is_Within_1hr": cm["is_within_1hr"],
-              })
-              triggered = True
-              break
-        if triggered:
-          break
+          self.signals.append({
+              "Asset": self.symbol,
+              "Time": c_curr["time"],
+              "Candle #": c_curr["id"],
+              "Type": "SELL 🔴",
+              "Setup": "Robust Single-Cycle Pullback Rejection",
+              "Action": "Sell / Short (S) [Robust Rejection Entry] 🔴",
+              "Entry Price": round(c_curr["close"], dec),
+              "Stop Loss (SL)": sl,
+              "TP 1": tp1,
+              "TP 2": tp2,
+              "TP 3": tp3,
+              "Is_Within_1hr": c_curr["is_within_1hr"],
+          })
+          sell_state = 5 # Locked for this cycle
 
 
 # ---------------------------------------------------------
@@ -386,7 +384,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTStrictResistanceRejectionEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTRobustEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -394,7 +392,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets with Strict Engine..."):
+with st.spinner("⚡ Scanning all 20 assets with Robust Engine..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -433,9 +431,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTStrictResistanceRejectionEngine(
-      df_5, df_4, df_6, selected_symbol, active_tz
-  )
+  bot = TWTRobustEngine(df_5, df_4, df_6, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -451,7 +447,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Strict Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Robust Engine Active")
 
   if bot.signals:
     latest_sig = bot.signals[-1]
@@ -492,7 +488,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   if bot.signals:
     st.markdown("---")
     st.subheader(
-        f"📋 Complete Signal History for {selected_symbol} (Strict Edition)"
+        f"📋 Complete Signal History for {selected_symbol} (Robust Edition)"
     )
     df_history = pd.DataFrame(bot.signals).drop(
         columns=["Is_Within_1hr"], errors="ignore"
@@ -576,7 +572,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Strict Engine ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Robust Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
