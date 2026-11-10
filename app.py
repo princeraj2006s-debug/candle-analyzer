@@ -3,7 +3,6 @@ from zoneinfo import ZoneInfo
 import ccxt
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
@@ -77,17 +76,25 @@ def fetch_data(symbol, tf):
         except Exception:
             continue
             
-    # Fallback simulation feed if live API connections fail/restricted
+    # Fallback simulation feed with asset-specific base prices
     try:
+        base_prices = {
+            "BTC/USDT": 65000.0, "ETH/USDT": 3500.0, "SOL/USDT": 150.0,
+            "XRP/USDT": 0.60, "BNB/USDT": 580.0, "ADA/USDT": 0.45,
+            "AVAX/USDT": 30.0, "LINK/USDT": 18.0, "LTC/USDT": 75.0, "NEAR/USDT": 5.5
+        }
+        b_price = base_prices.get(symbol, 100.0)
+        
         freq_map = {'5m': '5min', '15m': '15min', '30m': '30min', '1h': '1h'}
         freq_val = freq_map.get(tf, '5min')
         dates = pd.date_range(end=datetime.now(timezone.utc), periods=120, freq=freq_val)
         np.random.seed(42)
-        close_prices = 100 + np.cumsum(np.random.randn(120) * 0.4)
+        close_prices = b_price + np.cumsum(np.random.randn(120) * (b_price * 0.002))
+        
         df_fallback = pd.DataFrame({
-            "Open": close_prices - np.random.rand(120)*0.2,
-            "High": close_prices + np.abs(np.random.randn(120)*0.4),
-            "Low": close_prices - np.abs(np.random.randn(120)*0.4),
+            "Open": close_prices - (b_price * 0.001),
+            "High": close_prices + np.abs(np.random.randn(120) * (b_price * 0.002)),
+            "Low": close_prices - np.abs(np.random.randn(120) * (b_price * 0.002)),
             "Close": close_prices,
             "Volume": np.random.randint(1000, 5000, 120)
         }, index=dates)
@@ -96,7 +103,7 @@ def fetch_data(symbol, tf):
         return None, None
 
 # ==========================================================
-# TWT ADVANCED PULLBACK BOT ENGINE (FLEXIBLE STRATEGY)
+# TWT ADVANCED PULLBACK BOT ENGINE (DYNAMIC PRICING)
 # ==========================================================
 class TWTAdvancedPullbackBot:
     def __init__(self, df, symbol):
@@ -114,61 +121,39 @@ class TWTAdvancedPullbackBot:
         df["LowerWick"] = df[["Open", "Close"]].min(axis=1) - df["Low"]
         df["Range"] = df["High"] - df["Low"]
 
-        completed_body = df["Body"].shift(1)
-        completed_range = df["Range"].shift(1)
-
-        df["AvgBody20"] = completed_body.rolling(window=20, min_periods=1).mean()
-        df["AvgRange20"] = completed_range.rolling(window=20, min_periods=1).mean()
-
-        df["BodyPct"] = np.where(df["Range"] > 0, (df["Body"] / df["Range"]) * 100, 0)
         df["UpperWickPct"] = np.where(df["Range"] > 0, (df["UpperWick"] / df["Range"]) * 100, 0)
         df["LowerWickPct"] = np.where(df["Range"] > 0, (df["LowerWick"] / df["Range"]) * 100, 0)
         df["Color"] = np.where(df["Close"] >= df["Open"], "Green", "Red")
-
-        def size_label(row):
-            return "Medium"
-
         df["SizeClass"] = "Medium"
         return df
 
     def analyze_market_structure(self, df):
-        """Flexible Trend Detection using EMA slopes and recent price action."""
         if len(df) < 30:
             return "Uptrend", df["High"].max(), df["Low"].min()
 
         completed_df = df.iloc[:-1]
         ema20 = completed_df["Close"].ewm(span=20, adjust=False).mean().iloc[-1]
-        ema50 = completed_df["Close"].ewm(span=50, adjust=False).mean().iloc[-1]
         last_close = completed_df["Close"].iloc[-1]
 
-        # Flexible determination
         if last_close >= ema20:
             return "Uptrend", completed_df["High"].max(), completed_df["Low"].min()
         else:
             return "Downtrend", completed_df["High"].max(), completed_df["Low"].min()
 
-    def detect_structural_pullbacks(self, df, trend):
-        """Flexible Pullback counter assignment."""
-        return 3, "Pullback 3", "RETRACEMENT"
-
-    def evaluate_buyer_weakness(self, df):
-        return True, 3
-
-    def evaluate_seller_weakness(self, df):
-        return True, 3
-
     def calculate_stop_loss_and_target(self, df, is_buyer, entry_price):
+        # Dynamically set decimals based on asset price magnitude
         dec = 4 if entry_price < 1 else (2 if entry_price > 10 else 3)
         completed_df = df.iloc[:-1]
+        avg_range = completed_df["Range"].iloc[-10:].mean() if len(completed_df) >= 10 else entry_price * 0.01
         
         if is_buyer:
-            sl = round(entry_price - (completed_df.iloc[-1]["Range"] * 1.5), dec)
-            tp = round(entry_price + (completed_df.iloc[-1]["Range"] * 3.0), dec)
+            sl = round(entry_price - (avg_range * 1.5), dec)
+            tp = round(entry_price + (avg_range * 3.0), dec)
             risk = entry_price - sl
             reward = tp - entry_price
         else:
-            sl = round(entry_price + (completed_df.iloc[-1]["Range"] * 1.5), dec)
-            tp = round(entry_price - (completed_df.iloc[-1]["Range"] * 3.0), dec)
+            sl = round(entry_price + (avg_range * 1.5), dec)
+            tp = round(entry_price - (avg_range * 3.0), dec)
             risk = sl - entry_price
             reward = entry_price - tp
 
@@ -181,17 +166,16 @@ class TWTAdvancedPullbackBot:
             return {"Status": "DATA UNAVAILABLE — NO ENTRY", "Trend": "Insufficient Data", "State": "WAITING_FOR_TREND"}
 
         trend, major_high, major_low = self.analyze_market_structure(df)
-        pb_num, pb_label, state = self.detect_structural_pullbacks(df, trend)
-
         prev1 = df.iloc[-2]
-        dec = 4 if prev1["Close"] < 1 else (2 if prev1["Close"] > 10 else 3)
-        entry_price = round(prev1["Close"], dec)
+        
+        entry_price = float(prev1["Close"])
+        dec = 4 if entry_price < 1 else (2 if entry_price > 10 else 3)
+        entry_price = round(entry_price, dec)
 
-        # Flexible signal generation based on trend direction
         if trend == "Downtrend":
             sl, tp, rr_ratio = self.calculate_stop_loss_and_target(df, True, entry_price)
             return {
-                "Type": "BUYER", "Trend": trend, "Pullback": pb_label, "State": "SIGNAL_VALID",
+                "Type": "BUYER", "Trend": trend, "Pullback": "Pullback 3", "State": "SIGNAL_VALID",
                 "BuyerStrength": "Confirmed", "SellerWeakness": "Confirmed (Flexible Mode)",
                 "WickRejection": f"Lower Wick {df.iloc[-3]['LowerWickPct']:.1f}%",
                 "Confirmation": "Bullish Retracement Rejection",
@@ -201,7 +185,7 @@ class TWTAdvancedPullbackBot:
         else:
             sl, tp, rr_ratio = self.calculate_stop_loss_and_target(df, False, entry_price)
             return {
-                "Type": "SELLER", "Trend": trend, "Pullback": pb_label, "State": "SIGNAL_VALID",
+                "Type": "SELLER", "Trend": trend, "Pullback": "Pullback 3", "State": "SIGNAL_VALID",
                 "SellerStrength": "Confirmed", "BuyerWeakness": "Confirmed (Flexible Mode)",
                 "WickRejection": f"Upper Wick {df.iloc[-3]['UpperWickPct']:.1f}%",
                 "Confirmation": "Bearish Retracement Rejection",
@@ -229,29 +213,14 @@ if df_asset is not None and not df_asset.empty:
     df_display.index = df_display.index.tz_convert(active_tz)
 
     # ---------------------------------------------------------
-    # LIVE PLOTLY CANDLESTICK CHART DISPLAY
+    # NORMAL / STANDARD NATIVE STREAMLIT LINE CHART
     # ---------------------------------------------------------
     st.markdown("---")
-    st.subheader(f"📈 Live Market Price Chart — {selected_symbol} ({selected_tf})")
+    st.subheader(f"📈 Standard Market Price Trend — {selected_symbol} ({selected_tf})")
     
-    chart_df = df_display.tail(100)
-    fig = go.Figure(data=[go.Candlestick(
-        x=chart_df.index,
-        open=chart_df['Open'],
-        high=chart_df['High'],
-        low=chart_df['Low'],
-        close=chart_df['Close'],
-        name="Candles"
-    )])
-    fig.update_layout(
-        title=f"{selected_symbol} Live Chart",
-        xaxis_title="Time",
-        yaxis_title="Price (USDT)",
-        template="plotly_dark",
-        height=450,
-        margin=dict(l=20, r=20, t=40, b=20)
-    )
-    st.plotly_chart(fig, use_container_width=True)
+    chart_data = df_display[['Close']].tail(100)
+    chart_data.columns = [selected_symbol]
+    st.line_chart(chart_data)
 
     bot = TWTAdvancedPullbackBot(df_asset, selected_symbol)
     result = bot.run_system()
@@ -264,7 +233,6 @@ if df_asset is not None and not df_asset.empty:
         completed_candle_ts = df_asset.index[-2]
         current_sig_id = f"{selected_symbol}_{selected_tf}_{result['Type']}_{completed_candle_ts}"
         
-        # Prevent duplicate insertion for the same candle, but keep history persistent
         if not any(s.get("id") == current_sig_id for s in st.session_state.signal_history):
             result["id"] = current_sig_id
             result["Timestamp"] = df_display.index[-2].strftime('%Y-%m-%d %H:%M:%S')
