@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (PRO) — Safe Wick-Protected Engulfing Engine"
+    "⚡ TRADE WITH TUCKYAA (PRO) — Flexible Seller & Strict Buyer Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -91,8 +91,8 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Strategy Settings")
-st.sidebar.text("Sell Rule        : 3 Green + Safe Wick Engulfing Red")
-st.sidebar.text("Buy Rule         : 7 Red Exhaustion + Weak Dip + Recovery")
+st.sidebar.text("Sell Rule        : Flexible Resistance Rejection & Engulfing")
+st.sidebar.text("Buy Rule         : Strict 7 Red Exhaustion + Verified Bounce")
 st.sidebar.text("Strict Lock      : Single First Entry Only")
 
 
@@ -160,7 +160,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTSafeEngulfingEngine:
+class TWTFlexibleEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -270,7 +270,7 @@ class TWTSafeEngulfingEngine:
 
     found_signal = None
     is_major_coin = self.symbol in ["BTC/USDT", "ETH/USDT"]
-    zone_multiplier = 3.5 if is_major_coin else 2.5
+    zone_multiplier = 4.0 if is_major_coin else 2.5
 
     for i in range(len(self.candles)):
       c = self.candles[i]
@@ -281,17 +281,17 @@ class TWTSafeEngulfingEngine:
       dec = get_decimals(c["close"])
 
       # -------------------------------------------------------------
-      # 1. BUY LOGIC: 7 Red Exhaustion + Weak Dip + Recovery Breakout
+      # 1. STRICT BUY LOGIC: 7 Red Exhaustion + Strict Support Proximity + Recovery Breakout
       # -------------------------------------------------------------
-      if c["close"] <= self.support_lvl + (atr * zone_multiplier):
+      if c["close"] <= self.support_lvl + (atr * 1.5):
         if i >= 7:
           red_count = 0
           for k in range(i - 6, i + 1):
             if self.candles[k]["color"] == "Red":
               red_count += 1
           
-          if red_count >= 6:
-            for m in range(i + 1, min(i + 5, len(self.candles))):
+          if red_count >= 7:
+            for m in range(i + 1, min(i + 4, len(self.candles))):
               cm = self.candles[m]
               if cm["color"] == "Green" and cm["close"] > self.candles[m - 1]["high"]:
                 sl = round(cm["low"] - (1.2 * atr), dec)
@@ -304,8 +304,8 @@ class TWTSafeEngulfingEngine:
                     "Time": cm["time"],
                     "Candle #": cm["id"],
                     "Type": "BUY 🟢",
-                    "Setup": "7-Red Exhaustion & Recovery",
-                    "Action": "Buy / Long (B) [Exhaustion Bounce] 🟢",
+                    "Setup": "Strict 7-Red Exhaustion Bounce",
+                    "Action": "Buy / Long (B) [Strict Support Bounce] 🟢",
                     "Entry Price": round(cm["close"], dec),
                     "Stop Loss (SL)": sl,
                     "TP 1": tp1,
@@ -318,46 +318,36 @@ class TWTSafeEngulfingEngine:
           break
 
       # -------------------------------------------------------------
-      # 2. SELLER LOGIC: 3 Green + Safe Wick Engulfing Red (Upper wick doesn't cross green high)
+      # 2. FLEXIBLE SELLER LOGIC: Resistance Zone Rejection / Engulfing (Optimized for BTC/ETH & Altcoins)
       # -------------------------------------------------------------
-      if i >= 3:
-        c1 = self.candles[i - 3]
-        c2 = self.candles[i - 2]
-        c3 = self.candles[i - 1]
-        curr = self.candles[i]
+      is_in_resistance_zone = c["high"] >= self.resistance_lvl - (atr * zone_multiplier)
+      if is_in_resistance_zone:
+        body_size = abs(c["close"] - c["open"])
+        upper_wick = c["high"] - max(c["open"], c["close"])
+        is_rejection = (upper_wick >= body_size * 0.7) or (c["color"] == "Red")
+        closes_below = c["close"] <= self.resistance_lvl + (atr * 0.8)
 
-        if c1["color"] == "Green" and c2["color"] == "Green" and c3["color"] == "Green":
-          if curr["color"] == "Red":
-            prev_green_body_top = max(c3["open"], c3["close"])
-            prev_green_body_bot = min(c3["open"], c3["close"])
-            curr_red_body_top = max(curr["open"], curr["close"])
-            curr_red_body_bot = min(curr["open"], curr["close"])
+        if is_rejection and closes_below:
+          sl = round(c["high"] + (1.5 * atr), dec)
+          tp1 = round(c["close"] - (1.2 * atr), dec)
+          tp2 = round(c["close"] - (2.5 * atr), dec)
+          tp3 = round(c["close"] - (4.0 * atr), dec)
 
-            # Engulfing condition + Safe Upper Wick check (Red high does not cross previous green high)
-            is_engulfing = (curr_red_body_top >= prev_green_body_top) and (curr_red_body_bot <= prev_green_body_bot)
-            is_safe_wick = curr["high"] <= c3["high"] + (atr * 0.2) # Upper wick does not cross previous green high aggressively
-
-            if is_engulfing and is_safe_wick:
-              sl = round(curr["high"] + (1.5 * atr), dec)
-              tp1 = round(curr["close"] - (1.2 * atr), dec)
-              tp2 = round(curr["close"] - (2.5 * atr), dec)
-              tp3 = round(curr["close"] - (4.0 * atr), dec)
-
-              found_signal = {
-                  "Asset": self.symbol,
-                  "Time": curr["time"],
-                  "Candle #": curr["id"],
-                  "Type": "SELL 🔴",
-                  "Setup": "3 Green + Safe Wick Engulfing Reversal",
-                  "Action": "Sell / Short (S) [Safe Wick Engulfing] 🔴",
-                  "Entry Price": round(curr["close"], dec),
-                  "Stop Loss (SL)": sl,
-                  "TP 1": tp1,
-                  "TP 2": tp2,
-                  "TP 3": tp3,
-                  "Is_Within_1hr": curr["is_within_1hr"],
-              }
-              break
+          found_signal = {
+              "Asset": self.symbol,
+              "Time": c["time"],
+              "Candle #": c["id"],
+              "Type": "SELL 🔴",
+              "Setup": "Flexible Resistance Rejection",
+              "Action": "Sell / Short (S) [Flexible Resistance] 🔴",
+              "Entry Price": round(c["close"], dec),
+              "Stop Loss (SL)": sl,
+              "TP 1": tp1,
+              "TP 2": tp2,
+              "TP 3": tp3,
+              "Is_Within_1hr": c["is_within_1hr"],
+          }
+          break
 
       if found_signal:
         break
@@ -383,7 +373,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTSafeEngulfingEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTFlexibleEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[0] if recent_sigs else None
@@ -391,7 +381,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning with Safe Wick-Protected Engulfing Engine..."):
+with st.spinner("⚡ Scanning with Flexible Seller & Strict Buyer Engine..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -421,7 +411,7 @@ st.markdown("---")
 st.subheader("📊 Manual Asset Inspector & Chart")
 
 selected_symbol = st.selectbox(
-    "🔍 Select Asset to Load Chart & Safe Engulfing Entry",
+    "🔍 Select Asset to Load Chart & Verified Entry",
     options=ASSET_LIST,
     index=0,
 )
@@ -430,7 +420,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTSafeEngulfingEngine(
+  bot = TWTFlexibleEngine(
       df_5, df_4, df_6, selected_symbol, active_tz
   )
   bot.calculate_and_scan()
@@ -448,7 +438,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Safe Wick Filter Active")
+    st.metric(label="Timezone", value=tz_short, delta="Flexible & Strict Active")
 
   if bot.signals:
     latest_sig = bot.signals[0]
@@ -481,10 +471,10 @@ if bot.df_5 is not None and not bot.df_5.empty:
   else:
     st.warning(
         "🟡 **STATUS: WAITING FOR SETUP**\n\n"
-        "📌 *Instructions:* Monitoring 3-Green followed by Safe-Wick Engulfing Red for Sell setups."
+        "📌 *Instructions:* Monitoring strict buyer bounce & flexible seller rejection setups."
     )
 
-  # Complete Single History Table (Fixed & Verified)
+  # Complete Single History Table (Fixed & Verified for all assets including BTC/ETH)
   if bot.history_signals:
     st.markdown("---")
     st.subheader(
@@ -568,7 +558,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Safe Engulfing Engine ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Flexible Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
