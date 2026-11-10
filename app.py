@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (PRO) — Instant 1st-Red Entry Engine"
+    "⚡ TRADE WITH TUCKYAA (PRO) — Verified 4-Step Price Action Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -91,10 +91,11 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Strategy Settings")
-st.sidebar.text("Entry Logic      : INSTANT 1ST RED CANDLE AT RESISTANCE")
-st.sidebar.text("SL Protection    : Balanced Wide ATR Buffer (Prevents Spike Out)")
+st.sidebar.text("Sell Rule 1      : Price in Resistance Zone")
+st.sidebar.text("Sell Rule 2      : Upper Wick Rejection / Bearish Engulfing")
+st.sidebar.text("Sell Rule 3      : Candle Close Below Resistance")
+st.sidebar.text("Sell Rule 4      : Next Candle Breaks Rejection Low")
 st.sidebar.text("Strict Lock      : Single First Entry Only")
-st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
 
 
 def get_decimals(price):
@@ -161,7 +162,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTFirstRedInstantEngine:
+class TWT4StepConfirmedEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -271,7 +272,7 @@ class TWTFirstRedInstantEngine:
 
     found_signal = None
 
-    for i in range(len(self.candles)):
+    for i in range(len(self.candles) - 1):
       c = self.candles[i]
       if time(1, 0) <= c["dt_ist"].time() <= time(6, 0):
         continue
@@ -279,39 +280,42 @@ class TWTFirstRedInstantEngine:
       atr = c["atr"] if not np.isnan(c["atr"]) else (c["close"] * 0.002)
       dec = get_decimals(c["close"])
 
-      # Check Resistance Touch
-      is_resistance_zone = c["high"] >= self.resistance_lvl - (atr * 2.0)
+      # STEP 1: Price in Resistance Zone (Approaches or touches resistance)
+      is_in_resistance_zone = c["high"] >= self.resistance_lvl - (atr * 2.5)
 
-      if is_resistance_zone and c["color"] == "Green":
-        # Scan for the VERY FIRST RED CANDLE immediately after resistance touch
-        for m in range(i + 1, min(i + 10, len(self.candles))):
-          cm = self.candles[m]
-          if cm["color"] == "Red":
-            # Balanced Stop Loss: Highest Point of Test + 1.8x ATR Buffer to prevent spike-outs
-            max_high = max(c["high"], cm["high"])
-            sl = round(max_high + (1.8 * atr), dec)
-            tp1 = round(cm["close"] - (1.5 * atr), dec)
-            tp2 = round(cm["close"] - (3.0 * atr), dec)
-            tp3 = round(cm["close"] - (4.5 * atr), dec)
+      if is_in_resistance_zone:
+        # STEP 2: Upper Wick Rejection OR Bearish Engulfing Confirmation AND Close Below Resistance
+        body_size = abs(c["close"] - c["open"])
+        upper_wick = c["high"] - max(c["open"], c["close"])
+        
+        is_upper_wick_rejection = upper_wick >= body_size * 1.2
+        is_bearish_confirmation = (c["color"] == "Red") or is_upper_wick_rejection
+        closes_below_resistance = c["close"] <= self.resistance_lvl + (atr * 0.2)
+
+        if is_bearish_confirmation and closes_below_resistance:
+          # STEP 3 & 4: Next candle breaks rejection/confirmation candle's low
+          next_c = self.candles[i + 1]
+          if next_c["low"] <= c["low"] or next_c["close"] < c["low"]:
+            sl = round(c["high"] + (1.5 * atr), dec)
+            tp1 = round(next_c["close"] - (1.2 * atr), dec)
+            tp2 = round(next_c["close"] - (2.5 * atr), dec)
+            tp3 = round(next_c["close"] - (4.0 * atr), dec)
 
             found_signal = {
                 "Asset": self.symbol,
-                "Time": cm["time"],
-                "Candle #": cm["id"],
+                "Time": next_c["time"],
+                "Candle #": next_c["id"],
                 "Type": "SELL 🔴",
-                "Setup": "1st Red Candle Instant Rejection",
-                "Action": "Sell / Short (S) [Instant 1st Red] 🔴",
-                "Entry Price": round(cm["close"], dec),
+                "Setup": "4-Step Confirmed Resistance Rejection",
+                "Action": "Sell / Short (S) [4-Step Verified] 🔴",
+                "Entry Price": round(next_c["close"], dec),
                 "Stop Loss (SL)": sl,
                 "TP 1": tp1,
                 "TP 2": tp2,
                 "TP 3": tp3,
-                "Is_Within_1hr": cm["is_within_1hr"],
+                "Is_Within_1hr": next_c["is_within_1hr"],
             }
             break
-        
-        if found_signal:
-          break
 
     if found_signal:
       self.signals = [found_signal]
@@ -334,7 +338,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTFirstRedInstantEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWT4StepConfirmedEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[0] if recent_sigs else None
@@ -342,7 +346,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning for Instant 1st Red Rejections..."):
+with st.spinner("⚡ Scanning with 4-Step Verified Rules..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -372,7 +376,7 @@ st.markdown("---")
 st.subheader("📊 Manual Asset Inspector & Chart")
 
 selected_symbol = st.selectbox(
-    "🔍 Select Asset to Load Chart & 1st Red Entry",
+    "🔍 Select Asset to Load Chart & 4-Step Verified Entry",
     options=ASSET_LIST,
     index=0,
 )
@@ -381,7 +385,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTFirstRedInstantEngine(
+  bot = TWT4StepConfirmedEngine(
       df_5, df_4, df_6, selected_symbol, active_tz
   )
   bot.calculate_and_scan()
@@ -399,7 +403,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="1st Red Instant Active")
+    st.metric(label="Timezone", value=tz_short, delta="4-Step Confirmed Active")
 
   if bot.signals:
     latest_sig = bot.signals[0]
@@ -432,14 +436,14 @@ if bot.df_5 is not None and not bot.df_5.empty:
   else:
     st.warning(
         "🟡 **STATUS: WAITING FOR SETUP**\n\n"
-        "📌 *Instructions:* Monitoring resistance test for immediate 1st Red Candle Sell entry."
+        "📌 *Instructions:* Monitoring resistance zone for wick rejection & low break confirmation."
     )
 
   # Complete Single History Table
   if bot.history_signals:
     st.markdown("---")
     st.subheader(
-        f"📋 Single Entry History for {selected_symbol}"
+        f"📋 Single Confirmed History for {selected_symbol}"
     )
     df_history = pd.DataFrame(bot.history_signals).drop(
         columns=["Is_Within_1hr"], errors="ignore"
@@ -519,7 +523,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA 1st Red Entry Engine ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA 4-Step Confirmed Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
