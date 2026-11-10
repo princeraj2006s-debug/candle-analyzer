@@ -91,9 +91,9 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Strategy Rules")
-st.sidebar.text("Buy Rule         : Support + 3-4 Small Reds + 1 Medium Green -> 2nd Green Entry")
-st.sidebar.text("Sell Rule        : Resistance + 3-4 Small Greens + 1 Medium Red -> 2nd Red Entry")
-st.sidebar.text("Clean History    : Selective high-precision entries only")
+st.sidebar.text("Buy Rule         : Support Pullbacks + Medium Green -> 2nd Green Entry")
+st.sidebar.text("Sell Rule        : Resistance Pullbacks + Medium Red -> 2nd Red Entry")
+st.sidebar.text("Clean History    : Selective single entry per cycle (No Spam)")
 
 
 def get_decimals(price):
@@ -160,7 +160,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTPrecisionPullbackEngine:
+class TWTInstitutionalPullbackEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -222,7 +222,7 @@ class TWTPrecisionPullbackEngine:
     elif self.df_4 is not None and not self.df_4.empty:
       self.support_lvl = float(self.df_4["Low"].iloc[-1])
 
-    # 2. Indicators & Candle Classification
+    # 2. Indicators & Candle Size Classification
     self.df_5["TR"] = np.maximum(
         self.df_5["High"] - self.df_5["Low"],
         np.maximum(
@@ -256,6 +256,7 @@ class TWTPrecisionPullbackEngine:
 
       is_small = body <= (avg_body * 0.7)
       is_medium = (body > (avg_body * 0.7)) and (body <= (avg_body * 1.5))
+      upper_wick = h - max(o, c)
 
       self.candles.append({
           "id": idx + 1,
@@ -271,6 +272,7 @@ class TWTPrecisionPullbackEngine:
           "body": body,
           "is_small": is_small,
           "is_medium": is_medium,
+          "upper_wick": upper_wick,
           "atr": atr,
       })
 
@@ -279,7 +281,7 @@ class TWTPrecisionPullbackEngine:
     zone_mult = 4.0 if is_major_coin else 2.5
 
     # Scanning candles for precise multi-pullback 2nd candle entries
-    for i in range(10, len(self.candles)):
+    for i in range(12, len(self.candles)):
       c = self.candles[i]
       if time(1, 0) <= c["dt_ist"].time() <= time(6, 0):
         continue
@@ -288,66 +290,65 @@ class TWTPrecisionPullbackEngine:
       dec = get_decimals(c["close"])
 
       # -------------------------------------------------------------
-      # 1. BUYER ENTRY LOGIC (Support + 3-4 Small Reds + 1 Medium Green -> 2nd Green Entry)
+      # 1. BUYER ENTRY LOGIC (Support Bottom Recovery -> Small Red Pullbacks -> Medium Green -> 2nd Green Entry)
       # -------------------------------------------------------------
-      if c["low"] <= self.support_lvl + (atr * 1.2):
-        if i >= 6:
-          # Check for 3-4 small red pullback candles preceding
-          small_reds = sum(1 for k in range(i - 5, i - 1) if self.candles[k]["color"] == "Red" and self.candles[k]["is_small"])
-          prev_medium_green = self.candles[i - 1]["color"] == "Green" and self.candles[i - 1]["is_medium"]
+      if c["low"] <= self.support_lvl + (atr * 1.5):
+        # Check for 3-4 small/medium red pullbacks preceding near support
+        small_reds = sum(1 for k in range(i - 5, i - 1) if self.candles[k]["color"] == "Red" and (self.candles[k]["is_small"] or self.candles[k]["is_medium"]))
+        prev_medium_green = self.candles[i - 1]["color"] == "Green" and self.candles[i - 1]["is_medium"]
 
-          if small_reds >= 3 and prev_medium_green and c["color"] == "Green":
-            sl = round(min(self.candles[i - 1]["low"], c["low"]) - (1.0 * atr), dec)
-            tp1 = round(c["close"] + (1.2 * atr), dec)
-            tp2 = round(c["close"] + (2.5 * atr), dec)
-            tp3 = round(c["close"] + (4.0 * atr), dec)
+        if small_reds >= 2 and prev_medium_green and c["color"] == "Green":
+          sl = round(min(self.candles[i - 1]["low"], c["low"]) - (1.0 * atr), dec)
+          tp1 = round(c["close"] + (1.2 * atr), dec)
+          tp2 = round(c["close"] + (2.5 * atr), dec)
+          tp3 = round(c["close"] + (4.0 * atr), dec)
 
-            all_signals.append({
-                "Asset": self.symbol,
-                "Time": c["time"],
-                "Candle #": c["id"],
-                "Type": "BUY 🟢",
-                "Setup": "Support Multi-Pullback 2nd Green Entry",
-                "Action": "Buy / Long (B) [Support Pullback 2nd Green] 🟢",
-                "Entry Price": round(c["close"], dec),
-                "Stop Loss (SL)": sl,
-                "TP 1": tp1,
-                "TP 2": tp2,
-                "TP 3": tp3,
-            })
-            continue
+          all_signals.append({
+              "Asset": self.symbol,
+              "Time": c["time"],
+              "Candle #": c["id"],
+              "Type": "BUY 🟢",
+              "Setup": "Support Multi-Pullback 2nd Green Entry",
+              "Action": "Buy / Long (B) [Support Pullback 2nd Green] 🟢",
+              "Entry Price": round(c["close"], dec),
+              "Stop Loss (SL)": sl,
+              "TP 1": tp1,
+              "TP 2": tp2,
+              "TP 3": tp3,
+          })
+          continue
 
       # -------------------------------------------------------------
-      # 2. SELLER ENTRY LOGIC (Resistance + 3-4 Small Greens + 1 Medium Red -> 2nd Red Entry)
+      # 2. SELLER ENTRY LOGIC (Resistance Top Rejection -> Small Green Pullbacks -> Medium Red -> 2nd Red Entry)
       # -------------------------------------------------------------
       if c["high"] >= self.resistance_lvl - (atr * zone_mult):
-        if i >= 6:
-          # Check for 3-4 small green pullback candles preceding near resistance
-          small_greens = sum(1 for k in range(i - 5, i - 1) if self.candles[k]["color"] == "Green" and self.candles[k]["is_small"])
-          prev_medium_red = self.candles[i - 1]["color"] == "Red" and self.candles[i - 1]["is_medium"]
+        # Check for 3-4 small/medium green pullbacks preceding near resistance
+        small_greens = sum(1 for k in range(i - 5, i - 1) if self.candles[k]["color"] == "Green" and (self.candles[k]["is_small"] or self.candles[k]["is_medium"]))
+        prev_medium_red = self.candles[i - 1]["color"] == "Red" and self.candles[i - 1]["is_medium"]
 
-          if small_greens >= 3 and prev_medium_red and c["color"] == "Red":
-            sl = round(max(self.candles[i - 1]["high"], c["high"]) + (1.2 * atr), dec)
-            tp1 = round(c["close"] - (1.2 * atr), dec)
-            tp2 = round(c["close"] - (2.5 * atr), dec)
-            tp3 = round(c["close"] - (4.0 * atr), dec)
+        if small_greens >= 2 and prev_medium_red and c["color"] == "Red":
+          sl = round(max(self.candles[i - 1]["high"], c["high"]) + (1.2 * atr), dec)
+          tp1 = round(c["close"] - (1.2 * atr), dec)
+          tp2 = round(c["close"] - (2.5 * atr), dec)
+          tp3 = round(c["close"] - (4.0 * atr), dec)
 
-            all_signals.append({
-                "Asset": self.symbol,
-                "Time": c["time"],
-                "Candle #": c["id"],
-                "Type": "SELL 🔴",
-                "Setup": "Resistance Multi-Pullback 2nd Red Entry",
-                "Action": "Sell / Short (S) [Resistance Pullback 2nd Red] 🔴",
-                "Entry Price": round(c["close"], dec),
-                "Stop Loss (SL)": sl,
-                "TP 1": tp1,
-                "TP 2": tp2,
-                "TP 3": tp3,
-            })
-            continue
+          all_signals.append({
+              "Asset": self.symbol,
+              "Time": c["time"],
+              "Candle #": c["id"],
+              "Type": "SELL 🔴",
+              "Setup": "Resistance Multi-Pullback 2nd Red Entry",
+              "Action": "Sell / Short (S) [Resistance Pullback 2nd Red] 🔴",
+              "Entry Price": round(c["close"], dec),
+              "Stop Loss (SL)": sl,
+              "TP 1": tp1,
+              "TP 2": tp2,
+              "TP 3": tp3,
+          })
+          continue
 
     self.history_signals = all_signals
+    # Keep only the most recent clean signal to prevent spamming
     self.signals = [all_signals[-1]] if all_signals else []
 
 
@@ -364,7 +365,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTPrecisionPullbackEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTInstitutionalPullbackEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     return sym, engine, (engine.signals[0] if engine.signals else None)
   return sym, None, None
@@ -407,7 +408,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTPrecisionPullbackEngine(
+  bot = TWTInstitutionalPullbackEngine(
       df_5, df_4, df_6, selected_symbol, active_tz
   )
   bot.calculate_and_scan()
