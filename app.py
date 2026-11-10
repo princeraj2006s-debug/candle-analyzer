@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (PRO) — Optimized Robust Engine"
+    "⚡ TRADE WITH TUCKYAA (PRO) — Safe 2nd-Red Pullback Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -323,24 +323,24 @@ class TWTRobustEngine:
 
       if sell_state == 5:
         # Reset cycle if price drops far below support or moves away
-        if c_curr["close"] < self.support_lvl or c_curr["high'] > self.resistance_lvl + (atr_val * 3):
+        if c_curr["close"] < self.support_lvl or c_curr["high"] > self.resistance_lvl + (atr_val * 3):
           sell_state = 0
 
       if sell_state == 0:
         # Detect Resistance Test (C Candle)
         if (
-            c_curr["high'] >= self.resistance_lvl - (atr_val * 2.0)
+            c_curr["high"] >= self.resistance_lvl - (atr_val * 2.0)
             or c_curr["close"] >= self.resistance_lvl - (atr_val * 2.0)
         ) and c_curr["color"] == "Green":
           c_ref_level = c_curr["low"]
           sell_state = 1
       elif sell_state == 1:
         # Step 1: Red candle breaks below C level
-        if c_curr["color"] == "Red" and c_curr["low'] <= c_ref_level + (atr_val * 0.3):
+        if c_curr["color"] == "Red" and c_curr["low"] <= c_ref_level + (atr_val * 0.3):
           sell_state = 2
       elif sell_state == 2:
         # Step 2: Green candle pulls back up towards C level
-        if c_curr["color"] == "Green" and c_curr["high'] >= c_ref_level - (atr_val * 0.8):
+        if c_curr["color"] == "Green" and c_curr["high"] >= c_ref_level - (atr_val * 0.8):
           sell_state = 3
       elif sell_state == 3:
         # Step 3: First red candle after pullback
@@ -349,7 +349,7 @@ class TWTRobustEngine:
       elif sell_state == 4:
         # Step 4: Second red candle confirmation -> SAFE & ROBUST SELL ENTRY!
         if c_curr["color"] == "Red":
-          sl = round(c_curr["high'] + (1.2 * atr_val), dec)
+          sl = round(c_curr["high"] + (1.2 * atr_val), dec)
           tp1 = round(c_curr["close"] - (1.2 * atr_val), dec)
           tp2 = round(c_curr["close"] - (2.5 * atr_val), dec)
           tp3 = round(c_curr["close"] - (4.0 * atr_val), dec)
