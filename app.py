@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (PRO) — Anti-False Entry Filtered Engine"
+    "⚡ TRADE WITH TUCKYAA (PRO) — Precision Support & Resistance Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -91,9 +91,9 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Strategy Settings")
-st.sidebar.text("Anti-False Filter : No early entries (Index > 15 required)")
-st.sidebar.text("Sell Rule        : True Resistance Rejection & Engulfing")
-st.sidebar.text("Buy Rule         : Verified Support Bounce & Momentum")
+st.sidebar.text("Sell Rule        : Exact Resistance Top Drop & Rejection")
+st.sidebar.text("Buy Rule         : Below Support + 2 Red Engulfing + Small Wick")
+st.sidebar.text("Strict Lock      : Single First Entry Only")
 
 
 def get_decimals(price):
@@ -160,7 +160,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTAntiFalseEngine:
+class TWTPrecisionEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -270,9 +270,8 @@ class TWTAntiFalseEngine:
 
     found_signal = None
     is_major_coin = self.symbol in ["BTC/USDT", "ETH/USDT"]
-    zone_multiplier = 3.5 if is_major_coin else 2.5
+    zone_multiplier = 4.0 if is_major_coin else 2.5
 
-    # Scan candles starting from index 15 onwards to avoid early false triggers
     for i in range(15, len(self.candles)):
       c = self.candles[i]
       if time(1, 0) <= c["dt_ist"].time() <= time(6, 0):
@@ -282,55 +281,61 @@ class TWTAntiFalseEngine:
       dec = get_decimals(c["close"])
 
       # -------------------------------------------------------------
-      # 1. STRICT BUY LOGIC: Support Proximity + Exhaustion + Momentum
+      # 1. BUYER ENTRY LOGIC (Below Support + 2 Red Engulfing + Small Upper Wick)
       # -------------------------------------------------------------
-      if c["close"] <= self.support_lvl + (atr * 1.5):
-        if i >= 7:
-          red_count = 0
-          for k in range(i - 6, i + 1):
-            if self.candles[k]["color"] == "Red":
-              red_count += 1
-          
-          if red_count >= 5:
-            for m in range(i + 1, min(i + 4, len(self.candles))):
-              cm = self.candles[m]
-              body_cm = abs(cm["close"] - cm["open"])
-              if cm["color"] == "Green" and cm["close"] > self.candles[m - 1]["high"] and body_cm > (atr * 0.4):
-                sl = round(cm["low"] - (1.2 * atr), dec)
-                tp1 = round(cm["close"] + (1.2 * atr), dec)
-                tp2 = round(cm["close"] + (2.5 * atr), dec)
-                tp3 = round(cm["close"] + (4.0 * atr), dec)
+      # Condition: Price drops below support level, previous 2 candles were red,
+      # and current green candle engulfs those 2 red candles with a small upper wick.
+      if c["low"] <= self.support_lvl + (atr * 0.5):
+        if i >= 3:
+          r1 = self.candles[i - 2]
+          r2 = self.candles[i - 1]
+          curr = self.candles[i]
 
-                found_signal = {
-                    "Asset": self.symbol,
-                    "Time": cm["time"],
-                    "Candle #": cm["id"],
-                    "Type": "BUY 🟢",
-                    "Setup": "Filtered Support Bounce",
-                    "Action": "Buy / Long (B) [Support Bounce] 🟢",
-                    "Entry Price": round(cm["close"], dec),
-                    "Stop Loss (SL)": sl,
-                    "TP 1": tp1,
-                    "TP 2": tp2,
-                    "TP 3": tp3,
-                    "Is_Within_1hr": cm["is_within_1hr"],
-                }
-                break
+          if r1["color"] == "Red" and r2["color"] == "Red" and curr["color"] == "Green":
+            # Check if current green engulfs the body/range of previous 2 red candles
+            engulfs_two = curr["close"] >= max(r1["open"], r2["open"], r1["close"], r2["close"])
+            upper_wick = curr["high"] - max(curr["open"], curr["close"])
+            body_size = abs(curr["close"] - curr["open"])
+            small_wick = upper_wick <= (body_size * 0.5) # Small upper wick condition
+
+            if engulfs_two and small_wick:
+              sl = round(min(curr["low"], r2["low"]) - (1.0 * atr), dec)
+              tp1 = round(curr["close"] + (1.2 * atr), dec)
+              tp2 = round(curr["close"] + (2.5 * atr), dec)
+              tp3 = round(curr["close"] + (4.0 * atr), dec)
+
+              found_signal = {
+                  "Asset": self.symbol,
+                  "Time": curr["time"],
+                  "Candle #": curr["id"],
+                  "Type": "BUY 🟢",
+                  "Setup": "Below Support 2-Red Engulfing Bounce",
+                  "Action": "Buy / Long (B) [Support Engulfing Bounce] 🟢",
+                  "Entry Price": round(curr["close"], dec),
+                  "Stop Loss (SL)": sl,
+                  "TP 1": tp1,
+                  "TP 2": tp2,
+                  "TP 3": tp3,
+                  "Is_Within_1hr": curr["is_within_1hr"],
+              }
+              break
         if found_signal:
           break
 
       # -------------------------------------------------------------
-      # 2. ANTI-FALSE SELLER LOGIC: True Resistance Touch + Rejection / Engulfing
+      # 2. SELLER ENTRY LOGIC (Exact Resistance Top Drop / Downward Rejection)
       # -------------------------------------------------------------
+      # Condition: Price is at the 4H Resistance zone and immediately starts dropping (Red candle / Strong upper rejection wick)
       is_near_resistance = c["high"] >= self.resistance_lvl - (atr * zone_multiplier)
       if is_near_resistance:
         body_size = abs(c["close"] - c["open"])
         upper_wick = c["high"] - max(c["open"], c["close"])
-        is_rejection = (upper_wick >= body_size * 0.6) or (c["color"] == "Red")
-        closes_safe = c["close"] <= self.resistance_lvl + (atr * 0.5)
+        # Must be a red candle or strong rejection wick showing downward momentum starting
+        is_resistance_drop = (c["color"] == "Red" and body_size > (atr * 0.3)) or (upper_wick >= body_size * 1.0)
+        closes_downward = c["close"] <= c["open"] or (c["close"] < self.resistance_lvl)
 
-        if is_rejection and closes_safe:
-          sl = round(c["high"] + (1.5 * atr), dec)
+        if is_resistance_drop and closes_downward:
+          sl = round(c["high"] + (1.2 * atr), dec)
           tp1 = round(c["close"] - (1.2 * atr), dec)
           tp2 = round(c["close"] - (2.5 * atr), dec)
           tp3 = round(c["close"] - (4.0 * atr), dec)
@@ -340,8 +345,8 @@ class TWTAntiFalseEngine:
               "Time": c["time"],
               "Candle #": c["id"],
               "Type": "SELL 🔴",
-              "Setup": "Verified Resistance Rejection",
-              "Action": "Sell / Short (S) [Resistance Rejection] 🔴",
+              "Setup": "Exact Resistance Top Drop",
+              "Action": "Sell / Short (S) [Resistance Top Drop] 🔴",
               "Entry Price": round(c["close"], dec),
               "Stop Loss (SL)": sl,
               "TP 1": tp1,
@@ -375,7 +380,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTAntiFalseEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTPrecisionEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[0] if recent_sigs else None
@@ -383,7 +388,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning with Anti-False Filtered Engine..."):
+with st.spinner("⚡ Scanning with Precision Support & Resistance Engine..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -413,7 +418,7 @@ st.markdown("---")
 st.subheader("📊 Manual Asset Inspector & Chart")
 
 selected_symbol = st.selectbox(
-    "🔍 Select Asset to Load Chart & Verified Entry",
+    "🔍 Select Asset to Load Chart & Precision Entry",
     options=ASSET_LIST,
     index=0,
 )
@@ -422,7 +427,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTAntiFalseEngine(
+  bot = TWTPrecisionEngine(
       df_5, df_4, df_6, selected_symbol, active_tz
   )
   bot.calculate_and_scan()
@@ -440,7 +445,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Anti-False Filter Active")
+    st.metric(label="Timezone", value=tz_short, delta="Precision Engine Active")
 
   if bot.signals:
     latest_sig = bot.signals[0]
@@ -473,7 +478,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   else:
     st.warning(
         "🟡 **STATUS: WAITING FOR SETUP**\n\n"
-        "📌 *Instructions:* Monitoring anti-false filtered setups for Buy and Sell."
+        "📌 *Instructions:* Monitoring below-support engulfing bounces for Buy and exact resistance drops for Sell."
     )
 
   # Complete Single History Table
@@ -560,7 +565,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Anti-False Engine ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Precision Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
