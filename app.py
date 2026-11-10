@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (PRO) — Optimized History & Balanced Engine"
+    "⚡ TRADE WITH TUCKYAA (PRO) — Anti-False Entry Filtered Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -91,9 +91,9 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Strategy Settings")
-st.sidebar.text("Sell Rule        : Balanced Resistance Rejection & Engulfing")
+st.sidebar.text("Anti-False Filter : No early entries (Index > 15 required)")
+st.sidebar.text("Sell Rule        : True Resistance Rejection & Engulfing")
 st.sidebar.text("Buy Rule         : Verified Support Bounce & Momentum")
-st.sidebar.text("Strict Lock      : Single First Entry Only")
 
 
 def get_decimals(price):
@@ -160,7 +160,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTBalancedEngine:
+class TWTAntiFalseEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -270,9 +270,10 @@ class TWTBalancedEngine:
 
     found_signal = None
     is_major_coin = self.symbol in ["BTC/USDT", "ETH/USDT"]
-    zone_multiplier = 4.5 if is_major_coin else 3.0
+    zone_multiplier = 3.5 if is_major_coin else 2.5
 
-    for i in range(len(self.candles)):
+    # Scan candles starting from index 15 onwards to avoid early false triggers
+    for i in range(15, len(self.candles)):
       c = self.candles[i]
       if time(1, 0) <= c["dt_ist"].time() <= time(6, 0):
         continue
@@ -281,19 +282,20 @@ class TWTBalancedEngine:
       dec = get_decimals(c["close"])
 
       # -------------------------------------------------------------
-      # 1. BUY LOGIC: Support Proximity + 5-7 Red Exhaustion + Green Rebound
+      # 1. STRICT BUY LOGIC: Support Proximity + Exhaustion + Momentum
       # -------------------------------------------------------------
-      if c["close"] <= self.support_lvl + (atr * 2.0):
-        if i >= 5:
+      if c["close"] <= self.support_lvl + (atr * 1.5):
+        if i >= 7:
           red_count = 0
-          for k in range(i - 4, i + 1):
+          for k in range(i - 6, i + 1):
             if self.candles[k]["color"] == "Red":
               red_count += 1
           
-          if red_count >= 4:
+          if red_count >= 5:
             for m in range(i + 1, min(i + 4, len(self.candles))):
               cm = self.candles[m]
-              if cm["color"] == "Green" and cm["close"] > self.candles[m - 1]["high"]:
+              body_cm = abs(cm["close"] - cm["open"])
+              if cm["color"] == "Green" and cm["close"] > self.candles[m - 1]["high"] and body_cm > (atr * 0.4):
                 sl = round(cm["low"] - (1.2 * atr), dec)
                 tp1 = round(cm["close"] + (1.2 * atr), dec)
                 tp2 = round(cm["close"] + (2.5 * atr), dec)
@@ -304,8 +306,8 @@ class TWTBalancedEngine:
                     "Time": cm["time"],
                     "Candle #": cm["id"],
                     "Type": "BUY 🟢",
-                    "Setup": "Support Exhaustion Rebound",
-                    "Action": "Buy / Long (B) [Support Rebound] 🟢",
+                    "Setup": "Filtered Support Bounce",
+                    "Action": "Buy / Long (B) [Support Bounce] 🟢",
                     "Entry Price": round(cm["close"], dec),
                     "Stop Loss (SL)": sl,
                     "TP 1": tp1,
@@ -318,16 +320,16 @@ class TWTBalancedEngine:
           break
 
       # -------------------------------------------------------------
-      # 2. SELLER LOGIC: Resistance Zone Rejection / Bearish Engulfing (Optimized & Responsive)
+      # 2. ANTI-FALSE SELLER LOGIC: True Resistance Touch + Rejection / Engulfing
       # -------------------------------------------------------------
-      is_in_resistance = c["high"] >= self.resistance_lvl - (atr * zone_multiplier)
-      if is_in_resistance:
+      is_near_resistance = c["high"] >= self.resistance_lvl - (atr * zone_multiplier)
+      if is_near_resistance:
         body_size = abs(c["close"] - c["open"])
         upper_wick = c["high"] - max(c["open"], c["close"])
-        is_rejection = (upper_wick >= body_size * 0.5) or (c["color"] == "Red")
-        closes_below = c["close"] <= self.resistance_lvl + (atr * 1.0)
+        is_rejection = (upper_wick >= body_size * 0.6) or (c["color"] == "Red")
+        closes_safe = c["close"] <= self.resistance_lvl + (atr * 0.5)
 
-        if is_rejection and closes_below:
+        if is_rejection and closes_safe:
           sl = round(c["high"] + (1.5 * atr), dec)
           tp1 = round(c["close"] - (1.2 * atr), dec)
           tp2 = round(c["close"] - (2.5 * atr), dec)
@@ -338,7 +340,7 @@ class TWTBalancedEngine:
               "Time": c["time"],
               "Candle #": c["id"],
               "Type": "SELL 🔴",
-              "Setup": "Resistance Zone Rejection",
+              "Setup": "Verified Resistance Rejection",
               "Action": "Sell / Short (S) [Resistance Rejection] 🔴",
               "Entry Price": round(c["close"], dec),
               "Stop Loss (SL)": sl,
@@ -373,7 +375,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTBalancedEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTAntiFalseEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[0] if recent_sigs else None
@@ -381,7 +383,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning with Balanced Responsive Engine..."):
+with st.spinner("⚡ Scanning with Anti-False Filtered Engine..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -420,7 +422,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTBalancedEngine(
+  bot = TWTAntiFalseEngine(
       df_5, df_4, df_6, selected_symbol, active_tz
   )
   bot.calculate_and_scan()
@@ -438,7 +440,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Balanced Responsive Active")
+    st.metric(label="Timezone", value=tz_short, delta="Anti-False Filter Active")
 
   if bot.signals:
     latest_sig = bot.signals[0]
@@ -471,7 +473,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   else:
     st.warning(
         "🟡 **STATUS: WAITING FOR SETUP**\n\n"
-        "📌 *Instructions:* Monitoring balanced support bounce and resistance rejection setups."
+        "📌 *Instructions:* Monitoring anti-false filtered setups for Buy and Sell."
     )
 
   # Complete Single History Table
@@ -558,7 +560,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Balanced Engine ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Anti-False Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
