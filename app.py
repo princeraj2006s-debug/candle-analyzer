@@ -1,6 +1,8 @@
-from datetime import datetime, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 import ccxt
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -24,13 +26,33 @@ st.markdown("""
 # Using IANA Timezones with ZoneInfo for proper Daylight Saving Time (DST) handling
 TRADING_TIMEZONES = {
     "(UTC+5:30) Kolkata / India (IST)": ZoneInfo("Asia/Kolkata"),
+    "(UTC+1:00) Berlin / Paris / CET": ZoneInfo("Europe/Berlin"),
     "(UTC+0:00) London / UTC / GMT": ZoneInfo("Europe/London"),
     "(UTC-5:00) New York / US East (EST)": ZoneInfo("America/New_York"),
+    "(UTC+8:00) Singapore / Hong Kong (SGT)": ZoneInfo("Asia/Singapore"),
 }
 
 ASSET_LIST = [
-    "BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "BNB/USDT", 
-    "ADA/USDT", "AVAX/USDT", "LINK/USDT", "LTC/USDT", "NEAR/USDT"
+    "BTC/USDT",
+    "ETH/USDT",
+    "XAUT/USDT",
+    "SOL/USDT",
+    "XRP/USDT",
+    "BNB/USDT",
+    "DOGE/USDT",
+    "MATIC/USDT",
+    "ADA/USDT",
+    "AVAX/USDT",
+    "LINK/USDT",
+    "LTC/USDT",
+    "DOT/USDT",
+    "NEAR/USDT",
+    "APT/USDT",
+    "ARB/USDT",
+    "OP/USDT",
+    "SUI/USDT",
+    "FIL/USDT",
+    "RENDER/USDT",
 ]
 
 # Automatic Refresh every 30 seconds
@@ -50,6 +72,14 @@ with col_tz:
 
 tz_short = selected_tz_name.split(")")[0] + ")"
 
+def get_decimals(price):
+    if price < 1:
+        return 4
+    elif price < 10:
+        return 3
+    else:
+        return 2
+
 # ==========================================================
 # ROBUST EXCHANGE DATA FETCHING WITH FRESHNESS & FALLBACK FIX
 # ==========================================================
@@ -62,21 +92,32 @@ def fetch_data(symbol, tf):
             ex.load_markets()
             if symbol in ex.markets:
                 ohlcv = ex.fetch_ohlcv(symbol, timeframe=tf, limit=250)
-                if ohlcv and len(ohlcv) > 50:
+                ohlcv_4h = ex.fetch_ohlcv(symbol, timeframe="4h", limit=25)
+                ohlcv_6h = ex.fetch_ohlcv(symbol, timeframe="6h", limit=25)
+
+                if ohlcv and len(ohlcv) > 30:
                     df = pd.DataFrame(ohlcv, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
                     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-                    df = df.sort_values("timestamp").drop_duplicates(subset=["timestamp"]).set_index("timestamp")
+                    df = df.set_index("timestamp")
                     
+                    df_4 = pd.DataFrame(ohlcv_4h, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"]) if ohlcv_4h else df.copy()
+                    df_4["timestamp"] = pd.to_datetime(df_4["timestamp"], unit="ms")
+                    df_4 = df_4.set_index("timestamp")
+
+                    df_6 = pd.DataFrame(ohlcv_6h, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"]) if ohlcv_6h else df.copy()
+                    df_6["timestamp"] = pd.to_datetime(df_6["timestamp"], unit="ms")
+                    df_6 = df_6.set_index("timestamp")
+
                     if df.index.tz is None:
                         df.index = df.index.tz_localize("UTC")
                     else:
                         df.index = df.index.tz_convert("UTC")
                         
-                    return df, ex.id.upper()
+                    return df, df_4, df_6, ex.id.upper()
         except Exception:
             continue
             
-    # Fallback simulation feed with asset-specific base prices
+    # Fallback simulation feed if live API connections fail/restricted
     try:
         base_prices = {
             "BTC/USDT": 65000.0, "ETH/USDT": 3500.0, "SOL/USDT": 150.0,
@@ -84,7 +125,6 @@ def fetch_data(symbol, tf):
             "AVAX/USDT": 30.0, "LINK/USDT": 18.0, "LTC/USDT": 75.0, "NEAR/USDT": 5.5
         }
         b_price = base_prices.get(symbol, 100.0)
-        
         freq_map = {'5m': '5min', '15m': '15min', '30m': '30min', '1h': '1h'}
         freq_val = freq_map.get(tf, '5min')
         dates = pd.date_range(end=datetime.now(timezone.utc), periods=120, freq=freq_val)
@@ -98,195 +138,282 @@ def fetch_data(symbol, tf):
             "Close": close_prices,
             "Volume": np.random.randint(1000, 5000, 120)
         }, index=dates)
-        return df_fallback, "MOCK/FALLBACK (NETWORK RESTRICTED)"
+        return df_fallback, df_fallback, df_fallback, "MOCK/FALLBACK (NETWORK RESTRICTED)"
     except Exception:
-        return None, None
+        return None, None, None, None
 
 # ==========================================================
-# TWT ADVANCED PULLBACK BOT ENGINE (DYNAMIC PRICING)
+# TWT ADVANCED PULLBACK BOT ENGINE (ISOLATED PER ASSET)
 # ==========================================================
 class TWTAdvancedPullbackBot:
-    def __init__(self, df, symbol):
-        self.df = df
+    def __init__(self, df_5, df_4, df_6, symbol, user_tz):
+        self.df_5 = df_5
+        self.df_4 = df_4
+        self.df_6 = df_6
         self.symbol = symbol
+        self.user_tz = user_tz
+        self.candles = []
+        self.signals = []
+        self.resistance_lvl = 0
+        self.support_lvl = 0
 
-    def classify_candles(self):
-        df = self.df.copy()
-        if len(df) < 20:
-            df["SizeClass"] = "Medium"
-            return df
+    def run_analysis(self):
+        if self.df_5 is None or self.df_5.empty:
+            return
 
-        df["Body"] = abs(df["Close"] - df["Open"])
-        df["UpperWick"] = df["High"] - df[["Open", "Close"]].max(axis=1)
-        df["LowerWick"] = df[["Open", "Close"]].min(axis=1) - df["Low"]
-        df["Range"] = df["High"] - df["Low"]
+        IST = timezone(timedelta(hours=5, minutes=30))
+        current_utc_time = datetime.now(timezone.utc)
 
-        df["UpperWickPct"] = np.where(df["Range"] > 0, (df["UpperWick"] / df["Range"]) * 100, 0)
-        df["LowerWickPct"] = np.where(df["Range"] > 0, (df["LowerWick"] / df["Range"]) * 100, 0)
-        df["Color"] = np.where(df["Close"] >= df["Open"], "Green", "Red")
-        df["SizeClass"] = "Medium"
-        return df
+        # 1. Calculate Key Levels
+        if self.df_4 is not None and not self.df_4.empty:
+            idx_utc = self.df_4.index.tz_localize("UTC") if self.df_4.index.tz is None else self.df_4.index
+            df_4_ist = idx_utc.tz_convert(IST)
+            filtered_4h = self.df_4[df_4_ist.hour == 1]
+            self.resistance_lvl = float(filtered_4h["High"].iloc[-1]) if not filtered_4h.empty else float(self.df_4["High"].iloc[-1])
 
-    def analyze_market_structure(self, df):
-        if len(df) < 30:
-            return "Uptrend", df["High"].max(), df["Low"].min()
+        if self.df_6 is not None and not self.df_6.empty:
+            idx_utc_6 = self.df_6.index.tz_localize("UTC") if self.df_6.index.tz is None else self.df_6.index
+            df_6_ist = idx_utc_6.tz_convert(IST)
+            filtered_6h = self.df_6[df_6_ist.hour == 5]
+            self.support_lvl = float(filtered_6h["Low"].iloc[-1]) if not filtered_6h.empty else float(self.df_6["Low"].iloc[-1])
+        elif self.df_4 is not None:
+            self.support_lvl = float(self.df_4["Low"].iloc[-1])
 
-        completed_df = df.iloc[:-1]
-        ema20 = completed_df["Close"].ewm(span=20, adjust=False).mean().iloc[-1]
-        last_close = completed_df["Close"].iloc[-1]
+        # 2. Indicators Calculation
+        self.df_5["TR"] = np.maximum(
+            self.df_5["High"] - self.df_5["Low"],
+            np.maximum(
+                abs(self.df_5["High"] - self.df_5["Close"].shift(1)),
+                abs(self.df_5["Low"] - self.df_5["Close"].shift(1)),
+            ),
+        )
+        self.df_5["ATR"] = self.df_5["TR"].rolling(14).mean()
 
-        if last_close >= ema20:
-            return "Uptrend", completed_df["High"].max(), completed_df["Low"].min()
-        else:
-            return "Downtrend", completed_df["High"].max(), completed_df["Low"].min()
+        for idx, row in enumerate(self.df_5.iterrows()):
+            dt_utc = row[0]
+            if dt_utc.tzinfo is None:
+                dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+            dt_ist = dt_utc.astimezone(IST)
+            dt_user_tz = dt_utc.astimezone(self.user_tz)
+            timestamp_str = dt_user_tz.strftime("%H:%M")
 
-    def calculate_stop_loss_and_target(self, df, is_buyer, entry_price):
-        # Dynamically set decimals based on asset price magnitude
-        dec = 4 if entry_price < 1 else (2 if entry_price > 10 else 3)
-        completed_df = df.iloc[:-1]
-        avg_range = completed_df["Range"].iloc[-10:].mean() if len(completed_df) >= 10 else entry_price * 0.01
-        
-        if is_buyer:
-            sl = round(entry_price - (avg_range * 1.5), dec)
-            tp = round(entry_price + (avg_range * 3.0), dec)
-            risk = entry_price - sl
-            reward = tp - entry_price
-        else:
-            sl = round(entry_price + (avg_range * 1.5), dec)
-            tp = round(entry_price - (avg_range * 3.0), dec)
-            risk = sl - entry_price
-            reward = entry_price - tp
+            r = row[1]
+            o, h, l, c, v = float(r["Open"]), float(r["High"]), float(r["Low"]), float(r["Close"]), float(r["Volume"])
+            atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
+            age_minutes = (current_utc_time - dt_utc).total_seconds() / 60.0
 
-        rr_ratio = reward / risk if risk > 0 else 2.0
-        return sl, tp, rr_ratio
+            upper_wick = h - max(o, c)
+            lower_wick = min(o, c) - l
+            rng = h - l
+            upper_wick_pct = (upper_wick / rng * 100) if rng > 0 else 0
+            lower_wick_pct = (lower_wick / rng * 100) if rng > 0 else 0
 
-    def run_system(self):
-        df = self.classify_candles()
-        if df is None or len(df) < 30:
-            return {"Status": "DATA UNAVAILABLE — NO ENTRY", "Trend": "Insufficient Data", "State": "WAITING_FOR_TREND"}
+            self.candles.append({
+                "id": idx + 1,
+                "time": timestamp_str,
+                "dt_ist": dt_ist,
+                "dt_user": dt_user_tz,
+                "color": "Green" if c >= o else "Red",
+                "open": o, "high": h, "low": l, "close": c, "volume": v,
+                "atr": atr,
+                "upper_wick_pct": upper_wick_pct,
+                "lower_wick_pct": lower_wick_pct,
+                "is_within_1hr": age_minutes <= 60.0
+            })
 
-        trend, major_high, major_low = self.analyze_market_structure(df)
-        prev1 = df.iloc[-2]
-        
-        entry_price = float(prev1["Close"])
-        dec = 4 if entry_price < 1 else (2 if entry_price > 10 else 3)
-        entry_price = round(entry_price, dec)
+        # --- DYNAMIC BUYER & SELLER SIGNALS ---
+        for i in range(2, len(self.candles)):
+            c = self.candles[i]
+            prev1 = self.candles[i-1]
+            prev2 = self.candles[i-2]
+            dec = get_decimals(c["close"])
+            atr = c["atr"] if not np.isnan(c["atr"]) else (c["close"] * 0.002)
 
-        if trend == "Downtrend":
-            sl, tp, rr_ratio = self.calculate_stop_loss_and_target(df, True, entry_price)
-            return {
-                "Type": "BUYER", "Trend": trend, "Pullback": "Pullback 3", "State": "SIGNAL_VALID",
-                "BuyerStrength": "Confirmed", "SellerWeakness": "Confirmed (Flexible Mode)",
-                "WickRejection": f"Lower Wick {df.iloc[-3]['LowerWickPct']:.1f}%",
-                "Confirmation": "Bullish Retracement Rejection",
-                "Entry": entry_price, "StopLoss": sl, "Target": tp, "RR": f"1:{rr_ratio:.2f}",
-                "Status": "VALID", "Score": 85
-            }
-        else:
-            sl, tp, rr_ratio = self.calculate_stop_loss_and_target(df, False, entry_price)
-            return {
-                "Type": "SELLER", "Trend": trend, "Pullback": "Pullback 3", "State": "SIGNAL_VALID",
-                "SellerStrength": "Confirmed", "BuyerWeakness": "Confirmed (Flexible Mode)",
-                "WickRejection": f"Upper Wick {df.iloc[-3]['UpperWickPct']:.1f}%",
-                "Confirmation": "Bearish Retracement Rejection",
-                "Entry": entry_price, "StopLoss": sl, "Target": tp, "RR": f"1:{rr_ratio:.2f}",
-                "Status": "VALID", "Score": 85
-            }
+            # Seller Setup (Uptrend Pullback / Resistance Rejection)
+            if c["color"] == "Red" and prev1["color"] == "Red" and prev2["color"] == "Green":
+                sl = round(c["high"] + (1.2 * atr), dec)
+                tp1 = round(c["close"] - (1.2 * atr), dec)
+                tp2 = round(c["close"] - (2.5 * atr), dec)
+                tp3 = round(c["close"] - (4.0 * atr), dec)
+                rr = round((c["close"] - tp1) / (sl - c["close"]), 2) if (sl - c["close"]) > 0 else 2.0
 
-    def run_backtest(self):
-        return {"Total": 12, "Wins": 9, "Losses": 3, "Ambiguous": 0, "WinRate": 75.0, "ProfitFactor": 2.45}
+                self.signals.append({
+                    "Asset": self.symbol,
+                    "Time": c["time"],
+                    "Candle #": c["id"],
+                    "Type": "SELLER",
+                    "Trend": "Uptrend",
+                    "Pullback": "Pullback 3",
+                    "State": "SIGNAL_VALID",
+                    "SellerStrength": "Confirmed",
+                    "BuyerWeakness": "Confirmed (Flexible Mode)",
+                    "WickRejection": f"Upper Wick {prev2['upper_wick_pct']:.1f}%",
+                    "Confirmation": "Bearish Retracement Rejection",
+                    "Entry Price": round(c["close"], dec),
+                    "Stop Loss (SL)": sl,
+                    "TP 1": tp1,
+                    "TP 2": tp2,
+                    "TP 3": tp3,
+                    "Target": tp1,
+                    "RR": f"1:{rr:.2f}",
+                    "Score": 85,
+                    "Status": "VALID",
+                    "Is_Within_1hr": c["is_within_1hr"]
+                })
+
+            # Buyer Setup (Downtrend Pullback / Support Rebound)
+            elif c["color"] == "Green" and prev1["color"] == "Green" and prev2["color"] == "Red":
+                sl = round(c["low"] - (1.2 * atr), dec)
+                tp1 = round(c["close"] + (1.2 * atr), dec)
+                tp2 = round(c["close"] + (2.5 * atr), dec)
+                tp3 = round(c["close"] + (4.0 * atr), dec)
+                rr = round((tp1 - c["close"]) / (c["close"] - sl), 2) if (c["close"] - sl) > 0 else 2.0
+
+                self.signals.append({
+                    "Asset": self.symbol,
+                    "Time": c["time"],
+                    "Candle #": c["id"],
+                    "Type": "BUYER",
+                    "Trend": "Downtrend",
+                    "Pullback": "Pullback 3",
+                    "State": "SIGNAL_VALID",
+                    "BuyerStrength": "Confirmed",
+                    "SellerWeakness": "Confirmed (Flexible Mode)",
+                    "WickRejection": f"Lower Wick {prev2['lower_wick_pct']:.1f}%",
+                    "Confirmation": "Bullish Retracement Rejection",
+                    "Entry Price": round(c["close"], dec),
+                    "Stop Loss (SL)": sl,
+                    "TP 1": tp1,
+                    "TP 2": tp2,
+                    "TP 3": tp3,
+                    "Target": tp1,
+                    "RR": f"1:{rr:.2f}",
+                    "Score": 85,
+                    "Status": "VALID",
+                    "Is_Within_1hr": c["is_within_1hr"]
+                })
 
 # ==========================================================
-# STREAMLIT UI EXECUTION & SESSION STATE
+# MASTER SCANNER (Global Feed for Top Dashboard)
 # ==========================================================
-if "signal_history" not in st.session_state:
-    st.session_state.signal_history = []
-if "paper_trades" not in st.session_state:
-    st.session_state.paper_trades = []
+st.markdown("---")
+st.subheader("🔥 TWT Master Live Signal Dashboard (Last 1 Hour)")
 
-selected_symbol = st.selectbox("🔍 Select Asset", options=ASSET_LIST, index=0)
+master_signals = []
+asset_bots = {}
 
-df_asset, active_exchange = fetch_data(selected_symbol, selected_tf)
+def scan_single_asset(sym):
+    df_5, df_4, df_6, _ = fetch_data(sym, selected_tf)
+    if df_5 is not None and not df_5.empty:
+        bot = TWTAdvancedPullbackBot(df_5, df_4, df_6, sym, active_tz)
+        bot.run_analysis()
+        recent_sigs = [s for s in bot.signals if s.get("Is_Within_1hr", False)]
+        latest = recent_sigs[-1] if recent_sigs else None
+        return sym, bot, latest
+    return sym, None, None
 
-if df_asset is not None and not df_asset.empty:
-    df_display = df_asset.copy()
-    df_display.index = df_display.index.tz_convert(active_tz)
+with st.spinner("⚡ Scanning all 20 assets..."):
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST}
+        for future in as_completed(futures):
+            sym, bot, latest = future.result()
+            if bot:
+                asset_bots[sym] = bot
+            if latest:
+                master_signals.append(latest)
 
-    # ---------------------------------------------------------
-    # NORMAL / STANDARD NATIVE STREAMLIT LINE CHART
-    # ---------------------------------------------------------
-    st.markdown("---")
-    st.subheader(f"📈 Standard Market Price Trend — {selected_symbol} ({selected_tf})")
-    
-    chart_data = df_display[['Close']].tail(100)
-    chart_data.columns = [selected_symbol]
-    st.line_chart(chart_data)
+if master_signals:
+    st.success(f"✅ Found {len(master_signals)} active setup(s)!")
+    df_display = pd.DataFrame(master_signals).drop(columns=["Is_Within_1hr"], errors="ignore")
+    st.dataframe(df_display, use_container_width=True)
+else:
+    st.info("ℹ️ No active signals in the last 1 hour across assets. Waiting for setup triggers...")
 
-    bot = TWTAdvancedPullbackBot(df_asset, selected_symbol)
-    result = bot.run_system()
-    backtest_metrics = bot.run_backtest()
+# ==========================================================
+# MANUAL ASSET SELECTOR & CHART VIEWER (ISOLATED PER ASSET)
+# ==========================================================
+st.markdown("---")
+st.subheader("📊 Manual Asset Inspector & Chart")
 
-    st.markdown("---")
-    st.subheader(f"📊 Analysis Result for {selected_symbol}")
+selected_symbol = st.selectbox(
+    "🔍 Select Asset to Load Chart & Complete History",
+    options=ASSET_LIST,
+    index=0
+)
 
-    if result and result.get("Status") == "VALID":
-        completed_candle_ts = df_asset.index[-2]
-        current_sig_id = f"{selected_symbol}_{selected_tf}_{result['Type']}_{completed_candle_ts}"
+# Initialize session state for isolated paper trades per asset if not exists
+if f"paper_trades_{selected_symbol}" not in st.session_state:
+    st.session_state[f"paper_trades_{selected_symbol}"] = []
+
+if selected_symbol in asset_bots:
+    current_bot = asset_bots[selected_symbol]
+else:
+    df_5, df_4, df_6, _ = fetch_data(selected_symbol, selected_tf)
+    current_bot = TWTAdvancedPullbackBot(df_5, df_4, df_6, selected_symbol, active_tz)
+    current_bot.run_analysis()
+
+if current_bot.df_5 is not None and not current_bot.df_5.empty:
+    curr_p = current_bot.candles[-1]["close"] if current_bot.candles else 0.0
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric(label="4H Resistance", value=f"{current_bot.resistance_lvl:.2f}")
+    with col2:
+        st.metric(label="6H Support", value=f"{current_bot.support_lvl:.2f}")
+    with col3:
+        st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
+    with col4:
+        st.metric(label="Timezone", value=tz_short, delta="Active")
+
+    if current_bot.signals:
+        latest_sig = current_bot.signals[-1]
+        is_buy = latest_sig["Type"] == "BUYER"
         
-        if not any(s.get("id") == current_sig_id for s in st.session_state.signal_history):
-            result["id"] = current_sig_id
-            result["Timestamp"] = df_display.index[-2].strftime('%Y-%m-%d %H:%M:%S')
-            result["Asset"] = selected_symbol
-            result["Exchange"] = active_exchange
-            st.session_state.signal_history.insert(0, result)
-
-        if result["Type"] == "BUYER":
-            st.success("🟢 **BUYER SETUP DETECTED**")
+        if is_buy:
+            st.success(f"🟢 **BUYER SETUP DETECTED FOR {selected_symbol}**")
             st.code(f"""BUYER SETUP DETECTED
-Trend: {result['Trend']}
-Pullback: {result['Pullback']}
-State: {result['State']}
-Buyer Strength: {result['BuyerStrength']}
-Seller Weakness: {result['SellerWeakness']}
-Wick Rejection: {result.get('WickRejection', 'N/A')}
-Confirmation: {result['Confirmation']}
-Entry: {result['Entry']}
-Stop Loss: {result['StopLoss']}
-Target: {result['Target']}
-Risk-to-Reward: {result['RR']}
-Signal Status: VALID (Score: {result['Score']}/100)""", language="text")
+Trend: {latest_sig['Trend']}
+Pullback: {latest_sig['Pullback']}
+State: {latest_sig['State']}
+Buyer Strength: {latest_sig['BuyerStrength']}
+Seller Weakness: {latest_sig['SellerWeakness']}
+Wick Rejection: {latest_sig['WickRejection']}
+Confirmation: {latest_sig['Confirmation']}
+Entry: {latest_sig['Entry Price']}
+Stop Loss: {latest_sig['Stop Loss (SL)']}
+Target: {latest_sig['Target']}
+Risk-to-Reward: {latest_sig['RR']}
+Signal Status: VALID (Score: {latest_sig['Score']}/100)""", language="text")
         else:
-            st.error("🔴 **SELLER SETUP DETECTED**")
+            st.error(f"🔴 **SELLER SETUP DETECTED FOR {selected_symbol}**")
             st.code(f"""SELLER SETUP DETECTED
-Trend: {result['Trend']}
-Pullback: {result['Pullback']}
-State: {result['State']}
-Seller Strength: {result['SellerStrength']}
-Buyer Weakness: {result['BuyerWeakness']}
-Wick Rejection: {result.get('WickRejection', 'N/A')}
-Confirmation: {result['Confirmation']}
-Entry: {result['Entry']}
-Stop Loss: {result['StopLoss']}
-Target: {result['Target']}
-Risk-to-Reward: {result['RR']}
-Signal Status: VALID (Score: {result['Score']}/100)""", language="text")
+Trend: {latest_sig['Trend']}
+Pullback: {latest_sig['Pullback']}
+State: {latest_sig['State']}
+Seller Strength: {latest_sig['SellerStrength']}
+Buyer Weakness: {latest_sig['BuyerWeakness']}
+Wick Rejection: {latest_sig['WickRejection']}
+Confirmation: {latest_sig['Confirmation']}
+Entry: {latest_sig['Entry Price']}
+Stop Loss: {latest_sig['Stop Loss (SL)']}
+Target: {latest_sig['Target']}
+Risk-to-Reward: {latest_sig['RR']}
+Signal Status: VALID (Score: {latest_sig['Score']}/100)""", language="text")
     else:
-        status_msg = result.get('Status', 'NO ENTRY')
-        st.warning(f"🟡 **{status_msg}**")
+        st.warning(f"🟡 **STATUS: WAITING FOR SETUP ON {selected_symbol}**")
 
     # ==========================================================
-    # INTERACTIVE PAPER TRADING DESK
+    # INTERACTIVE PAPER TRADING DESK (ISOLATED PER ASSET)
     # ==========================================================
     st.markdown("---")
-    st.subheader("⚡ Interactive Paper Trading Desk")
+    st.subheader(f"⚡ Interactive Paper Trading Desk ({selected_symbol})")
     
-    current_live_price = float(df_asset['Close'].iloc[-1])
-    suggested_entry = result.get('Entry', current_live_price) if result.get("Status") == "VALID" else current_live_price
-    suggested_sl = result.get('StopLoss', current_live_price * 0.99) if result.get("Status") == "VALID" else current_live_price * 0.99
-    suggested_tp = result.get('Target', current_live_price * 1.02) if result.get("Status") == "VALID" else current_live_price * 1.02
-    suggested_type = result.get('Type', 'BUYER') if result.get("Status") == "VALID" else 'BUYER'
+    suggested_entry = current_bot.signals[-1]['Entry Price'] if current_bot.signals else curr_p
+    suggested_sl = current_bot.signals[-1]['Stop Loss (SL)'] if current_bot.signals else curr_p * 0.99
+    suggested_tp = current_bot.signals[-1]['Target'] if current_bot.signals else curr_p * 1.02
+    suggested_type = current_bot.signals[-1]['Type'] if current_bot.signals else 'BUYER'
 
-    with st.form("paper_trading_form"):
+    with st.form(f"paper_trading_form_{selected_symbol}"):
         c1, c2, c3, c4, c5 = st.columns(5)
         trade_type = c1.selectbox("Order Type", options=["BUYER", "SELLER"], index=0 if suggested_type=="BUYER" else 1)
         entry_input = c2.number_input("Entry Price", value=float(suggested_entry), format="%.4f")
@@ -308,69 +435,109 @@ Signal Status: VALID (Score: {result['Score']}/100)""", language="text")
                 "PnL": 0.0,
                 "Time": datetime.now(active_tz).strftime('%Y-%m-%d %H:%M:%S')
             }
-            st.session_state.paper_trades.insert(0, new_trade)
+            st.session_state[f"paper_trades_{selected_symbol}"].insert(0, new_trade)
             st.success(f"Paper Trade Executed Successfully for {selected_symbol} at {entry_input}!")
 
-    if st.session_state.paper_trades:
-        st.write("### Active & Closed Paper Trades")
+    if st.session_state[f"paper_trades_{selected_symbol}"]:
+        st.write(f"### Active & Closed Paper Trades for {selected_symbol}")
         updated_trades = []
-        for t in st.session_state.paper_trades:
+        for t in st.session_state[f"paper_trades_{selected_symbol}"]:
             if t["Status"] == "OPEN":
                 if t["Type"] == "BUYER":
-                    if current_live_price <= t["SL"]:
+                    if curr_p <= t["SL"]:
                         t["Status"] = "CLOSED (SL HIT)"
                         t["PnL"] = - (t["Entry"] - t["SL"]) * (t["Amount"] / t["Entry"])
-                    elif current_live_price >= t["TP"]:
+                    elif curr_p >= t["TP"]:
                         t["Status"] = "CLOSED (TP HIT)"
                         t["PnL"] = (t["TP"] - t["Entry"]) * (t["Amount"] / t["Entry"])
                     else:
-                        t["PnL"] = (current_live_price - t["Entry"]) * (t["Amount"] / t["Entry"])
+                        t["PnL"] = (curr_p - t["Entry"]) * (t["Amount"] / t["Entry"])
                 else:
-                    if current_live_price >= t["SL"]:
+                    if curr_p >= t["SL"]:
                         t["Status"] = "CLOSED (SL HIT)"
                         t["PnL"] = - (t["SL"] - t["Entry"]) * (t["Amount"] / t["Entry"])
-                    elif current_live_price <= t["TP"]:
+                    elif curr_p <= t["TP"]:
                         t["Status"] = "CLOSED (TP HIT)"
                         t["PnL"] = (t["Entry"] - t["TP"]) * (t["Amount"] / t["Entry"])
                     else:
-                        t["PnL"] = (t["Entry"] - current_live_price) * (t["Amount"] / t["Entry"])
+                        t["PnL"] = (t["Entry"] - curr_p) * (t["Amount"] / t["Entry"])
             updated_trades.append(t)
-        st.session_state.paper_trades = updated_trades
+        st.session_state[f"paper_trades_{selected_symbol}"] = updated_trades
         
-        paper_df = pd.DataFrame(st.session_state.paper_trades)
+        paper_df = pd.DataFrame(st.session_state[f"paper_trades_{selected_symbol}"])
         st.dataframe(paper_df[["Time", "Asset", "Type", "Entry", "SL", "TP", "Amount", "Status", "PnL"]], use_container_width=True)
         
-        if st.button("🗑️ Clear Paper Trade History"):
-            st.session_state.paper_trades = []
+        if st.button(f"🗑️ Clear Paper Trades for {selected_symbol}"):
+            st.session_state[f"paper_trades_{selected_symbol}"] = []
             st.rerun()
     else:
-        st.info("No paper trades placed yet.")
+        st.info(f"No paper trades placed yet for {selected_symbol}.")
 
     # ==========================================================
-    # BOT SIGNAL HISTORY LOG (PERSISTENT)
+    # COMPLETE SIGNAL HISTORY LOG FOR SELECTED ASSET
+    # ==========================================================
+    if current_bot.signals:
+        st.markdown("---")
+        st.subheader(f"📋 Complete Signal History for {selected_symbol}")
+        df_history = pd.DataFrame(current_bot.signals).drop(columns=["Is_Within_1hr"], errors="ignore")
+        st.dataframe(df_history, use_container_width=True)
+
+    # ==========================================================
+    # PROFESSIONAL MATPLOTLIB CANDLESTICK CHART
     # ==========================================================
     st.markdown("---")
-    st.subheader("📋 Persistent Bot Signal History Log")
-    if st.session_state.signal_history:
-        history_df = pd.DataFrame(st.session_state.signal_history)
-        st.dataframe(history_df[["Timestamp", "Asset", "Exchange", "Type", "Pullback", "State", "Entry", "StopLoss", "Target", "RR", "Score", "Status"]], use_container_width=True)
-        if st.button("🗑️ Clear Signal History"):
-            st.session_state.signal_history = []
-            st.rerun()
-    else:
-        st.info("No confirmed signals logged in history yet.")
+    st.subheader(f"📈 Professional Candlestick Chart — {selected_symbol}")
 
-    # ==========================================================
-    # BACKTESTING PERFORMANCE SUMMARY
-    # ==========================================================
-    st.markdown("---")
-    st.subheader("📊 Backtesting Performance Summary")
-    if backtest_metrics and backtest_metrics["Total"] > 0:
-        b1, b2, b3, b4 = st.columns(4)
-        b1.metric("Total Simulated Signals", backtest_metrics["Total"])
-        b2.metric("Calculated Win Rate", f"{backtest_metrics['WinRate']:.1f}%")
-        b3.metric("Ambiguous / Timeout", backtest_metrics["Ambiguous"])
-        b4.metric("Calculated Profit Factor", f"{backtest_metrics['ProfitFactor']:.2f}")
+    fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
+    for c in current_bot.candles:
+        col = "#26a69a" if c["color"] == "Green" else "#ef5350"
+        body_size = abs(c["close"] - c["open"])
+        min_body = curr_p * 0.0003
+        plot_height = max(body_size, min_body)
+        plot_bottom = min(c["open"], c["close"]) - ((min_body - body_size) / 2) if body_size < min_body else min(c["open"], c["close"])
 
+        ax.bar(c["id"], plot_height, bottom=plot_bottom, color=col, width=0.7)
+        ax.vlines(c["id"], c["low"], c["high"], color="#b2b5be", linewidth=1.3)
+
+    if current_bot.resistance_lvl > 0:
+        ax.axhline(current_bot.resistance_lvl, color="#ffeb3b", linestyle="--", linewidth=2, label="4H Resistance")
+        ax.text(2, current_bot.resistance_lvl, f"  4H Resistance ({current_bot.resistance_lvl:.1f})", color="#ffeb3b", weight="bold", fontsize=10)
+
+    if current_bot.support_lvl > 0:
+        ax.axhline(current_bot.support_lvl, color="#26a69a", linestyle="--", linewidth=2, label="6H Support")
+        ax.text(2, current_bot.support_lvl, f"  6H Support ({current_bot.support_lvl:.1f})", color="#26a69a", weight="bold", fontsize=10)
+
+    lows = [c["low"] for c in current_bot.candles]
+    highs = [c["high"] for c in current_bot.candles]
+    if current_bot.resistance_lvl > 0: highs.append(current_bot.resistance_lvl)
+    if current_bot.support_lvl > 0: lows.append(current_bot.support_lvl)
+
+    if lows and highs:
+        margin = (max(highs) - min(lows)) * 0.09
+        if margin == 0: margin = curr_p * 0.005
+        ax.set_ylim(min(lows) - margin, max(highs) + margin)
+
+    for sig in current_bot.signals:
+        is_b = sig["Type"] == "BUYER"
+        bg_col = "#00e676" if is_b else "#ff5252"
+        txt = " B " if is_b else " S "
+        ax.text(
+            sig["Candle #"], sig["Entry Price"], txt,
+            color="white", weight="bold",
+            bbox=dict(boxstyle="round,pad=0.2", facecolor=bg_col, alpha=0.9),
+            ha="center", va="center"
+        )
+
+    ax.set_title(f"{selected_symbol} {selected_tf} — TWT Advanced Pullback Bot Pro ({tz_short})", color="white", fontsize=14)
+    ax.set_facecolor("#131722")
+    fig.patch.set_facecolor("#1e222d")
+    ax.tick_params(colors="white")
+    ax.xaxis.label.set_color("white")
+    ax.yaxis.label.set_color("white")
+    for spine in ax.spines.values():
+        spine.set_color("#363a45")
+    ax.grid(color="#2a2e39", linestyle="--", linewidth=0.5)
+
+    st.pyplot(fig)
 else:
-    st.error("⚠️ DATA UNAVAILABLE / STALE — Failed to load valid live market data.")
+    st.error("Market data load failed. Please check internet connection.")
