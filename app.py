@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (PRO) — Engulfing Seller & Refined Buyer Engine"
+    "⚡ TRADE WITH TUCKYAA (PRO) — Safe Wick-Protected Engulfing Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -91,7 +91,7 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Strategy Settings")
-st.sidebar.text("Sell Rule        : 3 Green Candles + Engulfing Red Candle Entry")
+st.sidebar.text("Sell Rule        : 3 Green + Safe Wick Engulfing Red")
 st.sidebar.text("Buy Rule         : 7 Red Exhaustion + Weak Dip + Recovery")
 st.sidebar.text("Strict Lock      : Single First Entry Only")
 
@@ -160,7 +160,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTEngulfingEngine:
+class TWTSafeEngulfingEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -318,26 +318,26 @@ class TWTEngulfingEngine:
           break
 
       # -------------------------------------------------------------
-      # 2. SELLER LOGIC: 3 Green Candles followed by an Engulfing Red Candle
+      # 2. SELLER LOGIC: 3 Green + Safe Wick Engulfing Red (Upper wick doesn't cross green high)
       # -------------------------------------------------------------
       if i >= 3:
-        # Check if previous 3 candles (i-3, i-2, i-1) are ALL GREEN
         c1 = self.candles[i - 3]
         c2 = self.candles[i - 2]
         c3 = self.candles[i - 1]
-        curr = self.candles[i] # Current candle must be RED and engulf previous Green (c3)
+        curr = self.candles[i]
 
         if c1["color"] == "Green" and c2["color"] == "Green" and c3["color"] == "Green":
           if curr["color"] == "Red":
-            # Check Bearish Engulfing: Current Red body completely covers previous Green body
             prev_green_body_top = max(c3["open"], c3["close"])
             prev_green_body_bot = min(c3["open"], c3["close"])
             curr_red_body_top = max(curr["open"], curr["close"])
             curr_red_body_bot = min(curr["open"], curr["close"])
 
+            # Engulfing condition + Safe Upper Wick check (Red high does not cross previous green high)
             is_engulfing = (curr_red_body_top >= prev_green_body_top) and (curr_red_body_bot <= prev_green_body_bot)
+            is_safe_wick = curr["high"] <= c3["high"] + (atr * 0.2) # Upper wick does not cross previous green high aggressively
 
-            if is_engulfing:
+            if is_engulfing and is_safe_wick:
               sl = round(curr["high"] + (1.5 * atr), dec)
               tp1 = round(curr["close"] - (1.2 * atr), dec)
               tp2 = round(curr["close"] - (2.5 * atr), dec)
@@ -348,8 +348,8 @@ class TWTEngulfingEngine:
                   "Time": curr["time"],
                   "Candle #": curr["id"],
                   "Type": "SELL 🔴",
-                  "Setup": "3 Green Candles + Engulfing Red Reversal",
-                  "Action": "Sell / Short (S) [3-Green Engulfing] 🔴",
+                  "Setup": "3 Green + Safe Wick Engulfing Reversal",
+                  "Action": "Sell / Short (S) [Safe Wick Engulfing] 🔴",
                   "Entry Price": round(curr["close"], dec),
                   "Stop Loss (SL)": sl,
                   "TP 1": tp1,
@@ -383,7 +383,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTEngulfingEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTSafeEngulfingEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[0] if recent_sigs else None
@@ -391,7 +391,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning with Engulfing Seller Logic..."):
+with st.spinner("⚡ Scanning with Safe Wick-Protected Engulfing Engine..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -421,7 +421,7 @@ st.markdown("---")
 st.subheader("📊 Manual Asset Inspector & Chart")
 
 selected_symbol = st.selectbox(
-    "🔍 Select Asset to Load Chart & Engulfing Entry",
+    "🔍 Select Asset to Load Chart & Safe Engulfing Entry",
     options=ASSET_LIST,
     index=0,
 )
@@ -430,7 +430,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTEngulfingEngine(
+  bot = TWTSafeEngulfingEngine(
       df_5, df_4, df_6, selected_symbol, active_tz
   )
   bot.calculate_and_scan()
@@ -448,7 +448,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Engulfing Logic Active")
+    st.metric(label="Timezone", value=tz_short, delta="Safe Wick Filter Active")
 
   if bot.signals:
     latest_sig = bot.signals[0]
@@ -481,10 +481,10 @@ if bot.df_5 is not None and not bot.df_5.empty:
   else:
     st.warning(
         "🟡 **STATUS: WAITING FOR SETUP**\n\n"
-        "📌 *Instructions:* Monitoring 3-Green followed by Engulfing Red for Sell, and 7-Red exhaustion for Buy."
+        "📌 *Instructions:* Monitoring 3-Green followed by Safe-Wick Engulfing Red for Sell setups."
     )
 
-  # Complete Single History Table
+  # Complete Single History Table (Fixed & Verified)
   if bot.history_signals:
     st.markdown("---")
     st.subheader(
@@ -568,7 +568,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Engulfing Engine ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Safe Engulfing Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
