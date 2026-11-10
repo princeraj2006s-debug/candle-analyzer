@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (ULTRA PRO) — Flexible Dual Engine"
+    "⚡ TRADE WITH TUCKYAA (PRO EDITION) — Corrected D-C-B-A Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -91,8 +91,8 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Strategy Settings")
-st.sidebar.text("Flexible Buy     : Red Exhaustion -> Fast Rebound")
-st.sidebar.text("Flexible Sell    : D->C->B->A (Optimized Flow)")
+st.sidebar.text("Optimized Buy    : Support Rebound after Red Exhaustion")
+st.sidebar.text("Corrected Sell   : A->B->C->D Uprising -> Break B Low -> Green -> Red Cross")
 st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss        : ATR Managed")
 
@@ -161,7 +161,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTTrainingEngineUltra:
+class TWTTrainingEngineFinal:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -258,25 +258,16 @@ class TWTTrainingEngineUltra:
           "is_within_1hr": is_within_1hr,
       })
 
-    # --- ULTRA FLEXIBLE BUY STATE MACHINE ---
+    # --- BUY ENGINE SCANNER ---
     buy_state = 0
     red_streak = 0
-
-    # --- ULTRA FLEXIBLE SELL STATE MACHINE ---
-    sell_state = 0
-    target_b_low = 0.0
-    level_a_ref = 0.0
-    level_b_ref = 0.0
-
     for i in range(len(self.candles)):
       c = self.candles[i]
       if time(1, 0) <= c["dt_ist"].time() <= time(6, 0):
         continue
-
       atr = c["atr"] if not np.isnan(c["atr"]) else (c["close"] * 0.002)
       dec = get_decimals(c["close"])
 
-      # BUY ENGINE (Sensitive & Non-Missable)
       if buy_state != 5 and c["close"] >= self.support_lvl:
         buy_state = 0
         red_streak = 0
@@ -284,7 +275,7 @@ class TWTTrainingEngineUltra:
       if buy_state != 5 and c["close"] < self.support_lvl + (atr * 0.5):
         if c["color"] == "Red":
           red_streak += 1
-          if red_streak >= 2:
+          if red_streak >= 3:
             buy_state = 1
         elif c["color"] == "Green" and buy_state >= 1:
           sl = round(c["low"] - (1.2 * atr), dec)
@@ -297,8 +288,8 @@ class TWTTrainingEngineUltra:
               "Time": c["time"],
               "Candle #": c["id"],
               "Type": "BUY 🟢",
-              "Setup": "Flexible Support Rebound",
-              "Action": "Buy / Long (B) [Ultra Flexible Rebound] 🟢",
+              "Setup": "Support Rebound after Red Exhaustion",
+              "Action": "Buy / Long (B) [Support Rebound] 🟢",
               "Entry Price": round(c["close"], dec),
               "Stop Loss (SL)": sl,
               "TP 1": tp1,
@@ -308,62 +299,87 @@ class TWTTrainingEngineUltra:
           })
           buy_state = 5
 
-      # SELL ENGINE (Flexible D -> C -> B -> A with Tolerant Thresholds)
-      if sell_state != 5 and c["close"] <= self.resistance_lvl - (atr * 3.0):
-        sell_state = 0
+    # --- SELL ENGINE SCANNER (Corrected Uprising A,B,C,D + Forward Trigger) ---
+    for i in range(3, len(self.candles)):
+      c_d = self.candles[i]
+      if time(1, 0) <= c_d["dt_ist"].time() <= time(6, 0):
+        continue
 
-      if sell_state != 5:
-        if sell_state == 0:
-          # Allow close proximity to resistance (within 0.3% or touch/cross)
-          if (
-              c["high"] >= self.resistance_lvl - (atr * 0.5)
-              or c["close"] >= self.resistance_lvl - (atr * 0.5)
-          ) and c["color"] == "Green":
-            sell_state = 1
-        elif sell_state == 1:
-          if c["color"] == "Green":
-            sell_state = 2
-        elif sell_state == 2:
-          if c["color"] == "Green":
-            target_b_low = c["low"]
-            level_b_ref = c["high"]
-            sell_state = 3
-        elif sell_state == 3:
-          if c["color"] == "Green":
-            level_a_ref = c["high"]
-            sell_state = 4
-        elif sell_state == 4:
-          # Break of B's low (with small tolerance)
-          if c["color"] == "Red" and c["low"] <= target_b_low + (atr * 0.1):
-            sell_state = 5
-        elif sell_state == 5:
-          if c["color"] == "Green":
-            sell_state = 6
-        elif sell_state == 6:
-          # Final Red confirmation crossing A & B levels
-          if c["color"] == "Red" and (
-              c["close"] <= level_a_ref or c["close"] <= level_b_ref
-          ):
-            sl = round(c["high"] + (1.2 * atr), dec)
-            tp1 = round(c["close"] - (1.2 * atr), dec)
-            tp2 = round(c["close"] - (2.5 * atr), dec)
-            tp3 = round(c["close"] - (4.0 * atr), dec)
+      # Check if c_d touches or crosses resistance (D)
+      if (
+          c_d["high"] >= self.resistance_lvl - (c_d["atr"] * 0.3)
+          or c_d["close"] >= self.resistance_lvl - (c_d["atr"] * 0.3)
+      ) and c_d["color"] == "Green":
+        # Look backward to find 3 preceding green candles (C, B, A)
+        green_indices = []
+        for k in range(i - 1, -1, -1):
+          if self.candles[k]["color"] == "Green":
+            green_indices.append(k)
+            if len(green_indices) == 3:
+              break
 
-            self.signals.append({
-                "Asset": self.symbol,
-                "Time": c["time"],
-                "Candle #": c["id"],
-                "Type": "SELL 🔴",
-                "Setup": "Flexible D->C->B->A Reversal Breakdown",
-                "Action": "Sell / Short (S) [Ultra Flexible Reversal] 🔴",
-                "Entry Price": round(c["close"], dec),
-                "Stop Loss (SL)": sl,
-                "TP 1": tp1,
-                "TP 2": tp2,
-                "TP 3": tp3,
-                "Is_Within_1hr": c["is_within_1hr"],
-            })
-            sell_state = 7
+        if len(green_indices) == 3:
+          # green_indices[0] is C, green_indices[1] is B, green_indices[2] is A
+          idx_c = green_indices[0]
+          idx_b = green_indices[1]
+          idx_a = green_indices[2]
+
+          c_b = self.candles[idx_b]
+          c_a = self.candles[idx_a]
+
+          target_b_low = c_b["low"]
+          level_b_ref = c_b["high"]
+          level_a_ref = c_a["high"]
+
+          # Now look forward from i (D onwards) for breakdown sequence
+          state_sell = 1
+          triggered = False
+          for m in range(i + 1, len(self.candles)):
+            cm = self.candles[m]
+            if state_sell == 1:
+              if cm["color"] == "Red" and cm["low"] <= target_b_low + (
+                  cm["atr"] * 0.2
+              ):
+                state_sell = 2
+            elif state_sell == 2:
+              if cm["color"] == "Green":
+                state_sell = 3
+            elif state_sell == 3:
+              if cm["color"] == "Red" and (
+                  cm["close"] <= level_a_ref or cm["close"] <= level_b_ref
+              ):
+                atr = (
+                    cm["atr"]
+                    if not np.isnan(cm["atr"])
+                    else (cm["close"] * 0.002)
+                )
+                dec = get_decimals(cm["close"])
+                sl = round(cm["high"] + (1.2 * atr), dec)
+                tp1 = round(cm["close"] - (1.2 * atr), dec)
+                tp2 = round(cm["close"] - (2.5 * atr), dec)
+                tp3 = round(cm["close"] - (4.0 * atr), dec)
+
+                self.signals.append({
+                    "Asset": self.symbol,
+                    "Time": cm["time"],
+                    "Candle #": cm["id"],
+                    "Type": "SELL 🔴",
+                    "Setup": (
+                        "A->B->C->D Pattern -> B Low Break -> Green -> Red"
+                        " Cross Entry"
+                    ),
+                    "Action": "Sell / Short (S) [D-C-B-A Reversal] 🔴",
+                    "Entry Price": round(cm["close"], dec),
+                    "Stop Loss (SL)": sl,
+                    "TP 1": tp1,
+                    "TP 2": tp2,
+                    "TP 3": tp3,
+                    "Is_Within_1hr": cm["is_within_1hr"],
+                })
+                triggered = True
+                break
+          if triggered:
+            break
 
 
 # ---------------------------------------------------------
@@ -379,7 +395,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTTrainingEngineUltra(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTTrainingEngineFinal(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -387,7 +403,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets with Ultra Flexibility..."):
+with st.spinner("⚡ Scanning all 20 assets with Corrected Engine..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -426,7 +442,9 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTTrainingEngineUltra(df_5, df_4, df_6, selected_symbol, active_tz)
+  bot = TWTTrainingEngineFinal(
+      df_5, df_4, df_6, selected_symbol, active_tz
+  )
   bot.calculate_and_scan()
 
 if bot.df_5 is not None and not bot.df_5.empty:
@@ -442,7 +460,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Ultra Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Final Engine Active")
 
   if bot.signals:
     latest_sig = bot.signals[-1]
@@ -483,7 +501,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   if bot.signals:
     st.markdown("---")
     st.subheader(
-        f"📋 Complete Signal History for {selected_symbol} (Ultra Edition)"
+        f"📋 Complete Signal History for {selected_symbol} (Final Edition)"
     )
     df_history = pd.DataFrame(bot.signals).drop(
         columns=["Is_Within_1hr"], errors="ignore"
@@ -567,7 +585,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Ultra Edition ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Final Edition ({tz_short})",
       color="white",
       fontsize=14,
   )
