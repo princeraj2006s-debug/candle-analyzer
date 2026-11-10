@@ -126,7 +126,7 @@ def fetch_twt_delta_data(symbol, tf):
     return None, None, None
 
 # ==========================================================
-# TWT ADVANCED PULLBACK ENGINE (STRICT FILTER & COOLDOWN)
+# TWT ADVANCED PULLBACK ENGINE (STRICT WICK 45-57% & TREND MAP)
 # ==========================================================
 class TWTSafeSecondRedEngine:
     def __init__(self, df_5, df_4, df_6, symbol, user_tz):
@@ -162,7 +162,7 @@ class TWTSafeSecondRedEngine:
         elif self.df_4 is not None:
             self.support_lvl = float(self.df_4["Low"].iloc[-1])
 
-        # 2. Indicators Calculation
+        # 2. Indicators Calculation (EMA 20 for Trend Determination)
         self.df_5["TR"] = np.maximum(
             self.df_5["High"] - self.df_5["Low"],
             np.maximum(
@@ -171,6 +171,7 @@ class TWTSafeSecondRedEngine:
             ),
         )
         self.df_5["ATR"] = self.df_5["TR"].rolling(14).mean()
+        self.df_5["EMA20"] = self.df_5["Close"].ewm(span=20, adjust=False).mean()
 
         for idx, row in enumerate(self.df_5.iterrows()):
             dt_utc = row[0]
@@ -183,6 +184,7 @@ class TWTSafeSecondRedEngine:
             r = row[1]
             o, h, l, c, v = float(r["Open"]), float(r["High"]), float(r["Low"]), float(r["Close"]), float(r["Volume"])
             atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
+            ema20 = float(r["EMA20"]) if not pd.isna(r["EMA20"]) else c
 
             age_minutes = (current_utc_time - dt_utc).total_seconds() / 60.0
             is_within_1hr = age_minutes <= 60.0
@@ -193,6 +195,9 @@ class TWTSafeSecondRedEngine:
             upper_wick_pct = (upper_wick / rng * 100) if rng > 0 else 0
             lower_wick_pct = (lower_wick / rng * 100) if rng > 0 else 0
 
+            # Trend definition: Price > EMA20 is Uptrend, Price < EMA20 is Downtrend
+            trend = "Uptrend" if c >= ema20 else "Downtrend"
+
             self.candles.append({
                 "id": idx + 1,
                 "time": timestamp_str,
@@ -201,29 +206,24 @@ class TWTSafeSecondRedEngine:
                 "color": "Green" if c >= o else "Red",
                 "open": o, "high": h, "low": l, "close": c, "volume": v,
                 "atr": atr,
+                "trend": trend,
                 "upper_wick_pct": upper_wick_pct,
                 "lower_wick_pct": lower_wick_pct,
                 "is_within_1hr": is_within_1hr,
             })
 
-        # --- STRICT FILTERED PULLBACK ENGINE (COOLDOWN & LEVEL TEST) ---
-        last_signal_candle_id = -999
+        # --- STRICT 45%-57% WICK & TREND-MAPPED ENGINE (MAX 1 BUY & 1 SELL) ---
+        buy_signal_found = False
+        sell_signal_found = False
 
         for i in range(2, len(self.candles)):
             c = self.candles[i]
-            prev1 = self.candles[i-1]
             prev2 = self.candles[i-2]
-            
-            # Enforce Cooldown: At least 25 candles gap between signals to prevent spamming
-            if (c["id"] - last_signal_candle_id) < 25:
-                continue
-
             dec = get_decimals(c["close"])
             atr = c["atr"] if not np.isnan(c["atr"]) else (c["close"] * 0.002)
 
-            # Strict Seller Setup: Only near Resistance with Upper Wick Rejection (> 35%)
-            near_resistance = self.resistance_lvl > 0 and c["high"] >= self.resistance_lvl - (3.0 * atr)
-            if near_resistance and c["color"] == "Red" and prev2["upper_wick_pct"] >= 35.0:
+            # 1. SELLER ENTRY: Strictly in DOWNREND when Upper Wick is between 45% and 57%
+            if not sell_signal_found and c["trend"] == "Downtrend" and (45.0 <= prev2["upper_wick_pct"] <= 57.0):
                 sl = round(c["high"] + (1.2 * atr), dec)
                 tp1 = round(c["close"] - (1.2 * atr), dec)
                 tp2 = round(c["close"] - (2.5 * atr), dec)
@@ -235,13 +235,13 @@ class TWTSafeSecondRedEngine:
                     "Time": c["time"],
                     "Candle #": c["id"],
                     "Type": "SELLER",
-                    "Trend": "Uptrend",
+                    "Trend": "Downtrend",
                     "Pullback": "Pullback 3",
                     "State": "SIGNAL_VALID",
                     "SellerStrength": "Confirmed",
-                    "BuyerWeakness": "Confirmed (Resistance Rejection)",
+                    "BuyerWeakness": "Confirmed (Strict 45-57% Upper Wick)",
                     "WickRejection": f"Upper Wick {prev2['upper_wick_pct']:.1f}%",
-                    "Confirmation": "Strict Resistance Rejection",
+                    "Confirmation": "Valid Downtrend Seller Rejection",
                     "Entry Price": round(c["close"], dec),
                     "Stop Loss (SL)": sl,
                     "TP 1": tp1,
@@ -249,14 +249,14 @@ class TWTSafeSecondRedEngine:
                     "TP 3": tp3,
                     "Target": tp1,
                     "RR": f"1:{rr:.2f}",
-                    "Score": 90,
+                    "Score": 95,
                     "Status": "VALID",
                     "Is_Within_1hr": c["is_within_1hr"]
                 })
-                last_signal_candle_id = c["id"]
+                sell_signal_found = True
 
-            # Strict Buyer Setup: Only near Support with Lower Wick Rejection (> 35%)
-            elif self.support_lvl > 0 and c["low"] <= self.support_lvl + (3.0 * atr) and c["color"] == "Green" and prev2["lower_wick_pct"] >= 35.0:
+            # 2. BUYER ENTRY: Strictly in UPTREND when Lower Wick is between 45% and 57%
+            elif not buy_signal_found and c["trend"] == "Uptrend" and (45.0 <= prev2["lower_wick_pct"] <= 57.0):
                 sl = round(c["low"] - (1.2 * atr), dec)
                 tp1 = round(c["close"] + (1.2 * atr), dec)
                 tp2 = round(c["close"] + (2.5 * atr), dec)
@@ -268,13 +268,13 @@ class TWTSafeSecondRedEngine:
                     "Time": c["time"],
                     "Candle #": c["id"],
                     "Type": "BUYER",
-                    "Trend": "Downtrend",
+                    "Trend": "Uptrend",
                     "Pullback": "Pullback 3",
                     "State": "SIGNAL_VALID",
                     "BuyerStrength": "Confirmed",
-                    "SellerWeakness": "Confirmed (Support Rebound)",
+                    "SellerWeakness": "Confirmed (Strict 45-57% Lower Wick)",
                     "WickRejection": f"Lower Wick {prev2['lower_wick_pct']:.1f}%",
-                    "Confirmation": "Strict Support Rebound",
+                    "Confirmation": "Valid Uptrend Buyer Rebound",
                     "Entry Price": round(c["close"], dec),
                     "Stop Loss (SL)": sl,
                     "TP 1": tp1,
@@ -282,11 +282,11 @@ class TWTSafeSecondRedEngine:
                     "TP 3": tp3,
                     "Target": tp1,
                     "RR": f"1:{rr:.2f}",
-                    "Score": 90,
+                    "Score": 95,
                     "Status": "VALID",
                     "Is_Within_1hr": c["is_within_1hr"]
                 })
-                last_signal_candle_id = c["id"]
+                buy_signal_found = True
 
 # ==========================================================
 # MASTER SCANNER (Global Feed for Top Dashboard)
@@ -307,7 +307,7 @@ def scan_single_asset(sym):
         return sym, engine, latest
     return sym, None, None
 
-with st.spinner("⚡ Scanning assets with Strict Filter Engine..."):
+with st.spinner("⚡ Scanning assets with Strict 45-57% Wick Engine..."):
     with ThreadPoolExecutor(max_workers=5) as executor:
         futures = {executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST}
         for future in as_completed(futures):
@@ -322,7 +322,7 @@ if master_signals:
     df_display = pd.DataFrame(master_signals).drop(columns=["Is_Within_1hr"], errors="ignore")
     st.dataframe(df_display, use_container_width=True)
 else:
-    st.info("ℹ️ No high-conviction signals in the last 1 hour. Waiting for clear levels...")
+    st.info("ℹ️ No high-conviction signals matching 45-57% wick rule in the last 1 hour.")
 
 # ==========================================================
 # MANUAL ASSET SELECTOR & CHART VIEWER (ISOLATED)
@@ -357,7 +357,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     with col3:
         st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
     with col4:
-        st.metric(label="Timezone", value=tz_short, delta="Strict Filter Active")
+        st.metric(label="Timezone", value=tz_short, delta="45-57% Wick Rule Active")
 
     if bot.signals:
         latest_sig = bot.signals[-1]
@@ -394,7 +394,7 @@ Target: {latest_sig['Target']}
 Risk-to-Reward: {latest_sig['RR']}
 Signal Status: VALID (Score: {latest_sig['Score']}/100)""", language="text")
     else:
-        st.warning(f"🟡 **STATUS: WAITING FOR CLEAR LEVEL SETUP ON {selected_symbol}**")
+        st.warning(f"🟡 **STATUS: WAITING FOR VALID 45-57% WICK SETUP ON {selected_symbol}**")
 
     # ==========================================================
     # INTERACTIVE PAPER TRADING DESK (ISOLATED)
