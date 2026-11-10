@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (PRO) — Pullback Half-Retrace & Clean Buyer Engine"
+    "⚡ TRADE WITH TUCKYAA (PRO) — Optimized History & Balanced Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -91,8 +91,8 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Strategy Settings")
-st.sidebar.text("Sell Rule        : 5-7 Green -> Impetus Red -> 50% Weak Pullback -> Engulf")
-st.sidebar.text("Buy Rule         : Strict Support Rebound + Verified Momentum")
+st.sidebar.text("Sell Rule        : Balanced Resistance Rejection & Engulfing")
+st.sidebar.text("Buy Rule         : Verified Support Bounce & Momentum")
 st.sidebar.text("Strict Lock      : Single First Entry Only")
 
 
@@ -160,7 +160,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTPullbackAndCleanBuyerEngine:
+class TWTBalancedEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -270,7 +270,7 @@ class TWTPullbackAndCleanBuyerEngine:
 
     found_signal = None
     is_major_coin = self.symbol in ["BTC/USDT", "ETH/USDT"]
-    zone_multiplier = 4.0 if is_major_coin else 2.5
+    zone_multiplier = 4.5 if is_major_coin else 3.0
 
     for i in range(len(self.candles)):
       c = self.candles[i]
@@ -281,21 +281,19 @@ class TWTPullbackAndCleanBuyerEngine:
       dec = get_decimals(c["close"])
 
       # -------------------------------------------------------------
-      # 1. CLEAN BUY LOGIC: Strict Support Proximity + 7 Red Exhaustion + Strong Momentum Rebound
+      # 1. BUY LOGIC: Support Proximity + 5-7 Red Exhaustion + Green Rebound
       # -------------------------------------------------------------
-      if c["close"] <= self.support_lvl + (atr * 1.5):
-        if i >= 7:
+      if c["close"] <= self.support_lvl + (atr * 2.0):
+        if i >= 5:
           red_count = 0
-          for k in range(i - 6, i + 1):
+          for k in range(i - 4, i + 1):
             if self.candles[k]["color"] == "Red":
               red_count += 1
           
-          if red_count >= 7:
+          if red_count >= 4:
             for m in range(i + 1, min(i + 4, len(self.candles))):
               cm = self.candles[m]
-              # Strict momentum check: Strong green body breaking previous high
-              body_cm = abs(cm["close"] - cm["open"])
-              if cm["color"] == "Green" and cm["close"] > self.candles[m - 1]["high"] and body_cm > (atr * 0.5):
+              if cm["color"] == "Green" and cm["close"] > self.candles[m - 1]["high"]:
                 sl = round(cm["low"] - (1.2 * atr), dec)
                 tp1 = round(cm["close"] + (1.2 * atr), dec)
                 tp2 = round(cm["close"] + (2.5 * atr), dec)
@@ -306,8 +304,8 @@ class TWTPullbackAndCleanBuyerEngine:
                     "Time": cm["time"],
                     "Candle #": cm["id"],
                     "Type": "BUY 🟢",
-                    "Setup": "Clean Support Bounce & Momentum",
-                    "Action": "Buy / Long (B) [Clean Support Rebound] 🟢",
+                    "Setup": "Support Exhaustion Rebound",
+                    "Action": "Buy / Long (B) [Support Rebound] 🟢",
                     "Entry Price": round(cm["close"], dec),
                     "Stop Loss (SL)": sl,
                     "TP 1": tp1,
@@ -320,56 +318,35 @@ class TWTPullbackAndCleanBuyerEngine:
           break
 
       # -------------------------------------------------------------
-      # 2. SELLER PULLBACK HALF-RETRACE LOGIC:
-      #    - 5-7 Green candles -> Impetus Red candle -> Weak pullbacks to ~50% level with upper wicks -> Engulfing Red entry
+      # 2. SELLER LOGIC: Resistance Zone Rejection / Bearish Engulfing (Optimized & Responsive)
       # -------------------------------------------------------------
       is_in_resistance = c["high"] >= self.resistance_lvl - (atr * zone_multiplier)
-      if is_in_resistance and i >= 8:
-        # Check if preceded by multiple green candles
-        green_streak = 0
-        for k in range(max(0, i - 7), i):
-          if self.candles[k]["color"] == "Green":
-            green_streak += 1
+      if is_in_resistance:
+        body_size = abs(c["close"] - c["open"])
+        upper_wick = c["high"] - max(c["open"], c["close"])
+        is_rejection = (upper_wick >= body_size * 0.5) or (c["color"] == "Red")
+        closes_below = c["close"] <= self.resistance_lvl + (atr * 1.0)
 
-        if green_streak >= 5:
-          # Now check for Impetus Red candle that drops price
-          # Followed by weak green candles retracing to about 50% of that red drop
-          # Then an engulfing red candle entry
-          for m in range(i + 1, min(i + 5, len(self.candles)) - 1):
-            red_drop = self.candles[m]
-            if red_drop["color"] == "Red":
-              drop_size = abs(red_drop["close"] - red_drop["open"])
-              half_level = red_drop["open"] - (drop_size * 0.5)
+        if is_rejection and closes_below:
+          sl = round(c["high"] + (1.5 * atr), dec)
+          tp1 = round(c["close"] - (1.2 * atr), dec)
+          tp2 = round(c["close"] - (2.5 * atr), dec)
+          tp3 = round(c["close"] - (4.0 * atr), dec)
 
-              # Look at subsequent weak green pullback candles reaching ~50% and showing upper wicks
-              p1 = self.candles[m + 1]
-              if p1["color"] == "Green" and p1["high"] <= red_drop["open"] and p1["close"] <= half_level + (atr * 0.3):
-                # Check for final engulfing red candle
-                p2 = self.candles[m + 2] if m + 2 < len(self.candles) else None
-                if p2 and p2["color"] == "Red":
-                  p2_body = abs(p2["close"] - p2["open"])
-                  if p2_body >= abs(p1["close"] - p1["open"]):
-                    sl = round(max(red_drop["high"], p1["high"]) + (1.2 * atr), dec)
-                    tp1 = round(p2["close"] - (1.2 * atr), dec)
-                    tp2 = round(p2["close"] - (2.5 * atr), dec)
-                    tp3 = round(p2["close"] - (4.0 * atr), dec)
-
-                    found_signal = {
-                        "Asset": self.symbol,
-                        "Time": p2["time"],
-                        "Candle #": p2["id"],
-                        "Type": "SELL 🔴",
-                        "Setup": "50% Pullback Weak-Green Rejection",
-                        "Action": "Sell / Short (S) [50% Pullback Rejection] 🔴",
-                        "Entry Price": round(p2["close"], dec),
-                        "Stop Loss (SL)": sl,
-                        "TP 1": tp1,
-                        "TP 2": tp2,
-                        "TP 3": tp3,
-                        "Is_Within_1hr": p2["is_within_1hr"],
-                    }
-                    break
-        if found_signal:
+          found_signal = {
+              "Asset": self.symbol,
+              "Time": c["time"],
+              "Candle #": c["id"],
+              "Type": "SELL 🔴",
+              "Setup": "Resistance Zone Rejection",
+              "Action": "Sell / Short (S) [Resistance Rejection] 🔴",
+              "Entry Price": round(c["close"], dec),
+              "Stop Loss (SL)": sl,
+              "TP 1": tp1,
+              "TP 2": tp2,
+              "TP 3": tp3,
+              "Is_Within_1hr": c["is_within_1hr"],
+          }
           break
 
       if found_signal:
@@ -396,7 +373,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTPullbackAndCleanBuyerEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTBalancedEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[0] if recent_sigs else None
@@ -404,7 +381,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning with Pullback Half-Retrace & Clean Buyer Engine..."):
+with st.spinner("⚡ Scanning with Balanced Responsive Engine..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -443,7 +420,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTPullbackAndCleanBuyerEngine(
+  bot = TWTBalancedEngine(
       df_5, df_4, df_6, selected_symbol, active_tz
   )
   bot.calculate_and_scan()
@@ -461,7 +438,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Pullback & Clean Buyer Active")
+    st.metric(label="Timezone", value=tz_short, delta="Balanced Responsive Active")
 
   if bot.signals:
     latest_sig = bot.signals[0]
@@ -494,7 +471,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   else:
     st.warning(
         "🟡 **STATUS: WAITING FOR SETUP**\n\n"
-        "📌 *Instructions:* Monitoring clean support bounce for Buy and 50% pullback rejection for Sell setups."
+        "📌 *Instructions:* Monitoring balanced support bounce and resistance rejection setups."
     )
 
   # Complete Single History Table
@@ -581,7 +558,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Pullback Engine ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Balanced Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
