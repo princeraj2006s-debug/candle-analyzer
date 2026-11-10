@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (PRO) — Single-Trade Priority Engine"
+    "⚡ TRADE WITH TUCKYAA (PRO) — Strictly Earliest Entry Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -91,7 +91,7 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Strategy Settings")
-st.sidebar.text("Strict Rule      : Strictly FIRST valid entry per asset (No duplicates)")
+st.sidebar.text("Strict Lock      : Only the VERY FIRST entry (e.g. 7 AM) is shown. No 10 AM repeats!")
 st.sidebar.text("Optimized Buy    : Support Rebound after Red Exhaustion")
 st.sidebar.text("Safe Sell Filter : Resistance Test -> Green Pullback -> 2nd Red Entry")
 st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
@@ -162,7 +162,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTSingleEntryPriorityEngine:
+class TWTEarliestFirstEngine:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -182,7 +182,7 @@ class TWTSingleEntryPriorityEngine:
     IST = timezone(timedelta(hours=5, minutes=30))
     current_utc_time = datetime.now(timezone.utc)
 
-    # 1. Calculate Key Levels (with Safe DatetimeIndex TZ Checks)
+    # 1. Calculate Key Levels (with Safe Index TZ Checks)
     if self.df_4 is not None and not self.df_4.empty:
       dt_index_4 = (
           self.df_4.index
@@ -218,7 +218,7 @@ class TWTSingleEntryPriorityEngine:
       self.support_lvl = (
           float(filtered_6h["Low"].iloc[-1])
           if not filtered_6h.empty
-          else float(self.df_6["Low"].iloc[-1])
+          else float(filtered_6h["Low"].iloc[-1]) if not filtered_6h.empty else float(self.df_6["Low"].iloc[-1])
       )
     elif self.df_4 is not None and not self.df_4.empty:
       self.support_lvl = float(self.df_4["Low"].iloc[-1])
@@ -269,19 +269,21 @@ class TWTSingleEntryPriorityEngine:
           "is_within_1hr": is_within_1hr,
       })
 
-    # --- CHRONOLOGICAL SCANNER (FIRST VALID SIGNAL ONLY) ---
-    raw_signals = []
-
-    # A. Scan for Buy Signals
+    # --- STRICT TIMELINE CHRONOLOGICAL SCANNER (FIRST ENTRY EVER WINS) ---
     buy_state = 0
     red_streak = 0
+
     for i in range(len(self.candles)):
       c = self.candles[i]
       if time(1, 0) <= c["dt_ist"].time() <= time(6, 0):
         continue
+
       atr = c["atr"] if not np.isnan(c["atr"]) else (c["close"] * 0.002)
       dec = get_decimals(c["close"])
 
+      # ------------------------------------
+      # CHECK BUY SETUP AT CANDLE 'i'
+      # ------------------------------------
       if buy_state != 5 and c["close"] >= self.support_lvl:
         buy_state = 0
         red_streak = 0
@@ -297,7 +299,7 @@ class TWTSingleEntryPriorityEngine:
           tp2 = round(c["close"] + (2.5 * atr), dec)
           tp3 = round(c["close"] + (4.0 * atr), dec)
 
-          raw_signals.append({
+          self.signals.append({
               "Asset": self.symbol,
               "Time": c["time"],
               "Candle #": c["id"],
@@ -311,25 +313,21 @@ class TWTSingleEntryPriorityEngine:
               "TP 3": tp3,
               "Is_Within_1hr": c["is_within_1hr"],
           })
-          buy_state = 5
+          # ABSOLUTE LOCK: Pehli Buy entry milte hi code finish!
+          break
 
-    # B. Scan for Sell Signals (Safe 2nd Red Pullback)
-    for i in range(len(self.candles)):
-      c_curr = self.candles[i]
-      if time(1, 0) <= c_curr["dt_ist"].time() <= time(6, 0):
-        continue
-
-      atr_val = c_curr["atr"] if not np.isnan(c_curr["atr"]) else (c_curr["close"] * 0.002)
-
+      # ------------------------------------
+      # CHECK SELL SETUP AT CANDLE 'i' (C Candle)
+      # ------------------------------------
       if (
-          c_curr["high"] >= self.resistance_lvl - (atr_val * 2.5)
-          or c_curr["close"] >= self.resistance_lvl - (atr_val * 2.5)
-      ) and c_curr["color"] == "Green":
+          c["high"] >= self.resistance_lvl - (atr * 2.5)
+          or c["close"] >= self.resistance_lvl - (atr * 2.5)
+      ) and c["color"] == "Green":
         
-        ref_level = c_curr["low"]
-
+        ref_level = c["low"]
         sell_state = 1
-        triggered = False
+        found_sell = False
+
         for m in range(i + 1, len(self.candles)):
           cm = self.candles[m]
           if sell_state == 1:
@@ -343,40 +341,37 @@ class TWTSingleEntryPriorityEngine:
               sell_state = 4
           elif sell_state == 4:
             if cm["color"] == "Red":
-              atr = (
+              cm_atr = (
                   cm["atr"]
                   if not np.isnan(cm["atr"])
                   else (cm["close"] * 0.002)
               )
-              dec = get_decimals(cm["close"])
-              sl = round(cm["high"] + (1.2 * atr), dec)
-              tp1 = round(cm["close"] - (1.2 * atr), dec)
-              tp2 = round(cm["close"] - (2.5 * atr), dec)
-              tp3 = round(cm["close"] - (4.0 * atr), dec)
+              cm_dec = get_decimals(cm["close"])
+              sl = round(cm["high"] + (1.2 * cm_atr), cm_dec)
+              tp1 = round(cm["close"] - (1.2 * cm_atr), cm_dec)
+              tp2 = round(cm["close"] - (2.5 * cm_atr), cm_dec)
+              tp3 = round(cm["close"] - (4.0 * cm_atr), cm_dec)
 
-              raw_signals.append({
+              self.signals.append({
                   "Asset": self.symbol,
                   "Time": cm["time"],
                   "Candle #": cm["id"],
                   "Type": "SELL 🔴",
                   "Setup": "Safe 2nd-Red Pullback Rejection",
                   "Action": "Sell / Short (S) [Safe 2nd-Red Entry] 🔴",
-                  "Entry Price": round(cm["close"], dec),
+                  "Entry Price": round(cm["close"], cm_dec),
                   "Stop Loss (SL)": sl,
                   "TP 1": tp1,
                   "TP 2": tp2,
                   "TP 3": tp3,
                   "Is_Within_1hr": cm["is_within_1hr"],
               })
-              triggered = True
+              found_sell = True
               break
-        if triggered:
+        
+        if found_sell:
+          # ABSOLUTE LOCK: Pehli Sell entry milte hi code finish!
           break
-
-    # C. LOCK FIRST ENTRY ONLY (Sort by Candle # and take the earliest signal)
-    if raw_signals:
-      sorted_signals = sorted(raw_signals, key=lambda x: x["Candle #"])
-      self.signals = [sorted_signals[0]] # Strictly ONE first entry per asset
 
 
 # ---------------------------------------------------------
@@ -392,7 +387,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTSingleEntryPriorityEngine(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTEarliestFirstEngine(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[0] if recent_sigs else None
@@ -400,7 +395,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets for First Valid Signal..."):
+with st.spinner("⚡ Scanning all 20 assets for Earliest Entry Only..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -430,7 +425,7 @@ st.markdown("---")
 st.subheader("📊 Manual Asset Inspector & Chart")
 
 selected_symbol = st.selectbox(
-    "🔍 Select Asset to Load Chart & Earliest Signal",
+    "🔍 Select Asset to Load Chart & Earliest Entry",
     options=ASSET_LIST,
     index=0,
 )
@@ -439,7 +434,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTSingleEntryPriorityEngine(
+  bot = TWTEarliestFirstEngine(
       df_5, df_4, df_6, selected_symbol, active_tz
   )
   bot.calculate_and_scan()
@@ -457,7 +452,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Single Entry Active")
+    st.metric(label="Timezone", value=tz_short, delta="Earliest Entry Locked")
 
   if bot.signals:
     latest_sig = bot.signals[0]
@@ -498,7 +493,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   if bot.signals:
     st.markdown("---")
     st.subheader(
-        f"📋 Valid Earliest Signal for {selected_symbol}"
+        f"📋 Absolute First Earliest Signal for {selected_symbol}"
     )
     df_history = pd.DataFrame(bot.signals).drop(
         columns=["Is_Within_1hr"], errors="ignore"
@@ -582,7 +577,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Single Entry Priority Engine ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Earliest First Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
