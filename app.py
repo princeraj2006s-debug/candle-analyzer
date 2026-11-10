@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (PRO) — Strict Pullback Reversal Engine"
+    "⚡ TRADE WITH TUCKYAA (PRO) — Pullback Rejection Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -92,7 +92,7 @@ st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Strategy Settings")
 st.sidebar.text("Optimized Buy    : Support Rebound after Red Exhaustion")
-st.sidebar.text("Strict Pullback  : A->B->C->D -> Strict B Low Break -> Green -> Red Cross")
+st.sidebar.text("Pullback Sell    : A->B->C->D -> Drop -> Pullback to B/C Zone -> Red Rejection Entry")
 st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss        : ATR Managed")
 
@@ -161,7 +161,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None, None, None
 
 
-class TWTTrainingEngineStrictPullback:
+class TWTTrainingEnginePullbackRejection:
 
   def __init__(self, df_5, df_4, df_6, symbol, user_tz):
     self.df_5 = df_5
@@ -299,7 +299,7 @@ class TWTTrainingEngineStrictPullback:
           })
           buy_state = 5
 
-    # --- STRICT PULLBACK SELL ENGINE SCANNER ---
+    # --- PULLBACK ZONE REJECTION SELL ENGINE SCANNER ---
     for i in range(3, len(self.candles)):
       c_d = self.candles[i]
       if time(1, 0) <= c_d["dt_ist"].time() <= time(6, 0):
@@ -324,30 +324,27 @@ class TWTTrainingEngineStrictPullback:
           idx_a = green_indices[2]
 
           c_b = self.candles[idx_b]
-          c_a = self.candles[idx_a]
+          c_c = self.candles[idx_c]
 
-          target_b_low = c_b["low"]
-          level_b_ref = c_b["high"]
-          level_a_ref = c_a["high"]
+          # Zone between B and C levels for pullback rejection
+          zone_low = min(c_b["low"], c_c["low"])
+          zone_high = max(c_b["high"], c_c["high"])
 
-          # Strictly wait for pull-back sequence from D onwards
           state_sell = 1
           triggered = False
           for m in range(i + 1, len(self.candles)):
             cm = self.candles[m]
             if state_sell == 1:
-              # Step 1: Strict Red candle breaking B's low
-              if cm["color"] == "Red" and cm["close"] < target_b_low:
+              # Step 1: Drop/Breakdown below B/C zone
+              if cm["color"] == "Red" and cm["close"] < zone_low:
                 state_sell = 2
             elif state_sell == 2:
-              # Step 2: Confirmation Green candle after breaking B low
-              if cm["color"] == "Green":
+              # Step 2: Pullback up towards B or C zone levels
+              if cm["high"] >= zone_low and cm["close"] <= zone_high + (cm["atr"] * 0.5):
                 state_sell = 3
             elif state_sell == 3:
-              # Step 3: Final Red candle crossing A & B levels -> SELL ENTRY!
-              if cm["color"] == "Red" and (
-                  cm["close"] <= level_a_ref or cm["close"] <= level_b_ref
-              ):
+              # Step 3: Strong Red candle rejection in that zone -> SELL ENTRY!
+              if cm["color"] == "Red" and abs(cm["close"] - cm["open"]) > (cm["atr"] * 0.3):
                 atr = (
                     cm["atr"]
                     if not np.isnan(cm["atr"])
@@ -365,10 +362,9 @@ class TWTTrainingEngineStrictPullback:
                     "Candle #": cm["id"],
                     "Type": "SELL 🔴",
                     "Setup": (
-                        "Strict Pullback: A->B->C->D -> Strict B Low Break ->"
-                        " Green -> Red Cross"
+                        "Pullback Rejection: A->B->C->D -> Drop -> Pullback to B/C Zone -> Red Rejection"
                     ),
-                    "Action": "Sell / Short (S) [Strict Pullback Reversal] 🔴",
+                    "Action": "Sell / Short (S) [Pullback Zone Rejection] 🔴",
                     "Entry Price": round(cm["close"], dec),
                     "Stop Loss (SL)": sl,
                     "TP 1": tp1,
@@ -395,7 +391,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
   if df_5 is not None and not df_5.empty:
-    engine = TWTTrainingEngineStrictPullback(df_5, df_4, df_6, sym, active_tz)
+    engine = TWTTrainingEnginePullbackRejection(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[-1] if recent_sigs else None
@@ -403,7 +399,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets with Strict Pullback Engine..."):
+with st.spinner("⚡ Scanning all 20 assets with Pullback Rejection Engine..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -435,14 +431,14 @@ st.subheader("📊 Manual Asset Inspector & Chart")
 selected_symbol = st.selectbox(
     "🔍 Select Asset to Load Chart & Complete History",
     options=ASSET_LIST,
-    index=16,  # Default to OP
+    index=0,  # Default to BTC
 )
 
 if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWTTrainingEngineStrictPullback(
+  bot = TWTTrainingEnginePullbackRejection(
       df_5, df_4, df_6, selected_symbol, active_tz
   )
   bot.calculate_and_scan()
@@ -460,7 +456,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Strict Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Pullback Engine Active")
 
   if bot.signals:
     latest_sig = bot.signals[-1]
@@ -501,7 +497,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   if bot.signals:
     st.markdown("---")
     st.subheader(
-        f"📋 Complete Signal History for {selected_symbol} (Strict Edition)"
+        f"📋 Complete Signal History for {selected_symbol} (Pullback Edition)"
     )
     df_history = pd.DataFrame(bot.signals).drop(
         columns=["Is_Within_1hr"], errors="ignore"
@@ -585,7 +581,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Strict Edition ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Pullback Edition ({tz_short})",
       color="white",
       fontsize=14,
   )
