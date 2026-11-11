@@ -12,7 +12,7 @@ from streamlit_autorefresh import st_autorefresh
 # STREAMLIT PAGE CONFIGURATION
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="TWT Multi-Asset Best Dual-Entry Precision Bot",
+    page_title="TWT Multi-Asset Today-Only Precision Bot",
     page_icon="⚡",
     layout="wide",
 )
@@ -30,7 +30,7 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 # Safe Auto-refresh every 30 seconds
 count = st_autorefresh(interval=30000, key="twt_multi_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA — Best Dual-Entry Precision Engine")
+st.title("⚡ TRADE WITH TUCKYAA — Today-Only Precision Engine")
 
 # ---------------------------------------------------------
 # SIDEBAR CONFIGURATION
@@ -55,11 +55,11 @@ selected_tf = st.sidebar.selectbox(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Strict Best Dual-Entry Rules")
-st.sidebar.text("Strictly Max 1 Best BUY & 1 Best SELL per Asset")
-st.sidebar.text("No duplicate spam entries for similar recent patterns")
-st.sidebar.text("Demand Midpoint ➔ Green ➔ Best BUY")
-st.sidebar.text("Supply Midpoint ➔ Red   ➔ Best SELL")
+st.sidebar.markdown("#### Today-Only Rules")
+st.sidebar.text("Zones & Entries calculated STRICTLY for Today")
+st.sidebar.text("Max 1 BUY & 1 SELL per Current Trading Day")
+st.sidebar.text("Demand Midpoint ➔ Green ➔ Today's BUY")
+st.sidebar.text("Supply Midpoint ➔ Red   ➔ Today's SELL")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -125,9 +125,9 @@ def fetch_multi_asset_ohlcv(symbol, timeframe="5m", limit=300):
 
 
 # ---------------------------------------------------------
-# BEST DUAL-ENTRY PRECISION ENGINE
+# TODAY-ONLY PRECISION ENGINE
 # ---------------------------------------------------------
-class TWTBestDualEntryEngine:
+class TWTTodayOnlyEngine:
 
   def __init__(self, df, symbol, user_tz):
     self.df = df
@@ -144,8 +144,6 @@ class TWTBestDualEntryEngine:
   def calculate_and_scan(self):
     if self.df is None or self.df.empty:
       return
-
-    current_utc_time = datetime.now(timezone.utc)
 
     self.df["TR"] = np.maximum(
         self.df["High"] - self.df["Low"],
@@ -171,13 +169,11 @@ class TWTBestDualEntryEngine:
       )
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
 
-      age_minutes = (current_utc_time - dt_utc).total_seconds() / 60.0
-      is_within_1hr = age_minutes <= 60.0
-
       self.candles.append({
           "id": idx + 1,
           "time": timestamp_str,
           "dt_user": dt_user_tz,
+          "date": dt_user_tz.date(),
           "color": "Green" if c >= o else "Red",
           "open": o,
           "high": h,
@@ -185,18 +181,27 @@ class TWTBestDualEntryEngine:
           "close": c,
           "volume": v,
           "atr": atr,
-          "is_within_1hr": is_within_1hr,
       })
 
-    all_lows = [c["low"] for c in self.candles]
-    all_highs = [c["high"] for c in self.candles]
+    if not self.candles:
+      return
+
+    # Isolate strictly today's candles (using the latest available date in data as current session)
+    latest_date = self.candles[-1]["date"]
+    today_candles = [c for c in self.candles if c["date"] == latest_date]
+
+    if not today_candles:
+      today_candles = self.candles
+
+    all_lows = [c["low"] for c in today_candles]
+    all_highs = [c["high"] for c in today_candles]
 
     if not all_lows or not all_highs:
       return
 
     min_price = min(all_lows)
     max_price = max(all_highs)
-    total_range = max_price - min_price
+    total_range = max_price - min_price if max_price > min_price else 1.0
 
     demand_zone_low = min_price
     demand_zone_high = min_price + (total_range * 0.22)
@@ -211,12 +216,11 @@ class TWTBestDualEntryEngine:
     best_buy = None
     best_sell = None
 
-    # Forward scan to capture the very first structural best clean entries, or choose distinct ones
-    for c in self.candles:
+    # Scan strictly within today's candles for 1 Buy and 1 Sell
+    for c in today_candles:
       atr = c["atr"]
       dec = get_decimals(c["close"])
 
-      # Pick the absolute first/best structural BUY matching condition
       if best_buy is None:
         if c["low"] <= self.demand_mid and c["color"] == "Green":
           sl = round(demand_zone_low - (1.0 * atr), dec)
@@ -226,19 +230,18 @@ class TWTBestDualEntryEngine:
 
           best_buy = {
               "Asset": self.symbol,
+              "Date": str(c["date"]),
               "Time": c["time"],
               "Candle #": c["id"],
               "Type": "BUY 🟢",
-              "Setup": "Best Demand Midpoint Bounce",
+              "Setup": "Today's Demand Midpoint Bounce",
               "Entry Price": round(c["close"], dec),
               "Stop Loss (SL)": sl,
               "TP 1": tp1,
               "TP 2": tp2,
               "TP 3": tp3,
-              "Is_Within_1hr": c["is_within_1hr"],
           }
 
-      # Pick the absolute first/best structural SELL matching condition
       if best_sell is None:
         if c["high"] >= self.supply_mid and c["color"] == "Red":
           sl = round(supply_zone_high + (1.0 * atr), dec)
@@ -248,16 +251,16 @@ class TWTBestDualEntryEngine:
 
           best_sell = {
               "Asset": self.symbol,
+              "Date": str(c["date"]),
               "Time": c["time"],
               "Candle #": c["id"],
               "Type": "SELL 🔴",
-              "Setup": "Best Supply Midpoint Rejection",
+              "Setup": "Today's Supply Midpoint Rejection",
               "Entry Price": round(c["close"], dec),
               "Stop Loss (SL)": sl,
               "TP 1": tp1,
               "TP 2": tp2,
               "TP 3": tp3,
-              "Is_Within_1hr": c["is_within_1hr"],
           }
 
       if best_buy and best_sell:
@@ -270,14 +273,14 @@ class TWTBestDualEntryEngine:
       collected.append(best_sell)
 
     self.history = collected
-    self.signals = [s for s in collected if s.get("Is_Within_1hr", False)]
+    self.signals = collected
 
 
 # ---------------------------------------------------------
 # MASTER MULTI-ASSET SCANNER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("🔥 TWT Master Best Dual-Entry Dashboard (20+ Assets)")
+st.subheader("🔥 TWT Master Today-Only Dashboard (20+ Assets)")
 
 master_signals = []
 asset_engines = {}
@@ -286,13 +289,13 @@ asset_engines = {}
 def scan_asset(sym):
   df = fetch_multi_asset_ohlcv(sym, selected_tf, limit=300)
   if df is not None and not df.empty:
-    engine = TWTBestDualEntryEngine(df, sym, active_tz)
+    engine = TWTTodayOnlyEngine(df, sym, active_tz)
     engine.calculate_and_scan()
     return sym, engine, engine.signals
   return sym, None, []
 
 
-with st.spinner("⚡ Parallel scanning 20+ assets for Best Dual-Entries..."):
+with st.spinner("⚡ Parallel scanning 20+ assets for Today's Zones & Entries..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
@@ -303,13 +306,11 @@ with st.spinner("⚡ Parallel scanning 20+ assets for Best Dual-Entries..."):
         master_signals.extend(sigs)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} active best setup(s) across assets!")
-  df_display = pd.DataFrame(master_signals).drop(
-      columns=["Is_Within_1hr"], errors="ignore"
-  )
+  st.success(f"✅ Found {len(master_signals)} active today's setup(s) across assets!")
+  df_display = pd.DataFrame(master_signals)
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active best signals in the last 1 hour. Check individual asset inspector below.")
+  st.info("ℹ️ No active today's signals found yet. Check individual asset inspector below.")
 
 # ---------------------------------------------------------
 # MANUAL ASSET INSPECTOR & CHART VIEWER
@@ -318,7 +319,7 @@ st.markdown("---")
 st.subheader("📊 Individual Asset Inspector & Chart")
 
 selected_symbol = st.selectbox(
-    "🔍 Select Asset to Load Best Dual-Entry Chart",
+    "🔍 Select Asset to Load Today-Only Chart",
     options=ASSET_LIST,
     index=0,
 )
@@ -327,7 +328,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df = fetch_multi_asset_ohlcv(selected_symbol, selected_tf, limit=300)
-  bot = TWTBestDualEntryEngine(df, selected_symbol, active_tz)
+  bot = TWTTodayOnlyEngine(df, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df is not None and not bot.df.empty:
@@ -337,15 +338,13 @@ if bot.df is not None and not bot.df.empty:
   with col1:
     st.metric(label=f"Current {selected_symbol} Price", value=f"{curr_p:.2f}")
   with col2:
-    st.metric(label="Selected Best Entries", value=len(bot.history))
+    st.metric(label="Today's Selected Entries", value=len(bot.history))
   with col3:
     st.metric(label="Timezone", value=selected_tz_name.split(")")[0] + ")")
 
   if bot.history:
-    st.markdown(f"### 📋 Best Dual-Entries Feed for {selected_symbol} (Max 1 Buy & 1 Sell)")
-    df_history = pd.DataFrame(bot.history).drop(
-        columns=["Is_Within_1hr"], errors="ignore"
-    )
+    st.markdown(f"### 📋 Today's Dual-Entries Feed for {selected_symbol} (Strictly Today)")
+    df_history = pd.DataFrame(bot.history)
     st.dataframe(df_history, width="stretch")
 
   # --- CLEAN CANDLESTICK CHART RENDERING ---
@@ -360,15 +359,15 @@ if bot.df is not None and not bot.df.empty:
     ax.bar(c["id"], body_height, bottom=lower_val, color=col, width=0.6, edgecolor=col)
     ax.vlines(c["id"], c["low"], c["high"], color=col, linewidth=1.2)
 
-  # Plot Demand and Supply Zones & Midlines
+  # Plot Today's Demand and Supply Zones & Midlines
   if bot.demand_box:
     d_low, d_high = bot.demand_box
-    ax.axhspan(d_low, d_high, color="#26a69a", alpha=0.25, label="Demand Zone (Buy Support)")
+    ax.axhspan(d_low, d_high, color="#26a69a", alpha=0.25, label="Today's Demand Zone")
     ax.axhline(bot.demand_mid, color="#00e676", linestyle=":", linewidth=1.5, label="Demand Midpoint")
 
   if bot.supply_box:
     s_low, s_high = bot.supply_box
-    ax.axhspan(s_low, s_high, color="#ef5350", alpha=0.25, label="Supply Zone (Sell Resistance)")
+    ax.axhspan(s_low, s_high, color="#ef5350", alpha=0.25, label="Today's Supply Zone")
     ax.axhline(bot.supply_mid, color="#ff5252", linestyle=":", linewidth=1.5, label="Supply Midpoint")
 
   lows = [c["low"] for c in bot.candles]
@@ -395,7 +394,7 @@ if bot.df is not None and not bot.df.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} {selected_tf} — Best Dual-Entry Precision Visualizer",
+      f"{selected_symbol} {selected_tf} — Today-Only Precision Visualizer",
       color="white",
       fontsize=14,
   )
