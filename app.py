@@ -1,6 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, time, timedelta, timezone
-from zoneinfo import ZoneInfo
 import ccxt
 import matplotlib.pyplot as plt
 import numpy as np
@@ -8,16 +7,11 @@ import pandas as pd
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
-# ---------------------------------------------------------
-# STREAMLIT PAGE CONFIGURATION
-# ---------------------------------------------------------
 st.set_page_config(
-    page_title="TWT Professional Multi-Asset ORB Boundary Bot",
-    page_icon="⚡",
-    layout="wide",
+    page_title="TWT BTC Multi-Candle Retracement Strategy by TUCKYAA", page_icon="⚡", layout="wide"
 )
 
-# Hide Streamlit Default Elements
+# Hide Streamlit Header, Footer, Menu & GitHub Icon via CSS
 hide_streamlit_style = """
     <style>
     #MainMenu {visibility: hidden;}
@@ -27,154 +21,106 @@ hide_streamlit_style = """
     """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
+# ---------------------------------------------------------
+# TIMEZONES & EXCLUSIVE BTC/USDT ASSET LIST
+# ---------------------------------------------------------
+TRADING_TIMEZONES = {
+    "(UTC+5:30) Kolkata / India (IST)": timezone(
+        timedelta(hours=5, minutes=30)
+    ),
+    "(UTC+1:00) Berlin / Paris / CET": timezone(timedelta(hours=1)),
+    "(UTC+0:00) London / UTC / GMT": timezone.utc,
+    "(UTC-5:00) New York / US East (EST)": timezone(timedelta(hours=-5)),
+    "(UTC+8:00) Singapore / Hong Kong (SGT)": timezone(timedelta(hours=8)),
+}
+
+ASSET_LIST = ["BTC/USDT"]
+
 # Safe Auto-refresh every 30 seconds
-count = st_autorefresh(interval=30000, key="twt_orb_refresh")
+count = st_autorefresh(interval=30000, key="twt_btc_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA — ORB Boundary Rejection Engine")
+st.title("⚡ TRADE WITH TUCKYAA (BTC PRO) — Retracement Zone Entry Engine")
 
-# ---------------------------------------------------------
-# SIDEBAR CONFIGURATION (Strategy Parameters & Controls)
-# ---------------------------------------------------------
-st.sidebar.markdown("### ⚙️ Multi-Asset ORB Configurations")
+col_tf, col_tz = st.columns([1, 2])
+with col_tf:
+  selected_tf = st.selectbox(
+      "⏱️ Timeframe", options=["5m", "15m", "30m", "1h"], index=0
+  )
+with col_tz:
+  selected_tz_name = st.selectbox(
+      "🌍 Trading Timezone", options=list(TRADING_TIMEZONES.keys()), index=0
+  )
+  active_tz = TRADING_TIMEZONES[selected_tz_name]
+
+tz_short = selected_tz_name.split(")")[0] + ")"
+
+# Sidebar Panel
+st.sidebar.markdown("### 🤖 TWT BTC Strategy Panel")
 st.sidebar.markdown("---")
-
-IANA_TIMEZONES = [
-    "Asia/Kolkata",
-    "UTC",
-    "America/New_York",
-    "Europe/London",
-    "Asia/Singapore",
-]
-selected_tz_name = st.sidebar.selectbox(
-    "🌍 Trading Timezone (IANA)", options=IANA_TIMEZONES, index=0
+server_time_target = datetime.now(active_tz)
+st.sidebar.text(
+    f"Server time          ———  {server_time_target.strftime('%H:%M')}"
 )
-active_tz = ZoneInfo(selected_tz_name)
-
-session_open_time = st.sidebar.time_input(
-    "⏰ Session Opening Time", value=time(9, 30)
-)
-
-selected_tf = st.sidebar.selectbox(
-    "⏱️ Entry Timeframe", options=["5m", "15m", "30m", "1h"], index=0
-)
-orb_duration_mins = st.sidebar.slider(
-    "⏳ Opening Range Duration (Minutes)", min_value=15, max_value=120, value=75, step=5
-)
-
+st.sidebar.text("Active Asset       ———  BTC/USDT Only")
 st.sidebar.markdown("---")
-st.sidebar.markdown("### 🛡️ Strategy Filters & Risk Management")
-use_ema_filter = st.sidebar.checkbox("Enable EMA 200 Trend Filter", value=True)
-boundary_tolerance_atr = st.sidebar.slider(
-    "🎯 Boundary Touch Tolerance (% of ATR)", min_value=0.1, max_value=1.5, value=0.4, step=0.1
-)
-use_atr_buffer = st.sidebar.checkbox("Enable ATR Buffer for Stop Loss", value=True)
-risk_reward_ratio = st.sidebar.slider(
-    "🎯 Risk / Reward Target Ratio", min_value=1.0, max_value=5.0, value=2.0, step=0.5
-)
-fee_slippage_pct = st.sidebar.slider(
-    "💸 Fee & Slippage Assumption (%)", min_value=0.0, max_value=0.5, value=0.05, step=0.01
-)
-
-ASSET_LIST = [
-    "BTC/USDT",
-    "ETH/USDT",
-    "XAUT/USDT",
-    "SOL/USDT",
-    "XRP/USDT",
-    "BNB/USDT",
-    "DOGE/USDT",
-    "MATIC/USDT",
-    "ADA/USDT",
-    "AVAX/USDT",
-    "LINK/USDT",
-    "LTC/USDT",
-    "DOT/USDT",
-    "NEAR/USDT",
-    "APT/USDT",
-    "ARB/USDT",
-    "OP/USDT",
-    "SUI/USDT",
-    "FIL/USDT",
-    "RENDER/USDT",
-]
+st.sidebar.markdown("#### Retracement Rules")
+st.sidebar.text("01:00 ➔ 11:00 : 3 Red Zone ➔ Green Touch ➔ Red ➔ 2-3 Green ➔ SELL")
+st.sidebar.text("13:00 ➔ 21:00 : 3 Green Zone ➔ Red Touch ➔ Green ➔ 2-3 Red ➔ BUY")
+st.sidebar.text("Risk Mgmt    : ATR Managed SL & Multi-TP")
 
 
-# ---------------------------------------------------------
-# DATA FETCHING MODULE WITH CCXT
-# ---------------------------------------------------------
+def get_decimals(price):
+  if price < 1:
+    return 4
+  elif price < 10:
+    return 3
+  else:
+    return 2
+
+
 @st.cache_data(ttl=30)
-def fetch_multi_asset_ohlcv(symbol, timeframe="5m", limit=500):
+def fetch_btc_data(symbol, tf):
   exchanges_to_try = [
       (ccxt.binance, symbol),
       (ccxt.bybit, symbol),
       (ccxt.kucoin, symbol),
   ]
 
-  tf_delta_map = {
-      "5m": timedelta(minutes=5),
-      "15m": timedelta(minutes=15),
-      "30m": timedelta(minutes=30),
-      "1h": timedelta(hours=1),
-  }
-  tf_delta = tf_delta_map.get(timeframe, timedelta(minutes=5))
-  now_utc = datetime.now(timezone.utc)
-
   for ex_class, sym in exchanges_to_try:
     try:
       exchange = ex_class({"enableRateLimit": True, "timeout": 15000})
       exchange.load_markets()
       if sym in exchange.markets:
-        ohlcv = exchange.fetch_ohlcv(sym, timeframe=timeframe, limit=limit)
-        if ohlcv:
+        ohlcv_tf = exchange.fetch_ohlcv(sym, timeframe=tf, limit=160)
+        if ohlcv_tf:
           df = pd.DataFrame(
-              ohlcv,
+              ohlcv_tf,
               columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
           )
-          df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+          df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
           df = df.set_index("timestamp")
-
-          if not df.empty and (df.index[-1] + tf_delta > now_utc):
-            df = df.iloc[:-1]
-
           return df
     except Exception:
       continue
   return None
 
 
-# ---------------------------------------------------------
-# TECHNICAL INDICATORS & BOUNDARY REJECTION ENGINE
-# ---------------------------------------------------------
-class ProfessionalORBRetestEngine:
+class TWT3CandleZoneEngine:
 
-  def __init__(self, df, symbol, orb_duration, user_tz, session_time, timeframe):
+  def __init__(self, df, symbol, user_tz):
     self.df = df
     self.symbol = symbol
-    self.orb_duration = orb_duration
     self.user_tz = user_tz
-    self.session_time = session_time
-    self.timeframe = timeframe
-    self.orb_high = 0.0
-    self.orb_low = 0.0
-    self.orb_mid = 0.0
-    self.orb_available = False
+    self.candles = []
     self.signals = []
-    self.history = []
-    
-    self.diag = {
-        "session_available": False,
-        "orb_complete": False,
-        "boundary_touch_found": False,
-        "ema_filter_passed": False,
-        "risk_validation_passed": False,
-        "final_signal_status": "Pending scan...",
-        "rejection_reason": "Initializing scan..."
-    }
+    self.zone_box = None
 
-  def calculate_indicators(self):
+  def calculate_and_scan(self):
     if self.df is None or self.df.empty:
       return
-    self.df["EMA200"] = self.df["Close"].ewm(span=200, adjust=False).mean()
+
+    IST = timezone(timedelta(hours=5, minutes=30))
+    current_utc_time = datetime.now(timezone.utc)
 
     self.df["TR"] = np.maximum(
         self.df["High"] - self.df["Low"],
@@ -185,376 +131,296 @@ class ProfessionalORBRetestEngine:
     )
     self.df["ATR"] = self.df["TR"].rolling(14).mean()
 
-  def identify_opening_range(self):
-    if self.df is None or self.df.empty:
-      self.diag["rejection_reason"] = "DataFrame is empty or unavailable."
-      return
+    for idx, row in enumerate(self.df.iterrows()):
+      dt_utc = row[0]
+      if dt_utc.tzinfo is None:
+        dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+      dt_ist = dt_utc.astimezone(IST)
+      dt_user_tz = dt_utc.astimezone(self.user_tz)
+      timestamp_str = dt_user_tz.strftime("%H:%M")
 
-    tf_mins_map = {"5m": 5, "15m": 15, "30m": 30, "1h": 60}
-    tf_mins = tf_mins_map.get(self.timeframe, 5)
+      r = row[1]
+      o, h, l, c, v = (
+          float(r["Open"]),
+          float(r["High"]),
+          float(r["Low"]),
+          float(r["Close"]),
+          float(r["Volume"]),
+      )
+      atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
 
-    expected_candles = int(self.orb_duration / tf_mins)
+      age_minutes = (current_utc_time - dt_utc).total_seconds() / 60.0
+      is_within_1hr = age_minutes <= 60.0
 
-    df_local = self.df.copy()
-    df_local["time_tz"] = df_local.index.tz_convert(self.user_tz)
-    df_local["date"] = df_local["time_tz"].dt.date
+      self.candles.append({
+          "id": idx + 1,
+          "time": timestamp_str,
+          "dt_ist": dt_ist,
+          "dt_user": dt_user_tz,
+          "color": "Green" if c >= o else "Red",
+          "open": o,
+          "high": h,
+          "low": l,
+          "close": c,
+          "volume": v,
+          "atr": atr,
+          "is_within_1hr": is_within_1hr,
+      })
 
-    if df_local.empty:
-      return
+    found_signal = None
 
-    latest_date = df_local["date"].iloc[-1]
-    session_start_local = datetime.combine(latest_date, self.session_time, tzinfo=self.user_tz)
-    session_end_local = session_start_local + timedelta(minutes=self.orb_duration)
+    for i in range(8, len(self.candles)):
+      c = self.candles[i]
+      t_ist = c["dt_ist"].time()
 
-    self.diag["session_available"] = True
+      is_morning_session = time(1, 0) <= t_ist <= time(11, 0)
+      is_evening_session = time(13, 0) <= t_ist <= time(21, 0)
 
-    mask = (df_local["time_tz"] >= session_start_local) & (df_local["time_tz"] < session_end_local)
-    orb_candles = df_local[mask]
-
-    if len(orb_candles) >= expected_candles:
-      self.orb_high = float(orb_candles["High"].max())
-      self.orb_low = float(orb_candles["Low"].min())
-      self.orb_mid = (self.orb_high + self.orb_low) / 2.0
-      self.orb_available = True
-      self.diag["orb_complete"] = True
-      self.diag["rejection_reason"] = "ORB successfully calculated from completed session candles."
-    else:
-      self.orb_available = False
-      self.diag["orb_complete"] = False
-      self.diag["rejection_reason"] = f"WAITING FOR SESSION: Found {len(orb_candles)}/{expected_candles} candles."
-
-  def scan_boundary_entries(self, use_ema, tolerance_atr, use_atr, rr_target, fee_slip):
-    if self.df is None or len(self.df) < 50:
-      return
-
-    self.calculate_indicators()
-    self.identify_opening_range()
-
-    if not self.orb_available:
-      return
-
-    df_local = self.df.copy()
-    df_local["time_tz"] = df_local.index.tz_convert(self.user_tz)
-    df_local["date"] = df_local["time_tz"].dt.date
-    latest_date = df_local["date"].iloc[-1]
-
-    session_start_local = datetime.combine(latest_date, self.session_time, tzinfo=self.user_tz)
-    session_end_local = session_start_local + timedelta(minutes=self.orb_duration)
-
-    valid_signals = []
-    current_utc_time = datetime.now(timezone.utc)
-
-    # Scan strictly after ORB period is complete
-    for i in range(len(df_local)):
-      c_time = df_local["time_tz"].iloc[i]
-      if c_time < session_end_local:
+      if not is_morning_session and not is_evening_session:
         continue
 
-      c = df_local.iloc[i]
-      open_p = float(c["Open"])
-      close = float(c["Close"])
-      high = float(c["High"])
-      low = float(c["Low"])
-      
-      ema200 = float(c["EMA200"])
-      atr = float(c["ATR"]) if not np.isnan(c["ATR"]) else (close * 0.002)
+      atr = c["atr"]
+      dec = get_decimals(c["close"])
 
-      is_recent = (current_utc_time - c.name).total_seconds() / 60.0 <= 60.0
-      tolerance = atr * tolerance_atr
+      # ==========================================================
+      # 1. MORNING SESSION (01:00 to 11:00) ➔ SELL SETUP
+      # ==========================================================
+      if is_morning_session:
+        for start in range(max(0, i - 25), i - 5):
+          c1 = self.candles[start]
+          c2 = self.candles[start + 1]
+          c3 = self.candles[start + 2]
 
-      # -------------------------------------------------
-      # BUYER ENTRY: STRICTLY AT ORB LOW (Support Bounce)
-      # -------------------------------------------------
-      is_at_orb_low = low <= (self.orb_low + tolerance) and low >= (self.orb_low - tolerance * 1.5)
-      if is_at_orb_low and close >= open_p:  # Green/Bullish reaction at ORB Low
-        self.diag["boundary_touch_found"] = True
+          # 3 consecutive Red candles form zone
+          if c1["color"] == "Red" and c2["color"] == "Red" and c3["color"] == "Red":
+            zone_high = max(c1["high"], c2["high"], c3["high"])
+            zone_low = min(c1["low"], c2["low"], c3["low"])
 
-        if use_ema:
-          if not np.isnan(ema200) and close < ema200:
-            continue
-        self.diag["ema_filter_passed"] = True
+            # Check sequence: Green candle touches zone -> Red candle -> 2 or 3 Green candles -> Entry Red candle
+            for k in range(start + 3, i - 3):
+              touch_c = self.candles[k]
+              if touch_c["color"] == "Green" and touch_c["high"] >= zone_low and touch_c["close"] <= zone_high:
+                # Next must be a Red candle
+                if k + 1 < len(self.candles) and self.candles[k + 1]["color"] == "Red":
+                  # Followed by 2 or 3 Green candles
+                  green_count = 0
+                  valid_sequence = False
+                  end_idx = k + 1
+                  for g in range(k + 2, min(k + 5, len(self.candles))):
+                    if self.candles[g]["color"] == "Green":
+                      green_count += 1
+                      end_idx = g
+                    else:
+                      break
 
-        sl = round(self.orb_low - (atr * 1.0), 2) if use_atr else round(self.orb_low - (atr * 0.2), 2)
-        entry_price = close * (1.0 + (fee_slip / 100.0))
+                  if green_count >= 2:
+                    # After 2-3 green candles, look at the next red candle for entry
+                    if end_idx + 1 < len(self.candles):
+                      entry_c = self.candles[end_idx + 1]
+                      if entry_c["color"] == "Red":
+                        sl = round(zone_high + (1.2 * atr), dec)
+                        tp1 = round(entry_c["close"] - (1.2 * atr), dec)
+                        tp2 = round(entry_c["close"] - (2.5 * atr), dec)
+                        tp3 = round(entry_c["close"] - (4.0 * atr), dec)
 
-        if sl >= entry_price:
-          continue
-        self.diag["risk_validation_passed"] = True
+                        self.zone_box = (zone_low, zone_high, start, start + 2)
+                        found_signal = {
+                            "Asset": self.symbol,
+                            "Time": entry_c["time"],
+                            "Candle #": entry_c["id"],
+                            "Type": "SELL 🔴",
+                            "Setup": "3-Red Zone + Retracement + Red Entry",
+                            "Action": "Sell / Short (S) [Retracement Entry] 🔴",
+                            "Entry Price": round(entry_c["close"], dec),
+                            "Stop Loss (SL)": sl,
+                            "TP 1": tp1,
+                            "TP 2": tp2,
+                            "TP 3": tp3,
+                            "Is_Within_1hr": entry_c["is_within_1hr"],
+                        }
+                        break
+            if found_signal:
+              break
 
-        risk = entry_price - sl
-        target = round(entry_price + (risk * rr_target) * (1.0 - (fee_slip / 100.0)), 2)
+      # ==========================================================
+      # 2. EVENING SESSION (13:00 to 21:00) ➔ BUY SETUP
+      # ==========================================================
+      if is_evening_session:
+        for start in range(max(0, i - 25), i - 5):
+          c1 = self.candles[start]
+          c2 = self.candles[start + 1]
+          c3 = self.candles[start + 2]
 
-        self.diag["final_signal_status"] = "Accepted"
-        self.diag["rejection_reason"] = "Buyer entry from ORB Low accepted."
+          # 3 consecutive Green candles form zone
+          if c1["color"] == "Green" and c2["color"] == "Green" and c3["color"] == "Green":
+            zone_high = max(c1["high"], c2["high"], c3["high"])
+            zone_low = min(c1["low"], c2["low"], c3["low"])
 
-        valid_signals.append({
-            "Asset": self.symbol,
-            "Type": "BUY 🟢",
-            "Setup": "ORB Low Support Bounce",
-            "Entry Price": round(entry_price, 2),
-            "Stop Loss": sl,
-            "Target": target,
-            "R:R Ratio": f"1:{rr_target}",
-            "Time": c["time_tz"].strftime("%H:%M"),
-            "Reason": "Strict buyer entry from ORB Low boundary.",
-            "Is_Recent": is_recent,
-            "Direction": "BUY"
-        })
+            # Check sequence: Red candle touches zone -> Green candle -> 2 or 3 Red candles -> Entry Green candle
+            for k in range(start + 3, i - 3):
+              touch_c = self.candles[k]
+              if touch_c["color"] == "Red" and touch_c["low"] <= zone_high and touch_c["close"] >= zone_low:
+                if k + 1 < len(self.candles) and self.candles[k + 1]["color"] == "Green":
+                  red_count = 0
+                  end_idx = k + 1
+                  for r_idx in range(k + 2, min(k + 5, len(self.candles))):
+                    if self.candles[r_idx]["color"] == "Red":
+                      red_count += 1
+                      end_idx = r_idx
+                    else:
+                      break
 
-      # -------------------------------------------------
-      # SELLER ENTRY: STRICTLY AT ORB HIGH (Resistance Rejection)
-      # -------------------------------------------------
-      is_at_orb_high = high >= (self.orb_high - tolerance) and high <= (self.orb_high + tolerance * 1.5)
-      if is_at_orb_high and close <= open_p:  # Red/Bearish reaction at ORB High
-        self.diag["boundary_touch_found"] = True
+                  if red_count >= 2:
+                    if end_idx + 1 < len(self.candles):
+                      entry_c = self.candles[end_idx + 1]
+                      if entry_c["color"] == "Green":
+                        sl = round(zone_low - (1.2 * atr), dec)
+                        tp1 = round(entry_c["close"] + (1.2 * atr), dec)
+                        tp2 = round(entry_c["close"] + (2.5 * atr), dec)
+                        tp3 = round(entry_c["close"] + (4.0 * atr), dec)
 
-        if use_ema:
-          if not np.isnan(ema200) and close > ema200:
-            continue
-        self.diag["ema_filter_passed"] = True
+                        self.zone_box = (zone_low, zone_high, start, start + 2)
+                        found_signal = {
+                            "Asset": self.symbol,
+                            "Time": entry_c["time"],
+                            "Candle #": entry_c["id"],
+                            "Type": "BUY 🟢",
+                            "Setup": "3-Green Zone + Retracement + Green Entry",
+                            "Action": "Buy / Long (B) [Retracement Entry] 🟢",
+                            "Entry Price": round(entry_c["close"], dec),
+                            "Stop Loss (SL)": sl,
+                            "TP 1": tp1,
+                            "TP 2": tp2,
+                            "TP 3": tp3,
+                            "Is_Within_1hr": entry_c["is_within_1hr"],
+                        }
+                        break
+            if found_signal:
+              break
 
-        sl = round(self.orb_high + (atr * 1.0), 2) if use_atr else round(self.orb_high + (atr * 0.2), 2)
-        entry_price = close * (1.0 - (fee_slip / 100.0))
+      if found_signal:
+        break
 
-        if sl <= entry_price:
-          continue
-        self.diag["risk_validation_passed"] = True
-
-        risk = sl - entry_price
-        target = round(entry_price - (risk * rr_target) * (1.0 - (fee_slip / 100.0)), 2)
-
-        self.diag["final_signal_status"] = "Accepted"
-        self.diag["rejection_reason"] = "Seller entry from ORB High accepted."
-
-        valid_signals.append({
-            "Asset": self.symbol,
-            "Type": "SELL 🔴",
-            "Setup": "ORB High Resistance Rejection",
-            "Entry Price": round(entry_price, 2),
-            "Stop Loss": sl,
-            "Target": target,
-            "R:R Ratio": f"1:{rr_target}",
-            "Time": c["time_tz"].strftime("%H:%M"),
-            "Reason": "Strict seller entry from ORB High boundary.",
-            "Is_Recent": is_recent,
-            "Direction": "SELL"
-        })
-
-    # ENFORCE RULE: Only ONE entry per direction per cycle/session (pick the newest valid signal)
-    if valid_signals:
-      unique_signals = []
-      seen_directions = set()
-      for sig in reversed(valid_signals):
-        if sig["Direction"] not in seen_directions:
-          seen_directions.add(sig["Direction"])
-          unique_signals.append(sig)
-
-      self.signals = unique_signals
-      self.history = valid_signals
+    if found_signal:
+      self.signals = [found_signal]
     else:
       self.signals = []
 
 
 # ---------------------------------------------------------
-# MASTER SCANNER (20+ Assets Dashboard)
+# EXECUTION & DASHBOARD FOR BTC/USDT ONLY
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("🔥 TWT Master Live Signal Dashboard (20+ Assets)")
+st.subheader("🔥 BTC/USDT Live Strategy Dashboard")
 
-master_signals = []
-asset_engines = {}
+df_btc = fetch_btc_data("BTC/USDT", selected_tf)
+bot = TWT3CandleZoneEngine(df_btc, "BTC/USDT", active_tz)
+bot.calculate_and_scan()
 
-
-def scan_single_asset(sym):
-  df = fetch_multi_asset_ohlcv(sym, selected_tf, limit=500)
-  if df is not None and not df.empty:
-    engine = ProfessionalORBRetestEngine(df, sym, orb_duration_mins, active_tz, session_open_time, selected_tf)
-    engine.scan_boundary_entries(
-        use_ema_filter, boundary_tolerance_atr, use_atr_buffer, risk_reward_ratio, fee_slippage_pct
-    )
-    recent_sigs = [s for s in engine.signals if s.get("Is_Recent", False)]
-    latest = recent_sigs[0] if recent_sigs else None
-    return sym, engine, latest
-  return sym, None, None
-
-
-with st.spinner("⚡ Scanning all 20+ assets with ORB Boundary Engine..."):
-  with ThreadPoolExecutor(max_workers=5) as executor:
-    futures = {
-        executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
-    }
-    for future in as_completed(futures):
-      sym, engine, latest = future.result()
-      if engine:
-        asset_engines[sym] = engine
-      if latest:
-        master_signals.append(latest)
+master_signals = [s for s in bot.signals if s.get("Is_Within_1hr", False)]
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} active boundary setup(s) across 20+ assets!")
+  st.success("✅ Active Retracement Zone BTC Setup Found!")
   df_display = pd.DataFrame(master_signals).drop(
-      columns=["Is_Recent", "Direction"], errors="ignore"
+      columns=["Is_Within_1hr"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
-  st.info(
-      "ℹ️ No active boundary signals in the last 1 hour across 20+ assets. Waiting for price to test ORB Low or ORB High..."
-  )
+  st.info("ℹ️ No active signal in the last 1 hour. Waiting for exact retracement sequence on BTC...")
 
-# ---------------------------------------------------------
-# MANUAL ASSET SELECTOR & CHART VIEWER
-# ---------------------------------------------------------
+# --- MANUAL INSPECTOR & CHART VIEWER ---
 st.markdown("---")
-st.subheader("📊 Manual Asset Inspector & Chart")
-
-selected_symbol = st.selectbox(
-    "🔍 Select Asset to Load Clean Chart & Protected Entry",
-    options=ASSET_LIST,
-    index=0,
-)
-
-if selected_symbol in asset_engines:
-  bot = asset_engines[selected_symbol]
-else:
-  df = fetch_multi_asset_ohlcv(selected_symbol, selected_tf, limit=500)
-  bot = ProfessionalORBRetestEngine(df, selected_symbol, orb_duration_mins, active_tz, session_open_time, selected_tf)
-  bot.scan_boundary_entries(
-      use_ema_filter, boundary_tolerance_atr, use_atr_buffer, risk_reward_ratio, fee_slippage_pct
-  )
-
-col_d1, col_d2, col_d3, col_d4 = st.columns(4)
-with col_d1:
-  if bot.orb_available:
-    st.metric(label="🟢 Opening Range High (ORB)", value=f"${bot.orb_high:,.2f}")
-  else:
-    st.metric(label="🟢 Opening Range High (ORB)", value="WAITING")
-with col_d2:
-  if bot.orb_available:
-    st.metric(label="🔴 Opening Range Low (ORB)", value=f"${bot.orb_low:,.2f}")
-  else:
-    st.metric(label="🔴 Opening Range Low (ORB)", value="WAITING")
-with col_d3:
-  if bot.orb_available:
-    st.metric(label="⚪ Opening Range Mid", value=f"${bot.orb_mid:,.2f}")
-  else:
-    st.metric(label="⚪ Opening Range Mid", value="WAITING")
-with col_d4:
-  current_price = (
-      float(bot.df["Close"].iloc[-1])
-      if bot.df is not None and not bot.df.empty
-      else 0.0
-  )
-  st.metric(label=f"⚡ Current {selected_symbol} Price", value=f"${current_price:,.2f}")
-
-st.markdown("---")
-
-recent_signals = [s for s in bot.signals if s.get("Is_Recent", False)]
-
-if not bot.orb_available:
-  st.warning(f"⚠️ **WAITING FOR SESSION:** Opening Range for {selected_symbol} is unavailable.")
-elif recent_signals:
-  sig = recent_signals[0]
-  st.success(f"✅ **ACTIVE BOUNDARY SETUP FOR {selected_symbol}: {sig['Type']}**")
-
-  col_s1, col_s2, col_s3 = st.columns(3)
-  with col_s1:
-    st.info(f"**Setup Type:** {sig['Setup']}\n\n**Entry Time:** {sig['Time']}")
-  with col_s2:
-    st.warning(
-        f"**Suggested Entry:** ${sig['Entry Price']}\n\n**Stop Loss:**"
-        f" ${sig['Stop Loss']}"
-    )
-  with col_s3:
-    st.success(
-        f"**Target:** ${sig['Target']}\n\n**Risk/Reward:** {sig['R:R Ratio']}"
-    )
-else:
-  st.info(
-      f"ℹ️ **Status for {selected_symbol}:** Waiting for price to reach ORB Low (for Buyer Entry) or ORB High (for Seller Entry)."
-  )
-
-if bot.history:
-  st.markdown("---")
-  st.subheader(f"📋 Confirmed Entry History Feed for {selected_symbol}")
-  df_history = pd.DataFrame(bot.history).drop(
-      columns=["Is_Recent", "Direction"], errors="ignore"
-  )
-  st.dataframe(df_history, width="stretch")
-
-# ---------------------------------------------------------
-# DIAGNOSTIC DASHBOARD
-# ---------------------------------------------------------
-with st.expander(f"🛠️ Diagnostic & Execution Status Dashboard ({selected_symbol})", expanded=False):
-  diag_col1, diag_col2 = st.columns(2)
-  with diag_col1:
-    st.text(f"Session Available: {'✅' if bot.diag['session_available'] else '❌'}")
-    st.text(f"ORB Complete: {'✅' if bot.diag['orb_complete'] else '❌'}")
-    st.text(f"Boundary Touch Found: {'✅' if bot.diag['boundary_touch_found'] else '❌'}")
-  with diag_col2:
-    st.text(f"EMA Filter Passed: {'✅' if bot.diag['ema_filter_passed'] else '❌'}")
-    st.text(f"Risk Validation Passed: {'✅' if bot.diag['risk_validation_passed'] else '❌'}")
-    st.text(f"Final Status: {bot.diag['final_signal_status']}")
-  st.markdown(f"**System Note:** `{bot.diag['rejection_reason']}`")
-
-# ---------------------------------------------------------
-# MATPLOTLIB PROFESSIONAL CHART RENDERER
-# ---------------------------------------------------------
-st.markdown("---")
-st.subheader(f"📊 Professional ORB Chart Visualizer ({selected_symbol})")
+st.subheader("📊 BTC/USDT Chart & Zone Inspector")
 
 if bot.df is not None and not bot.df.empty:
-  fig, ax = plt.subplots(figsize=(14, 7), dpi=100)
+  curr_p = bot.candles[-1]["close"] if bot.candles else 0.0
 
-  for idx, row in enumerate(bot.df.iterrows()):
-    r = row[1]
-    col = "#26a69a" if r["Close"] >= r["Open"] else "#ef5350"
-    lower_v = min(r["Open"], r["Close"])
-    body_h = abs(r["Close"] - r["Open"])
-    if body_h == 0:
-      body_h = r["Close"] * 0.0005
+  col1, col2, col3 = st.columns(3)
+  with col1:
+    st.metric(label="Current BTC Price", value=f"{curr_p:.2f}")
+  with col2:
+    st.metric(label="Session Window", value="Active Trading Session")
+  with col3:
+    st.metric(label="Timezone", value=tz_short, delta="Retracement Engine Active")
 
-    ax.bar(
-        idx, body_h, bottom=lower_v, color=col, width=0.6, edgecolor=col
-    )
-    ax.vlines(idx, r["Low"], r["High"], color=col, linewidth=1.2)
+  if bot.signals:
+    latest_sig = bot.signals[0]
+    is_buy = "BUY" in latest_sig["Type"]
+    entry_p = latest_sig["Entry Price"]
+    signal_time = latest_sig["Time"]
 
-  if "EMA200" in bot.df.columns:
-    ax.plot(
-        range(len(bot.df)),
-        bot.df["EMA200"],
-        color="#29b6f6",
-        linewidth=1.5,
-        label="EMA 200 Trend",
+    st.warning("⚠️ **Don't use after 40 minutes!**")
+
+    if is_buy:
+      st.success(
+          f"🟢 **TWT BTC BUY SETUP: {latest_sig['Action']}**\n\n"
+          f"🕒 **Time ({tz_short}):** `{signal_time}` (Candle"
+          f" #{latest_sig['Candle #']})\n"
+          f"- **Entry Price:** `{entry_p}`\n"
+          f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
+          f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
+          f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`"
+      )
+    else:
+      st.error(
+          f"🔴 **TWT BTC SELL SETUP: {latest_sig['Action']}**\n\n"
+          f"🕒 **Time ({tz_short}):** `{signal_time}` (Candle"
+          f" #{latest_sig['Candle #']})\n"
+          f"- **Entry Price:** `{entry_p}`\n"
+          f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
+          f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
+          f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`"
+      )
+  else:
+    st.warning(
+        "🟡 **STATUS: SCANNING BTC**\n\n"
+        "📌 *Instructions:* Waiting for 3 candles zone -> zone touch -> retracement sequence -> entry candle."
     )
 
-  if bot.orb_available:
-    ax.axhline(
-        bot.orb_high,
-        color="#00e676",
-        linestyle="--",
-        linewidth=2,
-        label=f"ORB High ({bot.orb_high:,.2f})",
-    )
-    ax.axhline(
-        bot.orb_low,
-        color="#ff5252",
-        linestyle="--",
-        linewidth=2,
-        label=f"ORB Low ({bot.orb_low:,.2f})",
-    )
-    ax.axhline(
-        bot.orb_mid,
-        color="#ab47bc",
-        linestyle=":",
-        linewidth=1.5,
-        label="ORB Midpoint",
+  # --- CLEAN CANDLESTICK CHART RENDERING ---
+  fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
+  for c in bot.candles:
+    col = "#26a69a" if c["close"] >= c["open"] else "#ef5350"
+    lower_val = min(c["open"], c["close"])
+    body_height = abs(c["close"] - c["open"])
+    if body_height == 0:
+      body_height = curr_p * 0.0005
+
+    ax.bar(c["id"], body_height, bottom=lower_val, color=col, width=0.6, edgecolor=col)
+    ax.vlines(c["id"], c["low"], c["high"], color=col, linewidth=1.2)
+
+  # Plot Zone Box if detected
+  if bot.zone_box:
+    z_low, z_high, start_idx, end_idx = bot.zone_box
+    ax.axhspan(z_low, z_high, xmin=start_idx/len(bot.candles), xmax=end_idx/len(bot.candles), color="#ab47bc", alpha=0.3, label="3-Candle Zone")
+
+  lows = [c["low"] for c in bot.candles]
+  highs = [c["high"] for c in bot.candles]
+  if lows and highs:
+    margin = (max(highs) - min(lows)) * 0.09
+    if margin == 0:
+      margin = curr_p * 0.005
+    ax.set_ylim(min(lows) - margin, max(highs) + margin)
+
+  for sig in bot.signals:
+    is_b = "BUY" in sig["Type"]
+    bg_col = "#00e676" if is_b else "#ff5252"
+    txt = " B " if is_b else " S "
+    ax.text(
+        sig["Candle #"],
+        sig["Entry Price"],
+        txt,
+        color="white",
+        weight="bold",
+        bbox=dict(boxstyle="round,pad=0.2", facecolor=bg_col, alpha=0.9),
+        ha="center",
+        va="center",
     )
 
   ax.set_title(
-      f"{selected_symbol} {selected_tf} — Boundary Rejection Engine ({selected_tz_name})",
+      f"BTC/USDT {selected_tf} — TWT Retracement Engine ({tz_short})",
       color="white",
       fontsize=14,
-      weight="bold",
   )
   ax.set_facecolor("#131722")
   fig.patch.set_facecolor("#1e222d")
@@ -564,8 +430,7 @@ if bot.df is not None and not bot.df.empty:
   for spine in ax.spines.values():
     spine.set_color("#363a45")
   ax.grid(color="#2a2e39", linestyle="--", linewidth=0.5)
-  ax.legend(loc="upper left", facecolor="#1e222d", edgecolor="none", labelcolor="white")
 
   st.pyplot(fig)
 else:
-  st.error("Failed to load market chart data. Please check internet connection.")
+  st.error("BTC market data load failed. Please check internet connection.")
