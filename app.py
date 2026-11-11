@@ -55,7 +55,7 @@ selected_tf = st.sidebar.selectbox(
     "⏱️ Entry Timeframe", options=["5m", "15m", "30m", "1h"], index=0
 )
 orb_duration_mins = st.sidebar.slider(
-    "⏳ Opening Range Duration (Minutes)", min=15, max=120, value=75, step=5
+    "⏳ Opening Range Duration (Minutes)", min_value=15, max_value=120, value=75, step=5
 )
 
 st.sidebar.markdown("---")
