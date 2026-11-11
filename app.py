@@ -12,7 +12,7 @@ from streamlit_autorefresh import st_autorefresh
 # STREAMLIT PAGE CONFIGURATION
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="TWT Multi-Asset Today-Only Precision Bot",
+    page_title="TWT Multi-Asset Recent vs History Bot",
     page_icon="⚡",
     layout="wide",
 )
@@ -30,7 +30,7 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 # Safe Auto-refresh every 30 seconds
 count = st_autorefresh(interval=30000, key="twt_multi_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA — Today-Only Precision Engine")
+st.title("⚡ TRADE WITH TUCKYAA — Recent Dashboard & History Engine")
 
 # ---------------------------------------------------------
 # SIDEBAR CONFIGURATION
@@ -55,11 +55,11 @@ selected_tf = st.sidebar.selectbox(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Today-Only Rules")
-st.sidebar.text("Zones & Entries calculated STRICTLY for Today")
-st.sidebar.text("Max 1 BUY & 1 SELL per Current Trading Day")
-st.sidebar.text("Demand Midpoint ➔ Green ➔ Today's BUY")
-st.sidebar.text("Supply Midpoint ➔ Red   ➔ Today's SELL")
+st.sidebar.markdown("#### Display Rules")
+st.sidebar.text("Master Dashboard : Recent Live Trades (Last 1 hr)")
+st.sidebar.text("Asset Inspector  : Complete History & Chart")
+st.sidebar.text("Demand Midpoint  ➔ Green ➔ BUY")
+st.sidebar.text("Supply Midpoint  ➔ Red   ➔ SELL")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -125,16 +125,16 @@ def fetch_multi_asset_ohlcv(symbol, timeframe="5m", limit=300):
 
 
 # ---------------------------------------------------------
-# TODAY-ONLY PRECISION ENGINE
+# ENGINE WITH RECENT VS HISTORY SEPARATION
 # ---------------------------------------------------------
-class TWTTodayOnlyEngine:
+class TWTRecentHistoryEngine:
 
   def __init__(self, df, symbol, user_tz):
     self.df = df
     self.symbol = symbol
     self.user_tz = user_tz
     self.candles = []
-    self.signals = []
+    self.recent_signals = []
     self.history = []
     self.demand_box = None
     self.supply_box = None
@@ -144,6 +144,8 @@ class TWTTodayOnlyEngine:
   def calculate_and_scan(self):
     if self.df is None or self.df.empty:
       return
+
+    current_utc_time = datetime.now(timezone.utc)
 
     self.df["TR"] = np.maximum(
         self.df["High"] - self.df["Low"],
@@ -156,6 +158,8 @@ class TWTTodayOnlyEngine:
 
     for idx, row in enumerate(self.df.iterrows()):
       dt_utc = row[0]
+      if dt_utc.tzinfo is None:
+        dt_utc = dt_utc.replace(tzinfo=timezone.utc)
       dt_user_tz = dt_utc.astimezone(self.user_tz)
       timestamp_str = dt_user_tz.strftime("%H:%M")
 
@@ -169,6 +173,9 @@ class TWTTodayOnlyEngine:
       )
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
 
+      age_minutes = (current_utc_time - dt_utc).total_seconds() / 60.0
+      is_within_1hr = age_minutes <= 60.0
+
       self.candles.append({
           "id": idx + 1,
           "time": timestamp_str,
@@ -181,6 +188,7 @@ class TWTTodayOnlyEngine:
           "close": c,
           "volume": v,
           "atr": atr,
+          "is_within_1hr": is_within_1hr,
       })
 
     if not self.candles:
@@ -188,7 +196,6 @@ class TWTTodayOnlyEngine:
 
     latest_date = self.candles[-1]["date"]
     today_candles = [c for c in self.candles if c["date"] == latest_date]
-
     if not today_candles:
       today_candles = self.candles
 
@@ -214,107 +221,105 @@ class TWTTodayOnlyEngine:
 
     best_buy = None
     best_sell = None
+    all_detected = []
 
     for c in today_candles:
       atr = c["atr"]
       dec = get_decimals(c["close"])
 
-      if best_buy is None:
-        if c["low"] <= self.demand_mid and c["color"] == "Green":
-          sl = round(demand_zone_low - (1.0 * atr), dec)
-          tp1 = round(c["close"] + (1.2 * atr), dec)
-          tp2 = round(c["close"] + (2.5 * atr), dec)
-          tp3 = round(c["close"] + (4.0 * atr), dec)
+      if best_buy is None and c["low"] <= self.demand_mid and c["color"] == "Green":
+        sl = round(demand_zone_low - (1.0 * atr), dec)
+        tp1 = round(c["close"] + (1.2 * atr), dec)
+        tp2 = round(c["close"] + (2.5 * atr), dec)
+        tp3 = round(c["close"] + (4.0 * atr), dec)
 
-          best_buy = {
-              "Asset": self.symbol,
-              "Date": str(c["date"]),
-              "Time": c["time"],
-              "Candle #": c["id"],
-              "Type": "BUY 🟢",
-              "Setup": "Today's Demand Midpoint Bounce",
-              "Entry Price": round(c["close"], dec),
-              "Stop Loss (SL)": sl,
-              "TP 1": tp1,
-              "TP 2": tp2,
-              "TP 3": tp3,
-          }
+        best_buy = {
+            "Asset": self.symbol,
+            "Date": str(c["date"]),
+            "Time": c["time"],
+            "Candle #": c["id"],
+            "Type": "BUY 🟢",
+            "Setup": "Demand Midpoint Bounce",
+            "Entry Price": round(c["close"], dec),
+            "Stop Loss (SL)": sl,
+            "TP 1": tp1,
+            "TP 2": tp2,
+            "TP 3": tp3,
+            "Is_Within_1hr": c["is_within_1hr"],
+        }
+        all_detected.append(best_buy)
 
-      if best_sell is None:
-        if c["high"] >= self.supply_mid and c["color"] == "Red":
-          sl = round(supply_zone_high + (1.0 * atr), dec)
-          tp1 = round(c["close"] - (1.2 * atr), dec)
-          tp2 = round(c["close"] - (2.5 * atr), dec)
-          tp3 = round(c["close"] - (4.0 * atr), dec)
+      if best_sell is None and c["high"] >= self.supply_mid and c["color"] == "Red":
+        sl = round(supply_zone_high + (1.0 * atr), dec)
+        tp1 = round(c["close"] - (1.2 * atr), dec)
+        tp2 = round(c["close"] - (2.5 * atr), dec)
+        tp3 = round(c["close"] - (4.0 * atr), dec)
 
-          best_sell = {
-              "Asset": self.symbol,
-              "Date": str(c["date"]),
-              "Time": c["time"],
-              "Candle #": c["id"],
-              "Type": "SELL 🔴",
-              "Setup": "Today's Supply Midpoint Rejection",
-              "Entry Price": round(c["close"], dec),
-              "Stop Loss (SL)": sl,
-              "TP 1": tp1,
-              "TP 2": tp2,
-              "TP 3": tp3,
-          }
+        best_sell = {
+            "Asset": self.symbol,
+            "Date": str(c["date"]),
+            "Time": c["time"],
+            "Candle #": c["id"],
+            "Type": "SELL 🔴",
+            "Setup": "Supply Midpoint Rejection",
+            "Entry Price": round(c["close"], dec),
+            "Stop Loss (SL)": sl,
+            "TP 1": tp1,
+            "TP 2": tp2,
+            "TP 3": tp3,
+            "Is_Within_1hr": c["is_within_1hr"],
+        }
+        all_detected.append(best_sell)
 
-    collected = []
-    if best_buy:
-      collected.append(best_buy)
-    if best_sell:
-      collected.append(best_sell)
-
-    self.history = collected
-    self.signals = collected
+    self.history = all_detected
+    # Master dashboard shows ONLY recent signals formed within the last 1 hour
+    self.recent_signals = [s for s in all_detected if s.get("Is_Within_1hr", False)]
 
 
 # ---------------------------------------------------------
 # MASTER MULTI-ASSET SCANNER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("🔥 TWT Master Today-Only Dashboard (20+ Assets)")
+st.subheader("🔥 TWT Master Recent Live Dashboard (20+ Assets)")
 
-master_signals = []
+master_recent = []
 asset_engines = {}
 
 
 def scan_asset(sym):
   df = fetch_multi_asset_ohlcv(sym, selected_tf, limit=300)
   if df is not None and not df.empty:
-    engine = TWTTodayOnlyEngine(df, sym, active_tz)
+    engine = TWTRecentHistoryEngine(df, sym, active_tz)
     engine.calculate_and_scan()
-    return sym, engine, engine.signals
+    return sym, engine, engine.recent_signals
   return sym, None, []
 
 
-with st.spinner("⚡ Parallel scanning 20+ assets for Today's Zones & Entries..."):
+with st.spinner("⚡ Parallel scanning 20+ assets for recent live trades..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
-      sym, engine, sigs = future.result()
+      sym, engine, recent_sigs = future.result()
       if engine:
         asset_engines[sym] = engine
-      if sigs:
-        master_signals.extend(sigs)
+      if recent_sigs:
+        master_recent.extend(recent_sigs)
 
-if master_signals:
-  st.success(f"✅ Found {len(master_signals)} active today's setup(s) across assets!")
-  df_display = pd.DataFrame(master_signals)
+if master_recent:
+  st.success(f"✅ Found {len(master_recent)} recent active trade(s) in the last 1 hour!")
+  df_display = pd.DataFrame(master_recent).drop(columns=["Is_Within_1hr"], errors="ignore")
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active today's signals found yet. Check individual asset inspector below.")
+  st.info("ℹ️ No recent trades in the last 1 hour across assets. Check individual asset history below.")
 
 # ---------------------------------------------------------
 # MANUAL ASSET INSPECTOR & CHART VIEWER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("📊 Individual Asset Inspector & Chart")
+st.subheader("📊 Individual Asset Inspector & History")
 
 selected_symbol = st.selectbox(
-    "🔍 Select Asset to Load Today-Only Chart",
+    "🔍 Select Asset to Load Chart & Complete History",
     options=ASSET_LIST,
     index=0,
 )
@@ -323,7 +328,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df = fetch_multi_asset_ohlcv(selected_symbol, selected_tf, limit=300)
-  bot = TWTTodayOnlyEngine(df, selected_symbol, active_tz)
+  bot = TWTRecentHistoryEngine(df, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df is not None and not bot.df.empty:
@@ -333,14 +338,16 @@ if bot.df is not None and not bot.df.empty:
   with col1:
     st.metric(label=f"Current {selected_symbol} Price", value=f"{curr_p:.2f}")
   with col2:
-    st.metric(label="Today's Selected Entries", value=len(bot.history))
+    st.metric(label="Total Locked Entries", value=len(bot.history))
   with col3:
     st.metric(label="Timezone", value=selected_tz_name.split(")")[0] + ")")
 
   if bot.history:
-    st.markdown(f"### 📋 Today's Dual-Entries Feed for {selected_symbol} (Strictly Today)")
-    df_history = pd.DataFrame(bot.history)
+    st.markdown(f"### 📋 Complete History Feed for {selected_symbol}")
+    df_history = pd.DataFrame(bot.history).drop(columns=["Is_Within_1hr"], errors="ignore")
     st.dataframe(df_history, width="stretch")
+  else:
+    st.info("ℹ️ No historical entries for today on this asset yet.")
 
   # --- CLEAN CANDLESTICK CHART RENDERING ---
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
@@ -356,12 +363,12 @@ if bot.df is not None and not bot.df.empty:
 
   if bot.demand_box:
     d_low, d_high = bot.demand_box
-    ax.axhspan(d_low, d_high, color="#26a69a", alpha=0.25, label="Today's Demand Zone")
+    ax.axhspan(d_low, d_high, color="#26a69a", alpha=0.25, label="Demand Zone")
     ax.axhline(bot.demand_mid, color="#00e676", linestyle=":", linewidth=1.5, label="Demand Midpoint")
 
   if bot.supply_box:
     s_low, s_high = bot.supply_box
-    ax.axhspan(s_low, s_high, color="#ef5350", alpha=0.25, label="Today's Supply Zone")
+    ax.axhspan(s_low, s_high, color="#ef5350", alpha=0.25, label="Supply Zone")
     ax.axhline(bot.supply_mid, color="#ff5252", linestyle=":", linewidth=1.5, label="Supply Midpoint")
 
   lows = [c["low"] for c in bot.candles]
@@ -388,7 +395,7 @@ if bot.df is not None and not bot.df.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} {selected_tf} — Today-Only Precision Visualizer",
+      f"{selected_symbol} {selected_tf} — Recent vs History Visualizer",
       color="white",
       fontsize=14,
   )
