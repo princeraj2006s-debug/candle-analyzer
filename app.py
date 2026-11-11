@@ -12,7 +12,7 @@ from streamlit_autorefresh import st_autorefresh
 # STREAMLIT PAGE CONFIGURATION
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="TWT Multi-Asset Daily Cycle Precision Bot",
+    page_title="TWT Multi-Asset Best Dual-Entry Precision Bot",
     page_icon="⚡",
     layout="wide",
 )
@@ -30,7 +30,7 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 # Safe Auto-refresh every 30 seconds
 count = st_autorefresh(interval=30000, key="twt_multi_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA — Multi-Asset Daily Cycle Precision Engine")
+st.title("⚡ TRADE WITH TUCKYAA — Best Dual-Entry Precision Engine")
 
 # ---------------------------------------------------------
 # SIDEBAR CONFIGURATION
@@ -55,11 +55,11 @@ selected_tf = st.sidebar.selectbox(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Daily Cycle Rules")
-st.sidebar.text("Max 1 BUY & 1 SELL per Calendar Day")
-st.sidebar.text("Resets automatically after 12:00 AM midnight")
-st.sidebar.text("Demand Midpoint ➔ Green ➔ BUY")
-st.sidebar.text("Supply Midpoint ➔ Red   ➔ SELL")
+st.sidebar.markdown("#### Strict Best Dual-Entry Rules")
+st.sidebar.text("Strictly Max 1 Best BUY & 1 Best SELL per Asset")
+st.sidebar.text("No duplicate spam entries for similar recent patterns")
+st.sidebar.text("Demand Midpoint ➔ Green ➔ Best BUY")
+st.sidebar.text("Supply Midpoint ➔ Red   ➔ Best SELL")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -125,9 +125,9 @@ def fetch_multi_asset_ohlcv(symbol, timeframe="5m", limit=300):
 
 
 # ---------------------------------------------------------
-# DAILY CYCLE MID-ZONE PRECISION ENGINE
+# BEST DUAL-ENTRY PRECISION ENGINE
 # ---------------------------------------------------------
-class TWTDailyCycleEngine:
+class TWTBestDualEntryEngine:
 
   def __init__(self, df, symbol, user_tz):
     self.df = df
@@ -144,6 +144,8 @@ class TWTDailyCycleEngine:
   def calculate_and_scan(self):
     if self.df is None or self.df.empty:
       return
+
+    current_utc_time = datetime.now(timezone.utc)
 
     self.df["TR"] = np.maximum(
         self.df["High"] - self.df["Low"],
@@ -169,11 +171,13 @@ class TWTDailyCycleEngine:
       )
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
 
+      age_minutes = (current_utc_time - dt_utc).total_seconds() / 60.0
+      is_within_1hr = age_minutes <= 60.0
+
       self.candles.append({
           "id": idx + 1,
           "time": timestamp_str,
           "dt_user": dt_user_tz,
-          "date": dt_user_tz.date(),
           "color": "Green" if c >= o else "Red",
           "open": o,
           "high": h,
@@ -181,6 +185,7 @@ class TWTDailyCycleEngine:
           "close": c,
           "volume": v,
           "atr": atr,
+          "is_within_1hr": is_within_1hr,
       })
 
     all_lows = [c["low"] for c in self.candles]
@@ -203,86 +208,76 @@ class TWTDailyCycleEngine:
     self.supply_box = (supply_zone_low, supply_zone_high)
     self.supply_mid = (supply_zone_low + supply_zone_high) / 2.0
 
-    # Dictionary to enforce strict 1 BUY and 1 SELL per calendar day
-    daily_entries = {}
-    current_date_val = datetime.now(self.user_tz).date()
+    best_buy = None
+    best_sell = None
 
+    # Forward scan to capture the very first structural best clean entries, or choose distinct ones
     for c in self.candles:
-      c_date = c["date"]
-      if c_date not in daily_entries:
-        daily_entries[c_date] = {"BUY": None, "SELL": None}
-
       atr = c["atr"]
       dec = get_decimals(c["close"])
 
-      # 1 BUY entry per day constraint
-      if daily_entries[c_date]["BUY"] is None:
+      # Pick the absolute first/best structural BUY matching condition
+      if best_buy is None:
         if c["low"] <= self.demand_mid and c["color"] == "Green":
           sl = round(demand_zone_low - (1.0 * atr), dec)
           tp1 = round(c["close"] + (1.2 * atr), dec)
           tp2 = round(c["close"] + (2.5 * atr), dec)
           tp3 = round(c["close"] + (4.0 * atr), dec)
 
-          daily_entries[c_date]["BUY"] = {
+          best_buy = {
               "Asset": self.symbol,
-              "Date": str(c_date),
               "Time": c["time"],
               "Candle #": c["id"],
               "Type": "BUY 🟢",
-              "Setup": "Demand Midpoint Bounce",
+              "Setup": "Best Demand Midpoint Bounce",
               "Entry Price": round(c["close"], dec),
               "Stop Loss (SL)": sl,
               "TP 1": tp1,
               "TP 2": tp2,
               "TP 3": tp3,
-              "Is_Today": (c_date == current_date_val),
+              "Is_Within_1hr": c["is_within_1hr"],
           }
 
-      # 1 SELL entry per day constraint
-      if daily_entries[c_date]["SELL"] is None:
+      # Pick the absolute first/best structural SELL matching condition
+      if best_sell is None:
         if c["high"] >= self.supply_mid and c["color"] == "Red":
           sl = round(supply_zone_high + (1.0 * atr), dec)
           tp1 = round(c["close"] - (1.2 * atr), dec)
           tp2 = round(c["close"] - (2.5 * atr), dec)
           tp3 = round(c["close"] - (4.0 * atr), dec)
 
-          daily_entries[c_date]["SELL"] = {
+          best_sell = {
               "Asset": self.symbol,
-              "Date": str(c_date),
               "Time": c["time"],
               "Candle #": c["id"],
               "Type": "SELL 🔴",
-              "Setup": "Supply Midpoint Rejection",
+              "Setup": "Best Supply Midpoint Rejection",
               "Entry Price": round(c["close"], dec),
               "Stop Loss (SL)": sl,
               "TP 1": tp1,
               "TP 2": tp2,
               "TP 3": tp3,
-              "Is_Today": (c_date == current_date_val),
+              "Is_Within_1hr": c["is_within_1hr"],
           }
 
-    # Compile history ordered by date descending
-    all_history = []
-    today_sigs = []
-    for d in sorted(daily_entries.keys(), reverse=True):
-      if daily_entries[d]["BUY"]:
-        all_history.append(daily_entries[d]["BUY"])
-        if daily_entries[d]["BUY"].get("Is_Today", False):
-          today_sigs.append(daily_entries[d]["BUY"])
-      if daily_entries[d]["SELL"]:
-        all_history.append(daily_entries[d]["SELL"])
-        if daily_entries[d]["SELL"].get("Is_Today", False):
-          today_sigs.append(daily_entries[d]["SELL"])
+      if best_buy and best_sell:
+        break
 
-    self.history = all_history
-    self.signals = today_sigs
+    collected = []
+    if best_buy:
+      collected.append(best_buy)
+    if best_sell:
+      collected.append(best_sell)
+
+    self.history = collected
+    self.signals = [s for s in collected if s.get("Is_Within_1hr", False)]
 
 
 # ---------------------------------------------------------
 # MASTER MULTI-ASSET SCANNER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("🔥 TWT Master Daily Cycle Dashboard (20+ Assets)")
+st.subheader("🔥 TWT Master Best Dual-Entry Dashboard (20+ Assets)")
 
 master_signals = []
 asset_engines = {}
@@ -291,13 +286,13 @@ asset_engines = {}
 def scan_asset(sym):
   df = fetch_multi_asset_ohlcv(sym, selected_tf, limit=300)
   if df is not None and not df.empty:
-    engine = TWTDailyCycleEngine(df, sym, active_tz)
+    engine = TWTBestDualEntryEngine(df, sym, active_tz)
     engine.calculate_and_scan()
     return sym, engine, engine.signals
   return sym, None, []
 
 
-with st.spinner("⚡ Parallel scanning 20+ assets with Daily Cycle Rules..."):
+with st.spinner("⚡ Parallel scanning 20+ assets for Best Dual-Entries..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
@@ -308,13 +303,13 @@ with st.spinner("⚡ Parallel scanning 20+ assets with Daily Cycle Rules..."):
         master_signals.extend(sigs)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} today's active setup(s) across assets!")
+  st.success(f"✅ Found {len(master_signals)} active best setup(s) across assets!")
   df_display = pd.DataFrame(master_signals).drop(
-      columns=["Is_Today"], errors="ignore"
+      columns=["Is_Within_1hr"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active setups for today yet. Check asset history below.")
+  st.info("ℹ️ No active best signals in the last 1 hour. Check individual asset inspector below.")
 
 # ---------------------------------------------------------
 # MANUAL ASSET INSPECTOR & CHART VIEWER
@@ -323,7 +318,7 @@ st.markdown("---")
 st.subheader("📊 Individual Asset Inspector & Chart")
 
 selected_symbol = st.selectbox(
-    "🔍 Select Asset to Load Daily Cycle Chart & Entries",
+    "🔍 Select Asset to Load Best Dual-Entry Chart",
     options=ASSET_LIST,
     index=0,
 )
@@ -332,7 +327,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df = fetch_multi_asset_ohlcv(selected_symbol, selected_tf, limit=300)
-  bot = TWTDailyCycleEngine(df, selected_symbol, active_tz)
+  bot = TWTBestDualEntryEngine(df, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df is not None and not bot.df.empty:
@@ -342,14 +337,14 @@ if bot.df is not None and not bot.df.empty:
   with col1:
     st.metric(label=f"Current {selected_symbol} Price", value=f"{curr_p:.2f}")
   with col2:
-    st.metric(label="Total Historical Entries", value=len(bot.history))
+    st.metric(label="Selected Best Entries", value=len(bot.history))
   with col3:
     st.metric(label="Timezone", value=selected_tz_name.split(")")[0] + ")")
 
   if bot.history:
-    st.markdown(f"### 📋 Complete Daily History Feed for {selected_symbol}")
+    st.markdown(f"### 📋 Best Dual-Entries Feed for {selected_symbol} (Max 1 Buy & 1 Sell)")
     df_history = pd.DataFrame(bot.history).drop(
-        columns=["Is_Today"], errors="ignore"
+        columns=["Is_Within_1hr"], errors="ignore"
     )
     st.dataframe(df_history, width="stretch")
 
@@ -400,7 +395,7 @@ if bot.df is not None and not bot.df.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} {selected_tf} — Daily Cycle Precision Visualizer",
+      f"{selected_symbol} {selected_tf} — Best Dual-Entry Precision Visualizer",
       color="white",
       fontsize=14,
   )
