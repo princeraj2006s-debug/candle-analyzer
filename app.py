@@ -12,7 +12,7 @@ from streamlit_autorefresh import st_autorefresh
 # STREAMLIT PAGE CONFIGURATION
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="TWT Professional Multi-Asset ORB Retest Bot",
+    page_title="TWT Professional Multi-Asset ORB Bot",
     page_icon="⚡",
     layout="wide",
 )
@@ -30,7 +30,7 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 # Safe Auto-refresh every 30 seconds
 count = st_autorefresh(interval=30000, key="twt_orb_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA — Multi-Asset ORB Breakout & Retest Engine")
+st.title("⚡ TRADE WITH TUCKYAA — Multi-Asset Direct ORB & Retest Engine")
 
 # ---------------------------------------------------------
 # SIDEBAR CONFIGURATION (Strategy Parameters & Controls)
@@ -38,7 +38,6 @@ st.title("⚡ TRADE WITH TUCKYAA — Multi-Asset ORB Breakout & Retest Engine")
 st.sidebar.markdown("### ⚙️ Multi-Asset ORB Configurations")
 st.sidebar.markdown("---")
 
-# IANA Timezones with automatic DST handling
 IANA_TIMEZONES = [
     "Asia/Kolkata",
     "UTC",
@@ -51,7 +50,6 @@ selected_tz_name = st.sidebar.selectbox(
 )
 active_tz = ZoneInfo(selected_tz_name)
 
-# Configurable Session Opening Time
 session_open_time = st.sidebar.time_input(
     "⏰ Session Opening Time", value=time(9, 30)
 )
@@ -66,14 +64,8 @@ orb_duration_mins = st.sidebar.slider(
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 🛡️ Strategy Filters & Risk Management")
 use_ema_filter = st.sidebar.checkbox("Enable EMA 200 Trend Filter", value=True)
-min_breakout_body_atr = st.sidebar.slider(
-    "📏 Min Breakout Body (% of ATR)", min_value=0.1, max_value=2.0, value=0.5, step=0.1
-)
-max_retest_candles = st.sidebar.slider(
-    "🔍 Max Candles Allowed for Retest", min_value=5, max_value=50, value=15, step=1
-)
 retest_tolerance_atr = st.sidebar.slider(
-    "🎯 Retest Tolerance (% of ATR)", min_value=0.1, max_value=1.0, value=0.3, step=0.1
+    "🎯 Retest Tolerance (% of ATR)", min_value=0.1, max_value=1.5, value=0.5, step=0.1
 )
 use_atr_buffer = st.sidebar.checkbox("Enable ATR Buffer for Stop Loss", value=True)
 risk_reward_ratio = st.sidebar.slider(
@@ -83,7 +75,6 @@ fee_slippage_pct = st.sidebar.slider(
     "💸 Fee & Slippage Assumption (%)", min_value=0.0, max_value=0.5, value=0.05, step=0.01
 )
 
-# Complete 20+ Asset List
 ASSET_LIST = [
     "BTC/USDT",
     "ETH/USDT",
@@ -109,7 +100,7 @@ ASSET_LIST = [
 
 
 # ---------------------------------------------------------
-# DATA FETCHING MODULE WITH CCXT (Timezone-Aware UTC)
+# DATA FETCHING MODULE WITH CCXT
 # ---------------------------------------------------------
 @st.cache_data(ttl=30)
 def fetch_multi_asset_ohlcv(symbol, timeframe="5m", limit=500):
@@ -142,7 +133,6 @@ def fetch_multi_asset_ohlcv(symbol, timeframe="5m", limit=500):
           df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
           df = df.set_index("timestamp")
 
-          # Remove incomplete current live candle if unclosed
           if not df.empty and (df.index[-1] + tf_delta > now_utc):
             df = df.iloc[:-1]
 
@@ -153,7 +143,7 @@ def fetch_multi_asset_ohlcv(symbol, timeframe="5m", limit=500):
 
 
 # ---------------------------------------------------------
-# TECHNICAL INDICATORS & PROFESSIONAL ORB RETEST ENGINE
+# TECHNICAL INDICATORS & DIRECT RETEST ENGINE
 # ---------------------------------------------------------
 class ProfessionalORBRetestEngine:
 
@@ -176,8 +166,6 @@ class ProfessionalORBRetestEngine:
         "orb_complete": False,
         "breakout_found": False,
         "retest_found": False,
-        "rejection_confirmed": False,
-        "confirmation_completed": False,
         "ema_filter_passed": False,
         "risk_validation_passed": False,
         "final_signal_status": "Pending scan...",
@@ -205,10 +193,6 @@ class ProfessionalORBRetestEngine:
 
     tf_mins_map = {"5m": 5, "15m": 15, "30m": 30, "1h": 60}
     tf_mins = tf_mins_map.get(self.timeframe, 5)
-
-    if self.orb_duration % tf_mins != 0 or self.orb_duration < tf_mins:
-      self.diag["rejection_reason"] = f"Incompatible ORB duration ({self.orb_duration}m) for timeframe ({tf_mins}m)."
-      return
 
     expected_candles = int(self.orb_duration / tf_mins)
 
@@ -238,9 +222,9 @@ class ProfessionalORBRetestEngine:
     else:
       self.orb_available = False
       self.diag["orb_complete"] = False
-      self.diag["rejection_reason"] = f"WAITING FOR SESSION: Found {len(orb_candles)}/{expected_candles} completed session candles."
+      self.diag["rejection_reason"] = f"WAITING FOR SESSION: Found {len(orb_candles)}/{expected_candles} candles."
 
-  def scan_breakout_and_retest(self, use_ema, min_body_atr, max_retest, retest_tol, use_atr, rr_target, fee_slip):
+  def scan_breakout_and_retest(self, use_ema, retest_tol, use_atr, rr_target, fee_slip):
     if self.df is None or len(self.df) < 50:
       return
 
@@ -268,162 +252,99 @@ class ProfessionalORBRetestEngine:
 
       c = df_local.iloc[i]
       close = float(c["Close"])
-      open_p = float(c["Open"])
       high = float(c["High"])
       low = float(c["Low"])
-      body = abs(close - open_p)
       
       ema200 = float(c["EMA200"])
       atr = float(c["ATR"]) if not np.isnan(c["ATR"]) else (close * 0.002)
 
       is_recent = (current_utc_time - c.name).total_seconds() / 60.0 <= 60.0
-      min_body_req = atr * min_body_atr
+      tolerance = atr * retest_tol
 
       # -------------------------------------------------
-      # BULLISH BREAKOUT, RETEST & REJECTION CONFIRMATION
+      # BULLISH DIRECT ENTRY (Breakout + Retest Touch)
       # -------------------------------------------------
-      if close > self.orb_high and body >= min_body_req:
+      if close > self.orb_high:
         self.diag["breakout_found"] = True
 
-        for j in range(i + 1, min(i + max_retest + 1, len(df_local))):
-          retest_c = df_local.iloc[j]
-          r_low = float(retest_c["Low"])
-          r_high = float(retest_c["High"])
-          r_close = float(retest_c["Close"])
-          r_open = float(retest_c["Open"])
+        # Check if price touched back near ORB High boundary
+        is_retest = low <= (self.orb_high + tolerance)
+        if is_retest:
+          self.diag["retest_found"] = True
 
-          tolerance = atr * retest_tol
-          is_retest = r_low <= (self.orb_high + tolerance) and r_low >= (self.orb_high - tolerance * 2)
+          if use_ema:
+            if np.isnan(ema200) or close <= ema200:
+              continue
+          self.diag["ema_filter_passed"] = True
 
-          if is_retest:
-            self.diag["retest_found"] = True
+          sl = round(self.orb_low - (atr * 0.5), 2) if use_atr else round(self.orb_low, 2)
+          entry_price = close * (1.0 + (fee_slip / 100.0))
 
-            is_rejection_candle = r_close > r_open and (r_open - r_low) > (r_close - r_open)
-            if is_rejection_candle:
-              self.diag["rejection_confirmed"] = True
+          if sl >= entry_price:
+            continue
+          self.diag["risk_validation_passed"] = True
 
-              if j + 1 < len(df_local):
-                conf_c = df_local.iloc[j + 1]
-                if float(conf_c["Close"]) > r_high:
-                  self.diag["confirmation_completed"] = True
+          risk = entry_price - sl
+          target = round(entry_price + (risk * rr_target) * (1.0 - (fee_slip / 100.0)), 2)
 
-                  if use_ema:
-                    if np.isnan(conf_c["EMA200"]):
-                      self.diag["ema_filter_passed"] = False
-                      self.diag["final_signal_status"] = "Rejected"
-                      self.diag["rejection_reason"] = "EMA 200 unavailable for confirmation candle."
-                      continue
-                    if float(conf_c["Close"]) <= float(conf_c["EMA200"]):
-                      self.diag["ema_filter_passed"] = False
-                      self.diag["final_signal_status"] = "Rejected"
-                      self.diag["rejection_reason"] = "Signal rejected: Failed EMA 200 bullish filter."
-                      continue
-                  self.diag["ema_filter_passed"] = True
+          self.diag["final_signal_status"] = "Accepted"
+          self.diag["rejection_reason"] = "Direct bullish retest entry accepted."
 
-                  swing_low = min(r_low, float(conf_c["Low"]))
-                  sl = round(swing_low - (atr * 0.5), 2) if use_atr else round(swing_low, 2)
-                  entry_price = float(conf_c["Close"]) * (1.0 + (fee_slip / 100.0))
-
-                  if sl >= entry_price:
-                    self.diag["risk_validation_passed"] = False
-                    self.diag["final_signal_status"] = "Rejected"
-                    self.diag["rejection_reason"] = "Signal rejected: Invalid BUY Stop Loss calculation (SL >= Entry)."
-                    continue
-                  self.diag["risk_validation_passed"] = True
-
-                  risk = entry_price - sl
-                  target = round(entry_price + (risk * rr_target) * (1.0 - (fee_slip / 100.0)), 2)
-
-                  self.diag["final_signal_status"] = "Accepted"
-                  self.diag["rejection_reason"] = "Signal successfully validated and accepted."
-
-                  valid_signals.append({
-                      "Asset": self.symbol,
-                      "Type": "BUY 🟢",
-                      "Setup": "ORB Breakout + Retest + Rejection Confirmation",
-                      "Entry Price": round(entry_price, 2),
-                      "Stop Loss": sl,
-                      "Target": target,
-                      "R:R Ratio": f"1:{rr_target}",
-                      "Time": conf_c["time_tz"].strftime("%H:%M"),
-                      "Reason": "Valid bullish setup confirmed.",
-                      "Is_Recent": is_recent,
-                      "Direction": "BUY"
-                  })
-                  break
+          valid_signals.append({
+              "Asset": self.symbol,
+              "Type": "BUY 🟢",
+              "Setup": "ORB Breakout + Direct Retest Entry",
+              "Entry Price": round(entry_price, 2),
+              "Stop Loss": sl,
+              "Target": target,
+              "R:R Ratio": f"1:{rr_target}",
+              "Time": c["time_tz"].strftime("%H:%M"),
+              "Reason": "Direct retest entry confirmed.",
+              "Is_Recent": is_recent,
+              "Direction": "BUY"
+          })
 
       # -------------------------------------------------
-      # BEARISH BREAKOUT, RETEST & REJECTION CONFIRMATION
+      # BEARISH DIRECT ENTRY (Breakout + Retest Touch)
       # -------------------------------------------------
-      elif close < self.orb_low and body >= min_body_req:
+      elif close < self.orb_low:
         self.diag["breakout_found"] = True
 
-        for j in range(i + 1, min(i + max_retest + 1, len(df_local))):
-          retest_c = df_local.iloc[j]
-          r_low = float(retest_c["Low"])
-          r_high = float(retest_c["High"])
-          r_close = float(retest_c["Close"])
-          r_open = float(retest_c["Open"])
+        is_retest = high >= (self.orb_low - tolerance)
+        if is_retest:
+          self.diag["retest_found"] = True
 
-          tolerance = atr * retest_tol
-          is_retest = r_high >= (self.orb_low - tolerance) and r_high <= (self.orb_low + tolerance * 2)
+          if use_ema:
+            if np.isnan(ema200) or close >= ema200:
+              continue
+          self.diag["ema_filter_passed"] = True
 
-          if is_retest:
-            self.diag["retest_found"] = True
+          sl = round(self.orb_high + (atr * 0.5), 2) if use_atr else round(self.orb_high, 2)
+          entry_price = close * (1.0 - (fee_slip / 100.0))
 
-            is_rejection_candle = r_close < r_open and (r_high - r_open) > (r_open - r_close)
-            if is_rejection_candle:
-              self.diag["rejection_confirmed"] = True
+          if sl <= entry_price:
+            continue
+          self.diag["risk_validation_passed"] = True
 
-              if j + 1 < len(df_local):
-                conf_c = df_local.iloc[j + 1]
-                if float(conf_c["Close"]) < r_low:
-                  self.diag["confirmation_completed"] = True
+          risk = sl - entry_price
+          target = round(entry_price - (risk * rr_target) * (1.0 - (fee_slip / 100.0)), 2)
 
-                  if use_ema:
-                    if np.isnan(conf_c["EMA200"]):
-                      self.diag["ema_filter_passed"] = False
-                      self.diag["final_signal_status"] = "Rejected"
-                      self.diag["rejection_reason"] = "EMA 200 unavailable for confirmation candle."
-                      continue
-                    if float(conf_c["Close"]) >= float(conf_c["EMA200"]):
-                      self.diag["ema_filter_passed"] = False
-                      self.diag["final_signal_status"] = "Rejected"
-                      self.diag["rejection_reason"] = "Signal rejected: Failed EMA 200 bearish filter."
-                      continue
-                  self.diag["ema_filter_passed"] = True
+          self.diag["final_signal_status"] = "Accepted"
+          self.diag["rejection_reason"] = "Direct bearish retest entry accepted."
 
-                  swing_high = max(r_high, float(conf_c["High"]))
-                  sl = round(swing_high + (atr * 0.5), 2) if use_atr else round(swing_high, 2)
-                  entry_price = float(conf_c["Close"]) * (1.0 - (fee_slip / 100.0))
-
-                  if sl <= entry_price:
-                    self.diag["risk_validation_passed"] = False
-                    self.diag["final_signal_status"] = "Rejected"
-                    self.diag["rejection_reason"] = "Signal rejected: Invalid SELL Stop Loss calculation (SL <= Entry)."
-                    continue
-                  self.diag["risk_validation_passed"] = True
-
-                  risk = sl - entry_price
-                  target = round(entry_price - (risk * rr_target) * (1.0 - (fee_slip / 100.0)), 2)
-
-                  self.diag["final_signal_status"] = "Accepted"
-                  self.diag["rejection_reason"] = "Signal successfully validated and accepted."
-
-                  valid_signals.append({
-                      "Asset": self.symbol,
-                      "Type": "SELL 🔴",
-                      "Setup": "ORB Breakout + Retest + Rejection Confirmation",
-                      "Entry Price": round(entry_price, 2),
-                      "Stop Loss": sl,
-                      "Target": target,
-                      "R:R Ratio": f"1:{rr_target}",
-                      "Time": conf_c["time_tz"].strftime("%H:%M"),
-                      "Reason": "Valid bearish setup confirmed.",
-                      "Is_Recent": is_recent,
-                      "Direction": "SELL"
-                  })
-                  break
+          valid_signals.append({
+              "Asset": self.symbol,
+              "Type": "SELL 🔴",
+              "Setup": "ORB Breakout + Direct Retest Entry",
+              "Entry Price": round(entry_price, 2),
+              "Stop Loss": sl,
+              "Target": target,
+              "R:R Ratio": f"1:{rr_target}",
+              "Time": c["time_tz"].strftime("%H:%M"),
+              "Reason": "Direct retest entry confirmed.",
+              "Is_Recent": is_recent,
+              "Direction": "SELL"
+          })
 
     if valid_signals:
       unique_signals = []
@@ -440,10 +361,10 @@ class ProfessionalORBRetestEngine:
 
 
 # ---------------------------------------------------------
-# MASTER SCANNER (Global Feed for Top Dashboard - 20+ Assets)
+# MASTER SCANNER (20+ Assets Dashboard)
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("🔥 TWT Master Live Signal Dashboard (Last 1 Hour — 20+ Assets)")
+st.subheader("🔥 TWT Master Live Signal Dashboard (20+ Assets)")
 
 master_signals = []
 asset_engines = {}
@@ -454,7 +375,7 @@ def scan_single_asset(sym):
   if df is not None and not df.empty:
     engine = ProfessionalORBRetestEngine(df, sym, orb_duration_mins, active_tz, session_open_time, selected_tf)
     engine.scan_breakout_and_retest(
-        use_ema_filter, min_breakout_body_atr, max_retest_candles, retest_tolerance_atr, use_atr_buffer, risk_reward_ratio, fee_slippage_pct
+        use_ema_filter, retest_tolerance_atr, use_atr_buffer, risk_reward_ratio, fee_slippage_pct
     )
     recent_sigs = [s for s in engine.signals if s.get("Is_Recent", False)]
     latest = recent_sigs[0] if recent_sigs else None
@@ -462,7 +383,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20+ assets with Professional ORB Retest Engine..."):
+with st.spinner("⚡ Scanning all 20+ assets with Direct Retest Engine..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -503,10 +424,9 @@ else:
   df = fetch_multi_asset_ohlcv(selected_symbol, selected_tf, limit=500)
   bot = ProfessionalORBRetestEngine(df, selected_symbol, orb_duration_mins, active_tz, session_open_time, selected_tf)
   bot.scan_breakout_and_retest(
-      use_ema_filter, min_breakout_body_atr, max_retest_candles, retest_tolerance_atr, use_atr_buffer, risk_reward_ratio, fee_slippage_pct
+      use_ema_filter, retest_tolerance_atr, use_atr_buffer, risk_reward_ratio, fee_slippage_pct
   )
 
-# Top Metrics Dashboard Display for Selected Asset
 col_d1, col_d2, col_d3, col_d4 = st.columns(4)
 with col_d1:
   if bot.orb_available:
@@ -536,7 +456,7 @@ st.markdown("---")
 recent_signals = [s for s in bot.signals if s.get("Is_Recent", False)]
 
 if not bot.orb_available:
-  st.warning(f"⚠️ **WAITING FOR SESSION:** Opening Range for {selected_symbol} is unavailable or incomplete for the current session window.")
+  st.warning(f"⚠️ **WAITING FOR SESSION:** Opening Range for {selected_symbol} is unavailable.")
 elif recent_signals:
   sig = recent_signals[0]
   st.success(f"✅ **ACTIVE RETEST SETUP FOR {selected_symbol}: {sig['Type']}**")
@@ -555,10 +475,9 @@ elif recent_signals:
     )
 else:
   st.info(
-      f"ℹ️ **Status for {selected_symbol}:** Scanning market. Waiting for ORB breakout followed by a clean level retest and rejection confirmation."
+      f"ℹ️ **Status for {selected_symbol}:** Scanning market for direct breakout and retest touch entries."
   )
 
-# Single Entry History Table for Selected Asset
 if bot.history:
   st.markdown("---")
   st.subheader(f"📋 Confirmed Entry History Feed for {selected_symbol}")
@@ -568,34 +487,29 @@ if bot.history:
   st.dataframe(df_history, width="stretch")
 
 # ---------------------------------------------------------
-# DIAGNOSTIC DASHBOARD (Debugging & Execution Tracking)
+# DIAGNOSTIC DASHBOARD
 # ---------------------------------------------------------
 with st.expander(f"🛠️ Diagnostic & Execution Status Dashboard ({selected_symbol})", expanded=False):
-  diag_col1, diag_col2, diag_col3 = st.columns(3)
+  diag_col1, diag_col2 = st.columns(2)
   with diag_col1:
     st.text(f"Session Available: {'✅' if bot.diag['session_available'] else '❌'}")
     st.text(f"ORB Complete: {'✅' if bot.diag['orb_complete'] else '❌'}")
     st.text(f"Breakout Found: {'✅' if bot.diag['breakout_found'] else '❌'}")
   with diag_col2:
     st.text(f"Retest Found: {'✅' if bot.diag['retest_found'] else '❌'}")
-    st.text(f"Rejection Confirmed: {'✅' if bot.diag['rejection_confirmed'] else '❌'}")
-    st.text(f"Confirmation Completed: {'✅' if bot.diag['confirmation_completed'] else '❌'}")
-  with diag_col3:
     st.text(f"EMA Filter Passed: {'✅' if bot.diag['ema_filter_passed'] else '❌'}")
-    st.text(f"Risk Validation Passed: {'✅' if bot.diag['risk_validation_passed'] else '❌'}")
     st.text(f"Final Status: {bot.diag['final_signal_status']}")
-  st.markdown(f"**System Note / Rejection Reason:** `{bot.diag['rejection_reason']}`")
+  st.markdown(f"**System Note:** `{bot.diag['rejection_reason']}`")
 
 # ---------------------------------------------------------
 # MATPLOTLIB PROFESSIONAL CHART RENDERER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader(f"📊 Professional ORB Chart & Retest Visualizer ({selected_symbol})")
+st.subheader(f"📊 Professional ORB Chart Visualizer ({selected_symbol})")
 
 if bot.df is not None and not bot.df.empty:
   fig, ax = plt.subplots(figsize=(14, 7), dpi=100)
 
-  # Plot Candlesticks
   for idx, row in enumerate(bot.df.iterrows()):
     r = row[1]
     col = "#26a69a" if r["Close"] >= r["Open"] else "#ef5350"
@@ -609,7 +523,6 @@ if bot.df is not None and not bot.df.empty:
     )
     ax.vlines(idx, r["Low"], r["High"], color=col, linewidth=1.2)
 
-  # Plot EMA 200 Line if available
   if "EMA200" in bot.df.columns:
     ax.plot(
         range(len(bot.df)),
@@ -619,7 +532,6 @@ if bot.df is not None and not bot.df.empty:
         label="EMA 200 Trend",
     )
 
-  # Plot ORB High & Low Lines if available
   if bot.orb_available:
     ax.axhline(
         bot.orb_high,
@@ -644,7 +556,7 @@ if bot.df is not None and not bot.df.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} {selected_tf} — Professional Multi-Asset ORB Engine ({selected_tz_name})",
+      f"{selected_symbol} {selected_tf} — Direct Retest Engine ({selected_tz_name})",
       color="white",
       fontsize=14,
       weight="bold",
