@@ -64,8 +64,8 @@ st.sidebar.text(
 st.sidebar.text("Active Asset       ———  BTC/USDT Only")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Strategy Rules")
-st.sidebar.text("Uptrend   : 3 Green Candles Zone ➔ Pullback Rejection ➔ BUY")
-st.sidebar.text("Downtrend : 3 Red Candles Zone ➔ Pullback Rejection ➔ SELL")
+st.sidebar.text("Uptrend   : 3 Green Candles Zone ➔ Small Red ➔ Green Rejection ➔ BUY")
+st.sidebar.text("Downtrend : 3 Red Candles Zone ➔ Small Green ➔ Red Rejection ➔ SELL")
 st.sidebar.text("Risk Mgmt : ATR Managed SL & Multi-TP")
 
 
@@ -91,7 +91,7 @@ def fetch_btc_data(symbol, tf):
       exchange = ex_class({"enableRateLimit": True, "timeout": 15000})
       exchange.load_markets()
       if sym in exchange.markets:
-        ohlcv_tf = exchange.fetch_ohlcv(sym, timeframe=tf, limit=120)
+        ohlcv_tf = exchange.fetch_ohlcv(sym, timeframe=tf, limit=140)
         if ohlcv_tf:
           df = pd.DataFrame(
               ohlcv_tf,
@@ -113,7 +113,7 @@ class TWT3CandleZoneEngine:
     self.user_tz = user_tz
     self.candles = []
     self.signals = []
-    self.zone_box = None  # To store zone coordinates for plotting
+    self.zone_box = None
 
   def calculate_and_scan(self):
     if self.df is None or self.df.empty:
@@ -122,7 +122,6 @@ class TWT3CandleZoneEngine:
     IST = timezone(timedelta(hours=5, minutes=30))
     current_utc_time = datetime.now(timezone.utc)
 
-    # Indicators & EMAs for Trend Identification
     self.df["EMA50"] = self.df["Close"].ewm(span=50, adjust=False).mean()
     self.df["EMA200"] = self.df["Close"].ewm(span=200, adjust=False).mean()
 
@@ -154,6 +153,7 @@ class TWT3CandleZoneEngine:
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
       ema50 = float(r["EMA50"]) if not pd.isna(r["EMA50"]) else c
       ema200 = float(r["EMA200"]) if not pd.isna(r["EMA200"]) else c
+      body = abs(c - o)
 
       age_minutes = (current_utc_time - dt_utc).total_seconds() / 60.0
       is_within_1hr = age_minutes <= 60.0
@@ -170,15 +170,18 @@ class TWT3CandleZoneEngine:
           "close": c,
           "volume": v,
           "atr": atr,
+          "body": body,
           "ema50": ema50,
           "ema200": ema200,
           "is_within_1hr": is_within_1hr,
       })
 
     found_signal = None
+    bodies = [c["body"] for c in self.candles]
+    avg_body = np.mean(bodies) if bodies else 0.001
 
-    # Scan candles for strategy setup
-    for i in range(10, len(self.candles) - 1):
+    # Scan for 3 consecutive candles zone & confirmation reaction
+    for i in range(5, len(self.candles) - 1):
       c = self.candles[i]
       trend_up = c["ema50"] >= c["ema200"]
       trend_down = c["ema50"] < c["ema200"]
@@ -187,78 +190,96 @@ class TWT3CandleZoneEngine:
       dec = get_decimals(c["close"])
 
       # --- UPTREND STRATEGY ---
-      # Find 3 consecutive green candles in recent past
-      if trend_up and i >= 3:
-        c1 = self.candles[i - 3]
-        c2 = self.candles[i - 2]
-        c3 = self.candles[i - 1]
+      if trend_up and i >= 5:
+        # Look for 3 consecutive green candles in past (from i-4 to i-2 or similar)
+        for start in range(max(0, i - 15), i - 2):
+          c1 = self.candles[start]
+          c2 = self.candles[start + 1]
+          c3 = self.candles[start + 2]
 
-        if c1["color"] == "Green" and c2["color"] == "Green" and c3["color"] == "Green":
-          zone_high = max(c1["high"], c2["high"], c3["high"])
-          zone_low = min(c1["low"], c2["low"], c3["low"])
+          if c1["color"] == "Green" and c2["color"] == "Green" and c3["color"] == "Green":
+            zone_high = max(c1["high"], c2["high"], c3["high"])
+            zone_low = min(c1["low"], c2["low"], c3["low"])
 
-          # Check if current/subsequent candle pulls back to zone and rejects (bullish reaction)
-          curr = self.candles[i]
-          if curr["low"] <= zone_high and curr["close"] >= zone_low:
-            if curr["color"] == "Green" or (curr["high"] - curr["low"]) > abs(curr["close"] - curr["open"]):
-              sl = round(zone_low - (1.2 * atr), dec)
-              tp1 = round(curr["close"] + (1.2 * atr), dec)
-              tp2 = round(curr["close"] + (2.5 * atr), dec)
-              tp3 = round(curr["close"] + (4.0 * atr), dec)
+            # Check subsequent price action inside zone: Small red candle followed by a green rejection candle
+            for k in range(start + 3, i + 1):
+              test_c = self.candles[k]
+              if test_c["low"] <= zone_high and test_c["close"] >= zone_low:
+                # Small/Medium Red candle inside zone, followed by Green rejection candle
+                if test_c["color"] == "Red" and test_c["body"] <= avg_body * 1.5:
+                  if k + 1 <= i:
+                    next_c = self.candles[k + 1]
+                    if next_c["color"] == "Green":
+                      sl = round(zone_low - (1.2 * atr), dec)
+                      tp1 = round(next_c["close"] + (1.2 * atr), dec)
+                      tp2 = round(next_c["close"] + (2.5 * atr), dec)
+                      tp3 = round(next_c["close"] + (4.0 * atr), dec)
 
-              self.zone_box = (zone_low, zone_high, i - 3, i)
-              found_signal = {
-                  "Asset": self.symbol,
-                  "Time": curr["time"],
-                  "Candle #": curr["id"],
-                  "Type": "BUY 🟢",
-                  "Setup": "3-Green Candles Zone Pullback Rejection",
-                  "Action": "Buy / Long (B) [Uptrend Zone Rejection] 🟢",
-                  "Entry Price": round(curr["close"], dec),
-                  "Stop Loss (SL)": sl,
-                  "TP 1": tp1,
-                  "TP 2": tp2,
-                  "TP 3": tp3,
-                  "Is_Within_1hr": curr["is_within_1hr"],
-              }
+                      self.zone_box = (zone_low, zone_high, start, start + 2)
+                      found_signal = {
+                          "Asset": self.symbol,
+                          "Time": next_c["time"],
+                          "Candle #": next_c["id"],
+                          "Type": "BUY 🟢",
+                          "Setup": "3-Green Zone + Small Red + Green Rejection",
+                          "Action": "Buy / Long (B) [Uptrend Zone Rejection] 🟢",
+                          "Entry Price": round(next_c["close"], dec),
+                          "Stop Loss (SL)": sl,
+                          "TP 1": tp1,
+                          "TP 2": tp2,
+                          "TP 3": tp3,
+                          "Is_Within_1hr": next_c["is_within_1hr"],
+                      }
+                      break
+            if found_signal:
               break
 
       # --- DOWNTREND STRATEGY ---
-      # Find 3 consecutive red candles in recent past
-      if trend_down and i >= 3:
-        c1 = self.candles[i - 3]
-        c2 = self.candles[i - 2]
-        c3 = self.candles[i - 1]
+      if trend_down and i >= 5:
+        for start in range(max(0, i - 15), i - 2):
+          c1 = self.candles[start]
+          c2 = self.candles[start + 1]
+          c3 = self.candles[start + 2]
 
-        if c1["color"] == "Red" and c2["color"] == "Red" and c3["color"] == "Red":
-          zone_high = max(c1["high"], c2["high"], c3["high"])
-          zone_low = min(c1["low"], c2["low"], c3["low"])
+          if c1["color"] == "Red" and c2["color"] == "Red" and c3["color"] == "Red":
+            zone_high = max(c1["high"], c2["high"], c3["high"])
+            zone_low = min(c1["low"], c2["low"], c3["low"])
 
-          # Check if current/subsequent candle pulls back up to zone and rejects (bearish reaction)
-          curr = self.candles[i]
-          if curr["high"] >= zone_low and curr["close"] <= zone_high:
-            if curr["color"] == "Red" or (curr["high"] - curr["low"]) > abs(curr["close"] - curr["open"]):
-              sl = round(zone_high + (1.2 * atr), dec)
-              tp1 = round(curr["close"] - (1.2 * atr), dec)
-              tp2 = round(curr["close"] - (2.5 * atr), dec)
-              tp3 = round(curr["close"] - (4.0 * atr), dec)
+            # Check subsequent price action inside zone: Small green candle followed by a red rejection candle
+            for k in range(start + 3, i + 1):
+              test_c = self.candles[k]
+              if test_c["high"] >= zone_low and test_c["close"] <= zone_high:
+                # Small/Medium Green candle inside zone, followed by Red rejection candle
+                if test_c["color"] == "Green" and test_c["body"] <= avg_body * 1.5:
+                  if k + 1 <= i:
+                    next_c = self.candles[k + 1]
+                    if next_c["color"] == "Red":
+                      sl = round(zone_high + (1.2 * atr), dec)
+                      tp1 = round(next_c["close"] - (1.2 * atr), dec)
+                      tp2 = round(next_c["close"] - (2.5 * atr), dec)
+                      tp3 = round(next_c["close"] - (4.0 * atr), dec)
 
-              self.zone_box = (zone_low, zone_high, i - 3, i)
-              found_signal = {
-                  "Asset": self.symbol,
-                  "Time": curr["time"],
-                  "Candle #": curr["id"],
-                  "Type": "SELL 🔴",
-                  "Setup": "3-Red Candles Zone Pullback Rejection",
-                  "Action": "Sell / Short (S) [Downtrend Zone Rejection] 🔴",
-                  "Entry Price": round(curr["close"], dec),
-                  "Stop Loss (SL)": sl,
-                  "TP 1": tp1,
-                  "TP 2": tp2,
-                  "TP 3": tp3,
-                  "Is_Within_1hr": curr["is_within_1hr"],
-              }
+                      self.zone_box = (zone_low, zone_high, start, start + 2)
+                      found_signal = {
+                          "Asset": self.symbol,
+                          "Time": next_c["time"],
+                          "Candle #": next_c["id"],
+                          "Type": "SELL 🔴",
+                          "Setup": "3-Red Zone + Small Green + Red Rejection",
+                          "Action": "Sell / Short (S) [Downtrend Zone Rejection] 🔴",
+                          "Entry Price": round(next_c["close"], dec),
+                          "Stop Loss (SL)": sl,
+                          "TP 1": tp1,
+                          "TP 2": tp2,
+                          "TP 3": tp3,
+                          "Is_Within_1hr": next_c["is_within_1hr"],
+                      }
+                      break
+            if found_signal:
               break
+
+      if found_signal:
+        break
 
     if found_signal:
       self.signals = [found_signal]
@@ -285,7 +306,7 @@ if master_signals:
   )
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active signal in the last 1 hour. Waiting for 3-candle zone pullback reaction on BTC...")
+  st.info("ℹ️ No active signal in the last 1 hour. Waiting for 3-candle zone & rejection reaction on BTC...")
 
 # --- MANUAL INSPECTOR & CHART VIEWER ---
 st.markdown("---")
@@ -300,7 +321,7 @@ if bot.df is not None and not bot.df.empty:
   with col2:
     st.metric(label="Trend Status", value="Bullish (EMA50 > EMA200)" if bot.candles[-1]["ema50"] >= bot.candles[-1]["ema200"] else "Bearish (EMA50 < EMA200)")
   with col3:
-    st.metric(label="Timezone", value=tz_short, delta="BTC Strategy Active")
+    st.metric(label="Timezone", value=tz_short, delta="3-Candle Zone Engine Active")
 
   if bot.signals:
     latest_sig = bot.signals[0]
@@ -333,7 +354,7 @@ if bot.df is not None and not bot.df.empty:
   else:
     st.warning(
         "🟡 **STATUS: SCANNING BTC**\n\n"
-        "📌 *Instructions:* Waiting for 3 consecutive candles zone formation & pullback rejection."
+        "📌 *Instructions:* Waiting for 3 consecutive candles zone + small reaction candle + confirmation entry."
     )
 
   # --- CLEAN CANDLESTICK CHART RENDERING ---
