@@ -1,4 +1,3 @@
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, time, timedelta, timezone
 import ccxt
 import matplotlib.pyplot as plt
@@ -64,8 +63,8 @@ st.sidebar.text(
 st.sidebar.text("Active Asset       ———  BTC/USDT Only")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Retracement Rules")
-st.sidebar.text("01:00 ➔ 11:00 : 3 Red Zone ➔ Green Touch ➔ Red ➔ 2-3 Green ➔ SELL")
-st.sidebar.text("13:00 ➔ 21:00 : 3 Green Zone ➔ Red Touch ➔ Green ➔ 2-3 Red ➔ BUY")
+st.sidebar.text("01:00 ➔ 11:00 : 3 Red Zone ➔ Green Touch ➔ Red ➔ 2-3 Green ➔ SELL ONLY")
+st.sidebar.text("13:00 ➔ 22:00 : 3 Green Zone ➔ Red Touch ➔ Green ➔ 2-3 Red ➔ BUY ONLY")
 st.sidebar.text("Risk Mgmt    : ATR Managed SL & Multi-TP")
 
 
@@ -169,12 +168,13 @@ class TWT3CandleZoneEngine:
 
     found_signal = None
 
-    for i in range(8, len(self.candles)):
+    # Scan from the most recent candles backwards or forwards properly
+    for i in range(len(self.candles) - 1, 7, -1):
       c = self.candles[i]
       t_ist = c["dt_ist"].time()
 
       is_morning_session = time(1, 0) <= t_ist <= time(11, 0)
-      is_evening_session = time(13, 0) <= t_ist <= time(21, 0)
+      is_evening_session = time(13, 0) <= t_ist <= time(22, 0)
 
       if not is_morning_session and not is_evening_session:
         continue
@@ -183,7 +183,7 @@ class TWT3CandleZoneEngine:
       dec = get_decimals(c["close"])
 
       # ==========================================================
-      # 1. MORNING SESSION (01:00 to 11:00) ➔ SELL SETUP
+      # 1. MORNING SESSION (01:00 to 11:00) ➔ SELL SETUP ONLY
       # ==========================================================
       if is_morning_session:
         for start in range(max(0, i - 25), i - 5):
@@ -191,20 +191,15 @@ class TWT3CandleZoneEngine:
           c2 = self.candles[start + 1]
           c3 = self.candles[start + 2]
 
-          # 3 consecutive Red candles form zone
           if c1["color"] == "Red" and c2["color"] == "Red" and c3["color"] == "Red":
             zone_high = max(c1["high"], c2["high"], c3["high"])
             zone_low = min(c1["low"], c2["low"], c3["low"])
 
-            # Check sequence: Green candle touches zone -> Red candle -> 2 or 3 Green candles -> Entry Red candle
             for k in range(start + 3, i - 3):
               touch_c = self.candles[k]
               if touch_c["color"] == "Green" and touch_c["high"] >= zone_low and touch_c["close"] <= zone_high:
-                # Next must be a Red candle
                 if k + 1 < len(self.candles) and self.candles[k + 1]["color"] == "Red":
-                  # Followed by 2 or 3 Green candles
                   green_count = 0
-                  valid_sequence = False
                   end_idx = k + 1
                   for g in range(k + 2, min(k + 5, len(self.candles))):
                     if self.candles[g]["color"] == "Green":
@@ -214,7 +209,6 @@ class TWT3CandleZoneEngine:
                       break
 
                   if green_count >= 2:
-                    # After 2-3 green candles, look at the next red candle for entry
                     if end_idx + 1 < len(self.candles):
                       entry_c = self.candles[end_idx + 1]
                       if entry_c["color"] == "Red":
@@ -243,7 +237,7 @@ class TWT3CandleZoneEngine:
               break
 
       # ==========================================================
-      # 2. EVENING SESSION (13:00 to 21:00) ➔ BUY SETUP
+      # 2. EVENING SESSION (13:00 to 22:00) ➔ BUY SETUP ONLY
       # ==========================================================
       if is_evening_session:
         for start in range(max(0, i - 25), i - 5):
@@ -251,12 +245,10 @@ class TWT3CandleZoneEngine:
           c2 = self.candles[start + 1]
           c3 = self.candles[start + 2]
 
-          # 3 consecutive Green candles form zone
           if c1["color"] == "Green" and c2["color"] == "Green" and c3["color"] == "Green":
             zone_high = max(c1["high"], c2["high"], c3["high"])
             zone_low = min(c1["low"], c2["low"], c3["low"])
 
-            # Check sequence: Red candle touches zone -> Green candle -> 2 or 3 Red candles -> Entry Green candle
             for k in range(start + 3, i - 3):
               touch_c = self.candles[k]
               if touch_c["color"] == "Red" and touch_c["low"] <= zone_high and touch_c["close"] >= zone_low:
@@ -326,7 +318,7 @@ if master_signals:
   )
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active signal in the last 1 hour. Waiting for exact retracement sequence on BTC...")
+  st.info("ℹ️ No active signal in the last 1 hour. Waiting for exact session time and retracement sequence on BTC...")
 
 # --- MANUAL INSPECTOR & CHART VIEWER ---
 st.markdown("---")
@@ -373,8 +365,8 @@ if bot.df is not None and not bot.df.empty:
       )
   else:
     st.warning(
-        "🟡 **STATUS: SCANNING BTC**\n\n"
-        "📌 *Instructions:* Waiting for 3 candles zone -> zone touch -> retracement sequence -> entry candle."
+        "🟡 **STATUS: SCANNING BTC FOR EVENING BUY SETUP**\n\n"
+        "📌 *Instructions:* Waiting for 3 Green candles zone -> Red touch -> Green -> 2-3 Red candles -> Buy Entry."
     )
 
   # --- CLEAN CANDLESTICK CHART RENDERING ---
