@@ -32,7 +32,7 @@ count = st_autorefresh(interval=30000, key="twt_multi_refresh")
 
 st.title("⚡ TRADE WITH TUCKYAA — Multi-Asset Mid-Zone Precision Engine")
 
-# Initialize Permanent Signal Lock Storage in Streamlit Session State
+# Initialize Permanent Signal Lock Storage safely in main thread session state
 if "locked_signals" not in st.session_state:
   st.session_state["locked_signals"] = {}
 
@@ -127,7 +127,7 @@ def fetch_multi_asset_ohlcv(symbol, timeframe="5m", limit=180):
 
 
 # ---------------------------------------------------------
-# MID-ZONE PRECISION ENGINE
+# MID-ZONE PRECISION ENGINE (Thread-Safe Calculation)
 # ---------------------------------------------------------
 class TWTMultiAssetMidZoneEngine:
 
@@ -224,62 +224,56 @@ class TWTMultiAssetMidZoneEngine:
     latest_buy = None
     latest_sell = None
 
-    # Scan backwards with Static Timestamp Memory Lock
+    # Scan backwards to get raw calculated entries (Session locking applied in main thread)
     for c in reversed(self.candles):
       atr = c["atr"]
       dec = get_decimals(c["close"])
       candle_key_buy = f"{self.symbol}_{self.tf_name}_BUY_{c['raw_utc'].isoformat()}"
       candle_key_sell = f"{self.symbol}_{self.tf_name}_SELL_{c['raw_utc'].isoformat()}"
 
-      # 🟢 BUY Entry Lock
+      # 🟢 BUY Entry Calculation
       if not latest_buy and c["low"] <= self.demand_mid and c["color"] == "Green":
-        if candle_key_buy in st.session_state["locked_signals"]:
-          latest_buy = st.session_state["locked_signals"][candle_key_buy]
-        else:
-          sl = round(demand_zone_low - (1.0 * atr), dec)
-          tp1 = round(c["close"] + (1.2 * atr), dec)
-          tp2 = round(c["close"] + (2.5 * atr), dec)
-          tp3 = round(c["close"] + (4.0 * atr), dec)
+        sl = round(demand_zone_low - (1.0 * atr), dec)
+        tp1 = round(c["close"] + (1.2 * atr), dec)
+        tp2 = round(c["close"] + (2.5 * atr), dec)
+        tp3 = round(c["close"] + (4.0 * atr), dec)
 
-          latest_buy = {
-              "Asset": self.symbol,
-              "Time": c["time"],
-              "Candle #": c["id"],
-              "Type": "BUY 🟢",
-              "Setup": "Demand Midpoint Bounce",
-              "Entry Price": round(c["close"], dec),
-              "Stop Loss (SL)": sl,
-              "TP 1": tp1,
-              "TP 2": tp2,
-              "TP 3": tp3,
-              "Is_Within_1hr": c["is_within_1hr"],
-          }
-          st.session_state["locked_signals"][candle_key_buy] = latest_buy
+        latest_buy = {
+            "Asset": self.symbol,
+            "Time": c["time"],
+            "Candle #": c["id"],
+            "Type": "BUY 🟢",
+            "Setup": "Demand Midpoint Bounce",
+            "Entry Price": round(c["close"], dec),
+            "Stop Loss (SL)": sl,
+            "TP 1": tp1,
+            "TP 2": tp2,
+            "TP 3": tp3,
+            "Is_Within_1hr": c["is_within_1hr"],
+            "lock_key": candle_key_buy,
+        }
 
-      # 🔴 SELL Entry Lock
+      # 🔴 SELL Entry Calculation
       if not latest_sell and c["high"] >= self.supply_mid and c["color"] == "Red":
-        if candle_key_sell in st.session_state["locked_signals"]:
-          latest_sell = st.session_state["locked_signals"][candle_key_sell]
-        else:
-          sl = round(supply_zone_high + (1.0 * atr), dec)
-          tp1 = round(c["close"] - (1.2 * atr), dec)
-          tp2 = round(c["close"] - (2.5 * atr), dec)
-          tp3 = round(c["close"] - (4.0 * atr), dec)
+        sl = round(supply_zone_high + (1.0 * atr), dec)
+        tp1 = round(c["close"] - (1.2 * atr), dec)
+        tp2 = round(c["close"] - (2.5 * atr), dec)
+        tp3 = round(c["close"] - (4.0 * atr), dec)
 
-          latest_sell = {
-              "Asset": self.symbol,
-              "Time": c["time"],
-              "Candle #": c["id"],
-              "Type": "SELL 🔴",
-              "Setup": "Supply Midpoint Rejection",
-              "Entry Price": round(c["close"], dec),
-              "Stop Loss (SL)": sl,
-              "TP 1": tp1,
-              "TP 2": tp2,
-              "TP 3": tp3,
-              "Is_Within_1hr": c["is_within_1hr"],
-          }
-          st.session_state["locked_signals"][candle_key_sell] = latest_sell
+        latest_sell = {
+            "Asset": self.symbol,
+            "Time": c["time"],
+            "Candle #": c["id"],
+            "Type": "SELL 🔴",
+            "Setup": "Supply Midpoint Rejection",
+            "Entry Price": round(c["close"], dec),
+            "Stop Loss (SL)": sl,
+            "TP 1": tp1,
+            "TP 2": tp2,
+            "TP 3": tp3,
+            "Is_Within_1hr": c["is_within_1hr"],
+            "lock_key": candle_key_sell,
+        }
 
       if latest_buy and latest_sell:
         break
@@ -322,12 +316,20 @@ with st.spinner("⚡ Parallel scanning 20+ assets for Mid-Zone entries..."):
       if engine:
         asset_engines[sym] = engine
       if sigs:
-        master_signals.extend(sigs)
+        # Safe Thread-Free Session State Locking in Main Thread
+        for sig in sigs:
+          l_key = sig.get("lock_key")
+          if l_key:
+            if l_key in st.session_state["locked_signals"]:
+              master_signals.append(st.session_state["locked_signals"][l_key])
+            else:
+              st.session_state["locked_signals"][l_key] = sig
+              master_signals.append(sig)
 
 if master_signals:
   st.success(f"✅ Found {len(master_signals)} active Mid-Zone setup(s) across 20+ assets!")
   df_display = pd.DataFrame(master_signals).drop(
-      columns=["Is_Within_1hr"], errors="ignore"
+      columns=["Is_Within_1hr", "lock_key"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
@@ -364,9 +366,22 @@ if bot.df is not None and not bot.df.empty:
     st.metric(label="Timezone", value=selected_tz_name.split(")")[0] + ")")
 
   if bot.history:
+    # Process history with lock keys safely
+    processed_history = []
+    for h in bot.history:
+      lk = h.get("lock_key")
+      if lk:
+        if lk in st.session_state["locked_signals"]:
+          processed_history.append(st.session_state["locked_signals"][lk])
+        else:
+          st.session_state["locked_signals"][lk] = h
+          processed_history.append(h)
+      else:
+        processed_history.append(h)
+
     st.markdown(f"### 📋 Exact Mid-Zone Entries Feed for {selected_symbol}")
-    df_history = pd.DataFrame(bot.history).drop(
-        columns=["Is_Within_1hr"], errors="ignore"
+    df_history = pd.DataFrame(processed_history).drop(
+        columns=["Is_Within_1hr", "lock_key"], errors="ignore"
     )
     st.dataframe(df_history, width="stretch")
 
