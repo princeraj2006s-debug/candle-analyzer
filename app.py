@@ -126,7 +126,7 @@ def fetch_twt_delta_data(symbol, tf):
     return None, None, None
 
 # ==========================================================
-# TWT ADVANCED PULLBACK ENGINE (CORRECTED TREND MAPPING & WICK 45-57%)
+# TWT ADVANCED PULLBACK ENGINE (IMMEDIATE FIRST CANDLE TRIGGER)
 # ==========================================================
 class TWTSafeSecondRedEngine:
     def __init__(self, df_5, df_4, df_6, symbol, user_tz):
@@ -212,18 +212,17 @@ class TWTSafeSecondRedEngine:
                 "is_within_1hr": is_within_1hr,
             })
 
-        # --- CORRECTED MAPPING: UPTREND = BUY, DOWNTREND = SELL (45%-57% WICK) ---
+        # --- IMMEDIATE FIRST CANDLE TRIGGER (NO DELAY, 45-57% WICK) ---
         buy_signal_found = False
         sell_signal_found = False
 
-        for i in range(2, len(self.candles)):
+        for i in range(1, len(self.candles)):
             c = self.candles[i]
-            prev2 = self.candles[i-2]
             dec = get_decimals(c["close"])
             atr = c["atr"] if not np.isnan(c["atr"]) else (c["close"] * 0.002)
 
-            # 1. BUYER ENTRY: Strictly in UPTREND when Lower Wick is between 45% and 57%
-            if not buy_signal_found and c["trend"] == "Uptrend" and (45.0 <= prev2["lower_wick_pct"] <= 57.0):
+            # 1. BUYER ENTRY: Uptrend + First Green Candle + Lower Wick 45%-57%
+            if not buy_signal_found and c["trend"] == "Uptrend" and c["color"] == "Green" and (45.0 <= c["lower_wick_pct"] <= 57.0):
                 sl = round(c["low"] - (1.2 * atr), dec)
                 tp1 = round(c["close"] + (1.2 * atr), dec)
                 tp2 = round(c["close"] + (2.5 * atr), dec)
@@ -236,12 +235,12 @@ class TWTSafeSecondRedEngine:
                     "Candle #": c["id"],
                     "Type": "BUYER",
                     "Trend": "Uptrend",
-                    "Pullback": "Pullback 3",
+                    "Pullback": "Immediate Rebound",
                     "State": "SIGNAL_VALID",
-                    "BuyerStrength": "Confirmed (Uptrend Rebound)",
+                    "BuyerStrength": "Immediate Uptrend Rebound",
                     "SellerWeakness": "Confirmed",
-                    "WickRejection": f"Lower Wick {prev2['lower_wick_pct']:.1f}% (45-57%)",
-                    "Confirmation": "Valid Uptrend Buyer Rebound",
+                    "WickRejection": f"Lower Wick {c['lower_wick_pct']:.1f}% (45-57%)",
+                    "Confirmation": "First Green Candle Rebound",
                     "Entry Price": round(c["close"], dec),
                     "Stop Loss (SL)": sl,
                     "TP 1": tp1,
@@ -255,8 +254,8 @@ class TWTSafeSecondRedEngine:
                 })
                 buy_signal_found = True
 
-            # 2. SELLER ENTRY: Strictly in DOWNTREND when Upper Wick is between 45% and 57%
-            elif not sell_signal_found and c["trend"] == "Downtrend" and (45.0 <= prev2["upper_wick_pct"] <= 57.0):
+            # 2. SELLER ENTRY: Downtrend + First Red Candle + Upper Wick 45%-57%
+            elif not sell_signal_found and c["trend"] == "Downtrend" and c["color"] == "Red" and (45.0 <= c["upper_wick_pct"] <= 57.0):
                 sl = round(c["high"] + (1.2 * atr), dec)
                 tp1 = round(c["close"] - (1.2 * atr), dec)
                 tp2 = round(c["close"] - (2.5 * atr), dec)
@@ -269,12 +268,12 @@ class TWTSafeSecondRedEngine:
                     "Candle #": c["id"],
                     "Type": "SELLER",
                     "Trend": "Downtrend",
-                    "Pullback": "Pullback 3",
+                    "Pullback": "Immediate Rejection",
                     "State": "SIGNAL_VALID",
-                    "SellerStrength": "Confirmed (Downtrend Rejection)",
+                    "SellerStrength": "Immediate Downtrend Rejection",
                     "BuyerWeakness": "Confirmed",
-                    "WickRejection": f"Upper Wick {prev2['upper_wick_pct']:.1f}% (45-57%)",
-                    "Confirmation": "Valid Downtrend Seller Rejection",
+                    "WickRejection": f"Upper Wick {c['upper_wick_pct']:.1f}% (45-57%)",
+                    "Confirmation": "First Red Candle Rejection",
                     "Entry Price": round(c["close"], dec),
                     "Stop Loss (SL)": sl,
                     "TP 1": tp1,
@@ -307,7 +306,7 @@ def scan_single_asset(sym):
         return sym, engine, latest
     return sym, None, None
 
-with st.spinner("⚡ Scanning assets with Corrected Trend Engine..."):
+with st.spinner("⚡ Scanning assets with Immediate Trigger Engine..."):
     with ThreadPoolExecutor(max_workers=5) as executor:
         futures = {executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST}
         for future in as_completed(futures):
@@ -322,7 +321,7 @@ if master_signals:
     df_display = pd.DataFrame(master_signals).drop(columns=["Is_Within_1hr"], errors="ignore")
     st.dataframe(df_display, use_container_width=True)
 else:
-    st.info("ℹ️ No high-conviction signals matching 45-57% wick rule in the last 1 hour.")
+    st.info("ℹ️ No high-conviction signals matching immediate trigger in the last 1 hour.")
 
 # ==========================================================
 # MANUAL ASSET SELECTOR & CHART VIEWER (ISOLATED)
@@ -357,7 +356,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     with col3:
         st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
     with col4:
-        st.metric(label="Timezone", value=tz_short, delta="Corrected Trend Active")
+        st.metric(label="Timezone", value=tz_short, delta="Immediate Trigger Active")
 
     if bot.signals:
         latest_sig = bot.signals[-1]
@@ -394,7 +393,7 @@ Target: {latest_sig['Target']}
 Risk-to-Reward: {latest_sig['RR']}
 Signal Status: VALID (Score: {latest_sig['Score']}/100)""", language="text")
     else:
-        st.warning(f"🟡 **STATUS: WAITING FOR VALID 45-57% WICK SETUP ON {selected_symbol}**")
+        st.warning(f"🟡 **STATUS: WAITING FOR IMMEDIATE 45-57% WICK SETUP ON {selected_symbol}**")
 
     # ==========================================================
     # INTERACTIVE PAPER TRADING DESK (ISOLATED)
