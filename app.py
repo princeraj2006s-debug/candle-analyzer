@@ -8,7 +8,7 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(
-    page_title="TWT BTC Time-Session Strategy by TUCKYAA", page_icon="⚡", layout="wide"
+    page_title="TWT BTC Precision Zone Strategy by TUCKYAA", page_icon="⚡", layout="wide"
 )
 
 # Hide Streamlit Header, Footer, Menu & GitHub Icon via CSS
@@ -39,7 +39,7 @@ ASSET_LIST = ["BTC/USDT"]
 # Safe Auto-refresh every 30 seconds
 count = st_autorefresh(interval=30000, key="twt_btc_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA (BTC PRO) — Session & Zone-Protected Engine")
+st.title("⚡ TRADE WITH TUCKYAA (BTC PRO) — Precision Zone & Pullback Rejection Engine")
 
 col_tf, col_tz = st.columns([1, 2])
 with col_tf:
@@ -63,9 +63,9 @@ st.sidebar.text(
 )
 st.sidebar.text("Active Asset       ———  BTC/USDT Only")
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Session & Strategy Rules")
-st.sidebar.text("01:00 ➔ 11:00 : Downtrend + 3 Red Candles ➔ SELL ONLY")
-st.sidebar.text("13:00 ➔ 21:00 : Uptrend + 3 Green Candles ➔ BUY ONLY")
+st.sidebar.markdown("#### Precision Strategy Rules")
+st.sidebar.text("01:00 ➔ 11:00 : 3 Red Zone ➔ Price Pullback to Zone ➔ Red Candle Rejection ➔ SELL ONLY")
+st.sidebar.text("13:00 ➔ 21:00 : 3 Green Zone ➔ Price Pullback to Zone ➔ Green Candle Rejection ➔ BUY ONLY")
 st.sidebar.text("Risk Mgmt    : ATR Managed SL & Multi-TP")
 
 
@@ -122,9 +122,6 @@ class TWT3CandleZoneEngine:
     IST = timezone(timedelta(hours=5, minutes=30))
     current_utc_time = datetime.now(timezone.utc)
 
-    self.df["EMA50"] = self.df["Close"].ewm(span=50, adjust=False).mean()
-    self.df["EMA200"] = self.df["Close"].ewm(span=200, adjust=False).mean()
-
     self.df["TR"] = np.maximum(
         self.df["High"] - self.df["Low"],
         np.maximum(
@@ -151,8 +148,6 @@ class TWT3CandleZoneEngine:
           float(r["Volume"]),
       )
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
-      ema50 = float(r["EMA50"]) if not pd.isna(r["EMA50"]) else c
-      ema200 = float(r["EMA200"]) if not pd.isna(r["EMA200"]) else c
       body = abs(c - o)
 
       age_minutes = (current_utc_time - dt_utc).total_seconds() / 60.0
@@ -171,24 +166,18 @@ class TWT3CandleZoneEngine:
           "volume": v,
           "atr": atr,
           "body": body,
-          "ema50": ema50,
-          "ema200": ema200,
           "is_within_1hr": is_within_1hr,
       })
 
     found_signal = None
-    bodies = [c["body"] for c in self.candles]
-    avg_body = np.mean(bodies) if bodies else 0.001
 
     for i in range(5, len(self.candles) - 1):
       c = self.candles[i]
       t_ist = c["dt_ist"].time()
 
-      # Check Session Time Windows (IST based)
       is_morning_session = time(1, 0) <= t_ist <= time(11, 0)
       is_evening_session = time(13, 0) <= t_ist <= time(21, 0)
 
-      # If outside these sessions, skip scanning
       if not is_morning_session and not is_evening_session:
         continue
 
@@ -196,10 +185,10 @@ class TWT3CandleZoneEngine:
       dec = get_decimals(c["close"])
 
       # ==========================================================
-      # SESSION 1: 13:00 to 21:00 ➔ UPTREND / BUY ONLY
+      # 1. EVENING SESSION (13:00 to 21:00) ➔ 3 Green Zone + Pullback + Green Rejection ➔ BUY
       # ==========================================================
       if is_evening_session:
-        for start in range(max(0, i - 15), i - 2):
+        for start in range(max(0, i - 20), i - 3):
           c1 = self.candles[start]
           c2 = self.candles[start + 1]
           c3 = self.candles[start + 2]
@@ -208,42 +197,40 @@ class TWT3CandleZoneEngine:
             zone_high = max(c1["high"], c2["high"], c3["high"])
             zone_low = min(c1["low"], c2["low"], c3["low"])
 
+            # Check if price pulls back to zone and gives a Green rejection candle
             for k in range(start + 3, i + 1):
               test_c = self.candles[k]
               if test_c["low"] <= zone_high and test_c["close"] >= zone_low:
-                if test_c["body"] <= avg_body * 1.5:
-                  if k + 1 <= i:
-                    next_c = self.candles[k + 1]
-                    if next_c["color"] == "Green":
-                      sl = round(zone_low - (1.2 * atr), dec)
-                      tp1 = round(next_c["close"] + (1.2 * atr), dec)
-                      tp2 = round(next_c["close"] + (2.5 * atr), dec)
-                      tp3 = round(next_c["close"] + (4.0 * atr), dec)
+                if test_c["color"] == "Green": # Rejection green candle in zone
+                  sl = round(zone_low - (1.2 * atr), dec)
+                  tp1 = round(test_c["close"] + (1.2 * atr), dec)
+                  tp2 = round(test_c["close"] + (2.5 * atr), dec)
+                  tp3 = round(test_c["close"] + (4.0 * atr), dec)
 
-                      self.zone_box = (zone_low, zone_high, start, start + 2)
-                      found_signal = {
-                          "Asset": self.symbol,
-                          "Time": next_c["time"],
-                          "Candle #": next_c["id"],
-                          "Type": "BUY 🟢",
-                          "Setup": "13:00-21:00 Session: 3-Green Zone Buy",
-                          "Action": "Buy / Long (B) [Evening Uptrend Zone] 🟢",
-                          "Entry Price": round(next_c["close"], dec),
-                          "Stop Loss (SL)": sl,
-                          "TP 1": tp1,
-                          "TP 2": tp2,
-                          "TP 3": tp3,
-                          "Is_Within_1hr": next_c["is_within_1hr"],
-                      }
-                      break
+                  self.zone_box = (zone_low, zone_high, start, start + 2)
+                  found_signal = {
+                      "Asset": self.symbol,
+                      "Time": test_c["time"],
+                      "Candle #": test_c["id"],
+                      "Type": "BUY 🟢",
+                      "Setup": "3-Green Zone Pullback Green Rejection",
+                      "Action": "Buy / Long (B) [Zone Pullback Rejection] 🟢",
+                      "Entry Price": round(test_c["close"], dec),
+                      "Stop Loss (SL)": sl,
+                      "TP 1": tp1,
+                      "TP 2": tp2,
+                      "TP 3": tp3,
+                      "Is_Within_1hr": test_c["is_within_1hr"],
+                  }
+                  break
             if found_signal:
               break
 
       # ==========================================================
-      # SESSION 2: 01:00 to 11:00 ➔ DOWNTREND / SELL ONLY
+      # 2. MORNING SESSION (01:00 to 11:00) ➔ 3 Red Zone + Pullback + Red Rejection ➔ SELL
       # ==========================================================
       if is_morning_session:
-        for start in range(max(0, i - 15), i - 2):
+        for start in range(max(0, i - 20), i - 3):
           c1 = self.candles[start]
           c2 = self.candles[start + 1]
           c3 = self.candles[start + 2]
@@ -252,34 +239,32 @@ class TWT3CandleZoneEngine:
             zone_high = max(c1["high"], c2["high"], c3["high"])
             zone_low = min(c1["low"], c2["low"], c3["low"])
 
+            # Check if price pulls back up to zone and gives a Red rejection candle
             for k in range(start + 3, i + 1):
               test_c = self.candles[k]
               if test_c["high"] >= zone_low and test_c["close"] <= zone_high:
-                if test_c["body"] <= avg_body * 1.5:
-                  if k + 1 <= i:
-                    next_c = self.candles[k + 1]
-                    if next_c["color"] == "Red":
-                      sl = round(zone_high + (1.2 * atr), dec)
-                      tp1 = round(next_c["close"] - (1.2 * atr), dec)
-                      tp2 = round(next_c["close"] - (2.5 * atr), dec)
-                      tp3 = round(next_c["close"] - (4.0 * atr), dec)
+                if test_c["color"] == "Red": # Rejection red candle in zone
+                  sl = round(zone_high + (1.2 * atr), dec)
+                  tp1 = round(test_c["close"] - (1.2 * atr), dec)
+                  tp2 = round(test_c["close"] - (2.5 * atr), dec)
+                  tp3 = round(test_c["close"] - (4.0 * atr), dec)
 
-                      self.zone_box = (zone_low, zone_high, start, start + 2)
-                      found_signal = {
-                          "Asset": self.symbol,
-                          "Time": next_c["time"],
-                          "Candle #": next_c["id"],
-                          "Type": "SELL 🔴",
-                          "Setup": "01:00-11:00 Session: 3-Red Zone Sell",
-                          "Action": "Sell / Short (S) [Morning Downtrend Zone] 🔴",
-                          "Entry Price": round(next_c["close"], dec),
-                          "Stop Loss (SL)": sl,
-                          "TP 1": tp1,
-                          "TP 2": tp2,
-                          "TP 3": tp3,
-                          "Is_Within_1hr": next_c["is_within_1hr"],
-                      }
-                      break
+                  self.zone_box = (zone_low, zone_high, start, start + 2)
+                  found_signal = {
+                      "Asset": self.symbol,
+                      "Time": test_c["time"],
+                      "Candle #": test_c["id"],
+                      "Type": "SELL 🔴",
+                      "Setup": "3-Red Zone Pullback Red Rejection",
+                      "Action": "Sell / Short (S) [Zone Pullback Rejection] 🔴",
+                      "Entry Price": round(test_c["close"], dec),
+                      "Stop Loss (SL)": sl,
+                      "TP 1": tp1,
+                      "TP 2": tp2,
+                      "TP 3": tp3,
+                      "Is_Within_1hr": test_c["is_within_1hr"],
+                  }
+                  break
             if found_signal:
               break
 
@@ -305,13 +290,13 @@ bot.calculate_and_scan()
 master_signals = [s for s in bot.signals if s.get("Is_Within_1hr", False)]
 
 if master_signals:
-  st.success("✅ Active Session-Based BTC Setup Found!")
+  st.success("✅ Active Precision Zone BTC Setup Found!")
   df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active signal in the last 1 hour. Waiting for session time-window & zone reaction...")
+  st.info("ℹ️ No active signal in the last 1 hour. Waiting for session pullback & candle rejection on BTC...")
 
 # --- MANUAL INSPECTOR & CHART VIEWER ---
 st.markdown("---")
@@ -324,9 +309,9 @@ if bot.df is not None and not bot.df.empty:
   with col1:
     st.metric(label="Current BTC Price", value=f"{curr_p:.2f}")
   with col2:
-    st.metric(label="Session Filter", value="Active Session Window")
+    st.metric(label="Session Window", value="Active Trading Session")
   with col3:
-    st.metric(label="Timezone", value=tz_short, delta="Time-Session Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Precision Engine Active")
 
   if bot.signals:
     latest_sig = bot.signals[0]
@@ -359,7 +344,7 @@ if bot.df is not None and not bot.df.empty:
   else:
     st.warning(
         "🟡 **STATUS: SCANNING BTC**\n\n"
-        "📌 *Instructions:* Waiting for correct session timing (01:00-11:00 for Sell / 13:00-21:00 for Buy) + zone reaction."
+        "📌 *Instructions:* Waiting for 3 candles zone creation -> price pullback to zone -> rejection candle entry."
     )
 
   # --- CLEAN CANDLESTICK CHART RENDERING ---
@@ -403,7 +388,7 @@ if bot.df is not None and not bot.df.empty:
     )
 
   ax.set_title(
-      f"BTC/USDT {selected_tf} — TWT Time-Session Zone Engine ({tz_short})",
+      f"BTC/USDT {selected_tf} — TWT Precision Zone Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
