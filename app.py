@@ -8,7 +8,7 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(
-    page_title="TWT BTC Precision First Candle Strategy by TUCKYAA", page_icon="⚡", layout="wide"
+    page_title="TWT BTC Multi-Candle Retracement Strategy by TUCKYAA", page_icon="⚡", layout="wide"
 )
 
 # Hide Streamlit Header, Footer, Menu & GitHub Icon via CSS
@@ -39,7 +39,7 @@ ASSET_LIST = ["BTC/USDT"]
 # Safe Auto-refresh every 30 seconds
 count = st_autorefresh(interval=30000, key="twt_btc_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA (BTC PRO) — First Zone Candle Entry Engine")
+st.title("⚡ TRADE WITH TUCKYAA (BTC PRO) — Retracement Zone Entry Engine")
 
 col_tf, col_tz = st.columns([1, 2])
 with col_tf:
@@ -63,9 +63,9 @@ st.sidebar.text(
 )
 st.sidebar.text("Active Asset       ———  BTC/USDT Only")
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### First Candle Rules")
-st.sidebar.text("01:00 ➔ 11:00 : 3 Red Zone ➔ Price touches zone ➔ 1st Red Candle ➔ SELL")
-st.sidebar.text("13:00 ➔ 21:00 : 3 Green Zone ➔ Price touches zone ➔ 1st Green Candle ➔ BUY")
+st.sidebar.markdown("#### Retracement Rules")
+st.sidebar.text("01:00 ➔ 11:00 : 3 Red Zone ➔ Green Touch ➔ Red ➔ 2-3 Green ➔ SELL")
+st.sidebar.text("13:00 ➔ 21:00 : 3 Green Zone ➔ Red Touch ➔ Green ➔ 2-3 Red ➔ BUY")
 st.sidebar.text("Risk Mgmt    : ATR Managed SL & Multi-TP")
 
 
@@ -91,7 +91,7 @@ def fetch_btc_data(symbol, tf):
       exchange = ex_class({"enableRateLimit": True, "timeout": 15000})
       exchange.load_markets()
       if sym in exchange.markets:
-        ohlcv_tf = exchange.fetch_ohlcv(sym, timeframe=tf, limit=150)
+        ohlcv_tf = exchange.fetch_ohlcv(sym, timeframe=tf, limit=160)
         if ohlcv_tf:
           df = pd.DataFrame(
               ohlcv_tf,
@@ -169,7 +169,7 @@ class TWT3CandleZoneEngine:
 
     found_signal = None
 
-    for i in range(5, len(self.candles)):
+    for i in range(8, len(self.candles)):
       c = self.candles[i]
       t_ist = c["dt_ist"].time()
 
@@ -183,84 +183,118 @@ class TWT3CandleZoneEngine:
       dec = get_decimals(c["close"])
 
       # ==========================================================
-      # 1. EVENING SESSION (13:00 to 21:00) ➔ 3 Green Zone ➔ 1st Green Candle on touch ➔ BUY
-      # ==========================================================
-      if is_evening_session:
-        for start in range(max(0, i - 20), i - 3):
-          c1 = self.candles[start]
-          c2 = self.candles[start + 1]
-          c3 = self.candles[start + 2]
-
-          if c1["color"] == "Green" and c2["color"] == "Green" and c3["color"] == "Green":
-            zone_high = max(c1["high"], c2["high"], c3["high"])
-            zone_low = min(c1["low"], c2["low"], c3["low"])
-
-            for k in range(start + 3, i + 1):
-              test_c = self.candles[k]
-              if test_c["low"] <= zone_high and test_c["close"] >= zone_low:
-                if test_c["color"] == "Green":
-                  sl = round(zone_low - (1.2 * atr), dec)
-                  tp1 = round(test_c["close"] + (1.2 * atr), dec)
-                  tp2 = round(test_c["close"] + (2.5 * atr), dec)
-                  tp3 = round(test_c["close"] + (4.0 * atr), dec)
-
-                  self.zone_box = (zone_low, zone_high, start, start + 2)
-                  found_signal = {
-                      "Asset": self.symbol,
-                      "Time": test_c["time"],
-                      "Candle #": test_c["id"],
-                      "Type": "BUY 🟢",
-                      "Setup": "3-Green Zone + First Green Touch",
-                      "Action": "Buy / Long (B) [First Zone Candle] 🟢",
-                      "Entry Price": round(test_c["close"], dec),
-                      "Stop Loss (SL)": sl,
-                      "TP 1": tp1,
-                      "TP 2": tp2,
-                      "TP 3": tp3,
-                      "Is_Within_1hr": test_c["is_within_1hr"],
-                  }
-                  break
-            if found_signal:
-              break
-
-      # ==========================================================
-      # 2. MORNING SESSION (01:00 to 11:00) ➔ 3 Red Zone ➔ 1st Red Candle on touch ➔ SELL
+      # 1. MORNING SESSION (01:00 to 11:00) ➔ SELL SETUP
       # ==========================================================
       if is_morning_session:
-        for start in range(max(0, i - 20), i - 3):
+        for start in range(max(0, i - 25), i - 5):
           c1 = self.candles[start]
           c2 = self.candles[start + 1]
           c3 = self.candles[start + 2]
 
+          # 3 consecutive Red candles form zone
           if c1["color"] == "Red" and c2["color"] == "Red" and c3["color"] == "Red":
             zone_high = max(c1["high"], c2["high"], c3["high"])
             zone_low = min(c1["low"], c2["low"], c3["low"])
 
-            for k in range(start + 3, i + 1):
-              test_c = self.candles[k]
-              if test_c["high"] >= zone_low and test_c["close"] <= zone_high:
-                if test_c["color"] == "Red":
-                  sl = round(zone_high + (1.2 * atr), dec)
-                  tp1 = round(test_c["close"] - (1.2 * atr), dec)
-                  tp2 = round(test_c["close"] - (2.5 * atr), dec)
-                  tp3 = round(test_c["close"] - (4.0 * atr), dec)
+            # Check sequence: Green candle touches zone -> Red candle -> 2 or 3 Green candles -> Entry Red candle
+            for k in range(start + 3, i - 3):
+              touch_c = self.candles[k]
+              if touch_c["color"] == "Green" and touch_c["high"] >= zone_low and touch_c["close"] <= zone_high:
+                # Next must be a Red candle
+                if k + 1 < len(self.candles) and self.candles[k + 1]["color"] == "Red":
+                  # Followed by 2 or 3 Green candles
+                  green_count = 0
+                  valid_sequence = False
+                  end_idx = k + 1
+                  for g in range(k + 2, min(k + 5, len(self.candles))):
+                    if self.candles[g]["color"] == "Green":
+                      green_count += 1
+                      end_idx = g
+                    else:
+                      break
 
-                  self.zone_box = (zone_low, zone_high, start, start + 2)
-                  found_signal = {
-                      "Asset": self.symbol,
-                      "Time": test_c["time"],
-                      "Candle #": test_c["id"],
-                      "Type": "SELL 🔴",
-                      "Setup": "3-Red Zone + First Red Touch",
-                      "Action": "Sell / Short (S) [First Zone Candle] 🔴",
-                      "Entry Price": round(test_c["close"], dec),
-                      "Stop Loss (SL)": sl,
-                      "TP 1": tp1,
-                      "TP 2": tp2,
-                      "TP 3": tp3,
-                      "Is_Within_1hr": test_c["is_within_1hr"],
-                  }
-                  break
+                  if green_count >= 2:
+                    # After 2-3 green candles, look at the next red candle for entry
+                    if end_idx + 1 < len(self.candles):
+                      entry_c = self.candles[end_idx + 1]
+                      if entry_c["color"] == "Red":
+                        sl = round(zone_high + (1.2 * atr), dec)
+                        tp1 = round(entry_c["close"] - (1.2 * atr), dec)
+                        tp2 = round(entry_c["close"] - (2.5 * atr), dec)
+                        tp3 = round(entry_c["close"] - (4.0 * atr), dec)
+
+                        self.zone_box = (zone_low, zone_high, start, start + 2)
+                        found_signal = {
+                            "Asset": self.symbol,
+                            "Time": entry_c["time"],
+                            "Candle #": entry_c["id"],
+                            "Type": "SELL 🔴",
+                            "Setup": "3-Red Zone + Retracement + Red Entry",
+                            "Action": "Sell / Short (S) [Retracement Entry] 🔴",
+                            "Entry Price": round(entry_c["close"], dec),
+                            "Stop Loss (SL)": sl,
+                            "TP 1": tp1,
+                            "TP 2": tp2,
+                            "TP 3": tp3,
+                            "Is_Within_1hr": entry_c["is_within_1hr"],
+                        }
+                        break
+            if found_signal:
+              break
+
+      # ==========================================================
+      # 2. EVENING SESSION (13:00 to 21:00) ➔ BUY SETUP
+      # ==========================================================
+      if is_evening_session:
+        for start in range(max(0, i - 25), i - 5):
+          c1 = self.candles[start]
+          c2 = self.candles[start + 1]
+          c3 = self.candles[start + 2]
+
+          # 3 consecutive Green candles form zone
+          if c1["color"] == "Green" and c2["color"] == "Green" and c3["color"] == "Green":
+            zone_high = max(c1["high"], c2["high"], c3["high"])
+            zone_low = min(c1["low"], c2["low"], c3["low"])
+
+            # Check sequence: Red candle touches zone -> Green candle -> 2 or 3 Red candles -> Entry Green candle
+            for k in range(start + 3, i - 3):
+              touch_c = self.candles[k]
+              if touch_c["color"] == "Red" and touch_c["low"] <= zone_high and touch_c["close"] >= zone_low:
+                if k + 1 < len(self.candles) and self.candles[k + 1]["color"] == "Green":
+                  red_count = 0
+                  end_idx = k + 1
+                  for r_idx in range(k + 2, min(k + 5, len(self.candles))):
+                    if self.candles[r_idx]["color"] == "Red":
+                      red_count += 1
+                      end_idx = r_idx
+                    else:
+                      break
+
+                  if red_count >= 2:
+                    if end_idx + 1 < len(self.candles):
+                      entry_c = self.candles[end_idx + 1]
+                      if entry_c["color"] == "Green":
+                        sl = round(zone_low - (1.2 * atr), dec)
+                        tp1 = round(entry_c["close"] + (1.2 * atr), dec)
+                        tp2 = round(entry_c["close"] + (2.5 * atr), dec)
+                        tp3 = round(entry_c["close"] + (4.0 * atr), dec)
+
+                        self.zone_box = (zone_low, zone_high, start, start + 2)
+                        found_signal = {
+                            "Asset": self.symbol,
+                            "Time": entry_c["time"],
+                            "Candle #": entry_c["id"],
+                            "Type": "BUY 🟢",
+                            "Setup": "3-Green Zone + Retracement + Green Entry",
+                            "Action": "Buy / Long (B) [Retracement Entry] 🟢",
+                            "Entry Price": round(entry_c["close"], dec),
+                            "Stop Loss (SL)": sl,
+                            "TP 1": tp1,
+                            "TP 2": tp2,
+                            "TP 3": tp3,
+                            "Is_Within_1hr": entry_c["is_within_1hr"],
+                        }
+                        break
             if found_signal:
               break
 
@@ -286,13 +320,13 @@ bot.calculate_and_scan()
 master_signals = [s for s in bot.signals if s.get("Is_Within_1hr", False)]
 
 if master_signals:
-  st.success("✅ Active First-Candle Zone BTC Setup Found!")
+  st.success("✅ Active Retracement Zone BTC Setup Found!")
   df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active signal in the last 1 hour. Waiting for session touch & first candle entry on BTC...")
+  st.info("ℹ️ No active signal in the last 1 hour. Waiting for exact retracement sequence on BTC...")
 
 # --- MANUAL INSPECTOR & CHART VIEWER ---
 st.markdown("---")
@@ -307,7 +341,7 @@ if bot.df is not None and not bot.df.empty:
   with col2:
     st.metric(label="Session Window", value="Active Trading Session")
   with col3:
-    st.metric(label="Timezone", value=tz_short, delta="First-Candle Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Retracement Engine Active")
 
   if bot.signals:
     latest_sig = bot.signals[0]
@@ -340,7 +374,7 @@ if bot.df is not None and not bot.df.empty:
   else:
     st.warning(
         "🟡 **STATUS: SCANNING BTC**\n\n"
-        "📌 *Instructions:* Waiting for 3 candles zone creation -> price touch -> first matching candle entry."
+        "📌 *Instructions:* Waiting for 3 candles zone -> zone touch -> retracement sequence -> entry candle."
     )
 
   # --- CLEAN CANDLESTICK CHART RENDERING ---
@@ -384,7 +418,7 @@ if bot.df is not None and not bot.df.empty:
     )
 
   ax.set_title(
-      f"BTC/USDT {selected_tf} — TWT First Candle Zone Engine ({tz_short})",
+      f"BTC/USDT {selected_tf} — TWT Retracement Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
