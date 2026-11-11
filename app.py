@@ -12,7 +12,7 @@ from streamlit_autorefresh import st_autorefresh
 # STREAMLIT PAGE CONFIGURATION
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="TWT Multi-Asset Strict Single-Entry Bot",
+    page_title="TWT Multi-Asset Today-Only Precision Bot",
     page_icon="⚡",
     layout="wide",
 )
@@ -30,7 +30,7 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 # Safe Auto-refresh every 30 seconds
 count = st_autorefresh(interval=30000, key="twt_multi_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA — Strict Single-Entry Precision Engine")
+st.title("⚡ TRADE WITH TUCKYAA — Today-Only Precision Engine")
 
 # ---------------------------------------------------------
 # SIDEBAR CONFIGURATION
@@ -47,7 +47,7 @@ IANA_TIMEZONES = [
 ]
 selected_tz_name = st.sidebar.selectbox(
     "🌍 Trading Timezone (IANA)", options=IANA_TIMEZONES, index=0
-]
+)
 active_tz = ZoneInfo(selected_tz_name)
 
 selected_tf = st.sidebar.selectbox(
@@ -55,11 +55,11 @@ selected_tf = st.sidebar.selectbox(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Strict Rules")
-st.sidebar.text("Strictly 1 BUY & 1 SELL per Today")
-st.sidebar.text("No duplicate entries on repeated zone crosses")
-st.sidebar.text("Demand Midpoint ➔ Green ➔ First BUY Only")
-st.sidebar.text("Supply Midpoint ➔ Red   ➔ First SELL Only")
+st.sidebar.markdown("#### Today-Only Rules")
+st.sidebar.text("Zones & Entries calculated STRICTLY for Today")
+st.sidebar.text("Max 1 BUY & 1 SELL per Current Trading Day")
+st.sidebar.text("Demand Midpoint ➔ Green ➔ Today's BUY")
+st.sidebar.text("Supply Midpoint ➔ Red   ➔ Today's SELL")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -125,9 +125,9 @@ def fetch_multi_asset_ohlcv(symbol, timeframe="5m", limit=300):
 
 
 # ---------------------------------------------------------
-# STRICT SINGLE-ENTRY ENGINE
+# TODAY-ONLY PRECISION ENGINE
 # ---------------------------------------------------------
-class TWTStrictSingleEntryEngine:
+class TWTTodayOnlyEngine:
 
   def __init__(self, df, symbol, user_tz):
     self.df = df
@@ -186,7 +186,6 @@ class TWTStrictSingleEntryEngine:
     if not self.candles:
       return
 
-    # Isolate strictly today's candles
     latest_date = self.candles[-1]["date"]
     today_candles = [c for c in self.candles if c["date"] == latest_date]
 
@@ -216,7 +215,6 @@ class TWTStrictSingleEntryEngine:
     best_buy = None
     best_sell = None
 
-    # Scan strictly once to lock the very first touch of Demand Mid (Buy) and Supply Mid (Sell)
     for c in today_candles:
       atr = c["atr"]
       dec = get_decimals(c["close"])
@@ -234,7 +232,7 @@ class TWTStrictSingleEntryEngine:
               "Time": c["time"],
               "Candle #": c["id"],
               "Type": "BUY 🟢",
-              "Setup": "Strict Demand Midpoint Bounce",
+              "Setup": "Today's Demand Midpoint Bounce",
               "Entry Price": round(c["close"], dec),
               "Stop Loss (SL)": sl,
               "TP 1": tp1,
@@ -255,7 +253,7 @@ class TWTStrictSingleEntryEngine:
               "Time": c["time"],
               "Candle #": c["id"],
               "Type": "SELL 🔴",
-              "Setup": "Strict Supply Midpoint Rejection",
+              "Setup": "Today's Supply Midpoint Rejection",
               "Entry Price": round(c["close"], dec),
               "Stop Loss (SL)": sl,
               "TP 1": tp1,
@@ -277,7 +275,7 @@ class TWTStrictSingleEntryEngine:
 # MASTER MULTI-ASSET SCANNER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("🔥 TWT Master Strict Single-Entry Dashboard (20+ Assets)")
+st.subheader("🔥 TWT Master Today-Only Dashboard (20+ Assets)")
 
 master_signals = []
 asset_engines = {}
@@ -286,13 +284,13 @@ asset_engines = {}
 def scan_asset(sym):
   df = fetch_multi_asset_ohlcv(sym, selected_tf, limit=300)
   if df is not None and not df.empty:
-    engine = TWTStrictSingleEntryEngine(df, sym, active_tz)
+    engine = TWTTodayOnlyEngine(df, sym, active_tz)
     engine.calculate_and_scan()
     return sym, engine, engine.signals
   return sym, None, []
 
 
-with st.spinner("⚡ Parallel scanning 20+ assets with Strict Single-Entry Rules..."):
+with st.spinner("⚡ Parallel scanning 20+ assets for Today's Zones & Entries..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
@@ -303,11 +301,11 @@ with st.spinner("⚡ Parallel scanning 20+ assets with Strict Single-Entry Rules
         master_signals.extend(sigs)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} active strict setup(s) across assets!")
+  st.success(f"✅ Found {len(master_signals)} active today's setup(s) across assets!")
   df_display = pd.DataFrame(master_signals)
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active signals found yet. Check individual asset inspector below.")
+  st.info("ℹ️ No active today's signals found yet. Check individual asset inspector below.")
 
 # ---------------------------------------------------------
 # MANUAL ASSET INSPECTOR & CHART VIEWER
@@ -316,7 +314,7 @@ st.markdown("---")
 st.subheader("📊 Individual Asset Inspector & Chart")
 
 selected_symbol = st.selectbox(
-    "🔍 Select Asset to Load Strict Single-Entry Chart",
+    "🔍 Select Asset to Load Today-Only Chart",
     options=ASSET_LIST,
     index=0,
 )
@@ -325,7 +323,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df = fetch_multi_asset_ohlcv(selected_symbol, selected_tf, limit=300)
-  bot = TWTStrictSingleEntryEngine(df, selected_symbol, active_tz)
+  bot = TWTTodayOnlyEngine(df, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df is not None and not bot.df.empty:
@@ -335,12 +333,12 @@ if bot.df is not None and not bot.df.empty:
   with col1:
     st.metric(label=f"Current {selected_symbol} Price", value=f"{curr_p:.2f}")
   with col2:
-    st.metric(label="Strict Entries Locked", value=len(bot.history))
+    st.metric(label="Today's Selected Entries", value=len(bot.history))
   with col3:
     st.metric(label="Timezone", value=selected_tz_name.split(")")[0] + ")")
 
   if bot.history:
-    st.markdown(f"### 📋 Strict Entries Feed for {selected_symbol} (Max 1 Buy & 1 Sell)")
+    st.markdown(f"### 📋 Today's Dual-Entries Feed for {selected_symbol} (Strictly Today)")
     df_history = pd.DataFrame(bot.history)
     st.dataframe(df_history, width="stretch")
 
@@ -356,15 +354,14 @@ if bot.df is not None and not bot.df.empty:
     ax.bar(c["id"], body_height, bottom=lower_val, color=col, width=0.6, edgecolor=col)
     ax.vlines(c["id"], c["low"], c["high"], color=col, linewidth=1.2)
 
-  # Plot Demand and Supply Zones & Midlines
   if bot.demand_box:
     d_low, d_high = bot.demand_box
-    ax.axhspan(d_low, d_high, color="#26a69a", alpha=0.25, label="Demand Zone")
+    ax.axhspan(d_low, d_high, color="#26a69a", alpha=0.25, label="Today's Demand Zone")
     ax.axhline(bot.demand_mid, color="#00e676", linestyle=":", linewidth=1.5, label="Demand Midpoint")
 
   if bot.supply_box:
     s_low, s_high = bot.supply_box
-    ax.axhspan(s_low, s_high, color="#ef5350", alpha=0.25, label="Supply Zone")
+    ax.axhspan(s_low, s_high, color="#ef5350", alpha=0.25, label="Today's Supply Zone")
     ax.axhline(bot.supply_mid, color="#ff5252", linestyle=":", linewidth=1.5, label="Supply Midpoint")
 
   lows = [c["low"] for c in bot.candles]
@@ -391,7 +388,7 @@ if bot.df is not None and not bot.df.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} {selected_tf} — Strict Single-Entry Visualizer",
+      f"{selected_symbol} {selected_tf} — Today-Only Precision Visualizer",
       color="white",
       fontsize=14,
   )
