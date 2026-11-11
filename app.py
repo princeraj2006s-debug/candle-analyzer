@@ -7,7 +7,7 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(
-    page_title="TWT BTC Fixed Demand & Supply Zone Strategy", page_icon="⚡", layout="wide"
+    page_title="TWT BTC Flexible Zone Strategy by TUCKYAA", page_icon="⚡", layout="wide"
 )
 
 # Hide Streamlit Header, Footer, Menu & GitHub Icon via CSS
@@ -38,7 +38,7 @@ ASSET_LIST = ["BTC/USDT"]
 # Safe Auto-refresh every 30 seconds
 count = st_autorefresh(interval=30000, key="twt_btc_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA (BTC PRO) — Fixed Demand & Supply Engine")
+st.title("⚡ TRADE WITH TUCKYAA (BTC PRO) — Flexible Zone Engine")
 
 col_tf, col_tz = st.columns([1, 2])
 with col_tf:
@@ -62,9 +62,9 @@ st.sidebar.text(
 )
 st.sidebar.text("Active Asset       ———  BTC/USDT Only")
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Fixed Zone Rules")
-st.sidebar.text("Supply Zone (Sell) : Upper Fixed Box ➔ Green Test ➔ Red Engulf ➔ Green Pullback ➔ Red Entry")
-st.sidebar.text("Demand Zone (Buy)  : Lower Fixed Box ➔ Red Drop ➔ Green Overlap ➔ Red Pullback ➔ Green Entry")
+st.sidebar.markdown("#### Flexible Rules")
+st.sidebar.text("Supply Zone (Sell) : Upper Zone ➔ Bearish Rejection ➔ SELL")
+st.sidebar.text("Demand Zone (Buy)  : Lower Zone ➔ Bullish Bounce ➔ BUY")
 st.sidebar.text("Risk Mgmt          : ATR Managed SL & Multi-TP")
 
 
@@ -104,7 +104,7 @@ def fetch_btc_data(symbol, tf):
   return None
 
 
-class TWTFixedZoneEngine:
+class TWTFlexibleZoneEngine:
 
   def __init__(self, df, symbol, user_tz):
     self.df = df
@@ -169,23 +169,28 @@ class TWTFixedZoneEngine:
 
     found_signal = None
 
-    # Lock Fixed Demand Zone (Lower Support) & Fixed Supply Zone (Upper Resistance)
-    session_lows = [c["low"] for c in self.candles[:120]] if len(self.candles) >= 120 else [c["low"] for c in self.candles]
-    session_highs = [c["high"] for c in self.candles[:120]] if len(self.candles) >= 120 else [c["high"] for c in self.candles]
+    # Calculate reasonable Demand & Supply Zones based on recent swing ranges
+    lows = [c["low"] for c in self.candles]
+    highs = [c["high"] for c in self.candles]
     
-    if not session_lows or not session_highs:
+    if not lows or not highs:
       return
-    
-    fixed_demand_low = min(session_lows)
-    fixed_demand_high = fixed_demand_low + (self.candles[0]["atr"] * 1.8)
-    self.demand_box = (fixed_demand_low, fixed_demand_high)
 
-    fixed_supply_high = max(session_highs)
-    fixed_supply_low = fixed_supply_high - (self.candles[0]["atr"] * 1.8)
-    self.supply_box = (fixed_supply_low, fixed_supply_high)
+    min_price = min(lows)
+    max_price = max(highs)
+    atr_val = self.candles[-1]["atr"]
 
-    # Scan patterns across candles
-    for i in range(15, len(self.candles) - 2):
+    # Fixed clean boxes
+    demand_zone_low = min_price
+    demand_zone_high = min_price + (atr_val * 3.5)
+    self.demand_box = (demand_zone_low, demand_zone_high)
+
+    supply_zone_high = max_price
+    supply_zone_low = max_price - (atr_val * 3.5)
+    self.supply_box = (supply_zone_low, supply_zone_high)
+
+    # Scan recent candles for flexible zone interaction & reaction
+    for i in range(len(self.candles) - 1, 10, -1):
       c = self.candles[i]
       t_ist = c["dt_ist"].time()
       is_morning_session = time(1, 0) <= t_ist <= time(11, 0)
@@ -194,86 +199,54 @@ class TWTFixedZoneEngine:
       atr = c["atr"]
       dec = get_decimals(c["close"])
 
-      if i >= 4:
-        c_curr = self.candles[i]     # Entry Candle
-        c_prev1 = self.candles[i-1]  # Pullback Candle
-        c_prev2 = self.candles[i-2]  # Engulfing / Overlap Candle
-        c_prev3 = self.candles[i-3]  # Drop/Test Candle 2
-        c_prev4 = self.candles[i-4]  # Drop/Test Candle 1
+      # ---------------------------------------------------------
+      # 1. DEMAND ZONE BUY SETUP (Flexible Bounce)
+      # ---------------------------------------------------------
+      if c["low"] <= demand_zone_high and c["color"] == "Green":
+        sl = round(demand_zone_low - (1.0 * atr), dec)
+        tp1 = round(c["close"] + (1.2 * atr), dec)
+        tp2 = round(c["close"] + (2.5 * atr), dec)
+        tp3 = round(c["close"] + (4.0 * atr), dec)
 
-        # ==========================================================
-        # 1. DEMAND ZONE SETUP (BUY) — Evening Session Focus
-        # ==========================================================
-        if is_evening_session:
-          near_demand = any(
-              self.candles[idx]["low"] <= fixed_demand_high 
-              for idx in range(max(0, i-10), i)
-          )
-          if near_demand:
-            is_red_drop = (c_prev4["color"] == "Red" and c_prev3["color"] == "Red")
-            is_green_overlap = (c_prev2["color"] == "Green" and c_prev2["close"] > c_prev3["open"])
-            is_red_pullback = (c_prev1["color"] == "Red")
-            is_green_entry = (c_curr["color"] == "Green" and c_curr["close"] > c_prev1["open"])
+        found_signal = {
+            "Asset": self.symbol,
+            "Time": c["time"],
+            "Candle #": c["id"],
+            "Type": "BUY 🟢",
+            "Setup": "Flexible Demand Zone Bounce",
+            "Action": "Buy / Long (Demand Zone) 🟢",
+            "Entry Price": round(c["close"], dec),
+            "Stop Loss (SL)": sl,
+            "TP 1": tp1,
+            "TP 2": tp2,
+            "TP 3": tp3,
+            "Is_Within_1hr": c["is_within_1hr"],
+        }
+        break
 
-            if is_red_drop and is_green_overlap and is_red_pullback and is_green_entry:
-              sl = round(fixed_demand_low - (1.0 * atr), dec)
-              tp1 = round(c_curr["close"] + (1.2 * atr), dec)
-              tp2 = round(c_curr["close"] + (2.5 * atr), dec)
-              tp3 = round(c_curr["close"] + (4.0 * atr), dec)
+      # ---------------------------------------------------------
+      # 2. SUPPLY ZONE SELL SETUP (Flexible Rejection)
+      # ---------------------------------------------------------
+      if c["high"] >= supply_zone_low and c["color"] == "Red":
+        sl = round(supply_zone_high + (1.0 * atr), dec)
+        tp1 = round(c["close"] - (1.2 * atr), dec)
+        tp2 = round(c["close"] - (2.5 * atr), dec)
+        tp3 = round(c["close"] - (4.0 * atr), dec)
 
-              found_signal = {
-                  "Asset": self.symbol,
-                  "Time": c_curr["time"],
-                  "Candle #": c_curr["id"],
-                  "Type": "BUY 🟢",
-                  "Setup": "Fixed Demand Zone + Pullback Bounce",
-                  "Action": "Buy / Long (Fixed Demand Zone) 🟢",
-                  "Entry Price": round(c_curr["close"], dec),
-                  "Stop Loss (SL)": sl,
-                  "TP 1": tp1,
-                  "TP 2": tp2,
-                  "TP 3": tp3,
-                  "Is_Within_1hr": c_curr["is_within_1hr"],
-              }
-              break
-
-        # ==========================================================
-        # 2. SUPPLY ZONE SETUP (SELL) — Morning Session Focus
-        # ==========================================================
-        if is_morning_session or True:  # Allowing flexible scan or morning focus
-          near_supply = any(
-              self.candles[idx]["high"] >= fixed_supply_low 
-              for idx in range(max(0, i-10), i)
-          )
-          if near_supply:
-            is_green_push = (c_prev4["color"] == "Green" and c_prev3["color"] == "Green")
-            is_red_engulf = (c_prev2["color"] == "Red" and c_prev2["close"] < c_prev3["open"])
-            is_green_pullback = (c_prev1["color"] == "Green")
-            is_red_entry = (c_curr["color"] == "Red" and c_curr["close"] < c_prev1["open"])
-
-            if is_green_push and is_red_engulf and is_green_pullback and is_red_entry:
-              sl = round(fixed_supply_high + (1.0 * atr), dec)
-              tp1 = round(c_curr["close"] - (1.2 * atr), dec)
-              tp2 = round(c_curr["close"] - (2.5 * atr), dec)
-              tp3 = round(c_curr["close"] - (4.0 * atr), dec)
-
-              found_signal = {
-                  "Asset": self.symbol,
-                  "Time": c_curr["time"],
-                  "Candle #": c_curr["id"],
-                  "Type": "SELL 🔴",
-                  "Setup": "Fixed Supply Zone + Pullback Rejection",
-                  "Action": "Sell / Short (Fixed Supply Zone) 🔴",
-                  "Entry Price": round(c_curr["close"], dec),
-                  "Stop Loss (SL)": sl,
-                  "TP 1": tp1,
-                  "TP 2": tp2,
-                  "TP 3": tp3,
-                  "Is_Within_1hr": c_curr["is_within_1hr"],
-              }
-              break
-
-      if found_signal:
+        found_signal = {
+            "Asset": self.symbol,
+            "Time": c["time"],
+            "Candle #": c["id"],
+            "Type": "SELL 🔴",
+            "Setup": "Flexible Supply Zone Rejection",
+            "Action": "Sell / Short (Supply Zone) 🔴",
+            "Entry Price": round(c["close"], dec),
+            "Stop Loss (SL)": sl,
+            "TP 1": tp1,
+            "TP 2": tp2,
+            "TP 3": tp3,
+            "Is_Within_1hr": c["is_within_1hr"],
+        }
         break
 
     if found_signal:
@@ -286,26 +259,26 @@ class TWTFixedZoneEngine:
 # EXECUTION & DASHBOARD FOR BTC/USDT ONLY
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("🔥 BTC/USDT Fixed Demand & Supply Dashboard")
+st.subheader("🔥 BTC/USDT Flexible Zone Dashboard")
 
 df_btc = fetch_btc_data("BTC/USDT", selected_tf)
-bot = TWTFixedZoneEngine(df_btc, "BTC/USDT", active_tz)
+bot = TWTFlexibleZoneEngine(df_btc, "BTC/USDT", active_tz)
 bot.calculate_and_scan()
 
 master_signals = [s for s in bot.signals if s.get("Is_Within_1hr", False)]
 
 if master_signals:
-  st.success("✅ Active Fixed Zone BTC Setup Found!")
+  st.success("✅ Active Flexible Zone BTC Setup Found!")
   df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active signal in the last 1 hour. Waiting for exact fixed zone pullback pattern...")
+  st.info("ℹ️ No active signal in the last 1 hour. Waiting for price interaction at Demand or Supply zone...")
 
 # --- MANUAL INSPECTOR & CHART VIEWER ---
 st.markdown("---")
-st.subheader("📊 BTC/USDT Chart & Fixed Zones Inspector")
+st.subheader("📊 BTC/USDT Chart & Flexible Zones Inspector")
 
 if bot.df is not None and not bot.df.empty:
   curr_p = bot.candles[-1]["close"] if bot.candles else 0.0
@@ -316,7 +289,7 @@ if bot.df is not None and not bot.df.empty:
   with col2:
     st.metric(label="Session Window", value="Active Trading Session")
   with col3:
-    st.metric(label="Timezone", value=tz_short, delta="Fixed Zones Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Flexible Engine Active")
 
   if bot.signals:
     latest_sig = bot.signals[0]
@@ -348,8 +321,8 @@ if bot.df is not None and not bot.df.empty:
       )
   else:
     st.warning(
-        "🟡 **STATUS: MONITORING FIXED DEMAND & SUPPLY ZONES**\n\n"
-        "📌 *Instructions:* Waiting for price interaction and pullback pattern at either the fixed Demand box or Supply box."
+        "🟡 **STATUS: MONITORING FLEXIBLE DEMAND & SUPPLY ZONES**\n\n"
+        "📌 *Instructions:* Bot is actively scanning for flexible bounce at Demand or rejection at Supply zone."
     )
 
   # --- CLEAN CANDLESTICK CHART RENDERING ---
@@ -364,7 +337,7 @@ if bot.df is not None and not bot.df.empty:
     ax.bar(c["id"], body_height, bottom=lower_val, color=col, width=0.6, edgecolor=col)
     ax.vlines(c["id"], c["low"], c["high"], color=col, linewidth=1.2)
 
-  # Plot Fixed Demand and Supply Boxes
+  # Plot Flexible Demand and Supply Boxes
   if bot.demand_box:
     d_low, d_high = bot.demand_box
     ax.axhspan(d_low, d_high, color="#26a69a", alpha=0.3, label="Fixed Demand Zone (Buy)")
@@ -397,7 +370,7 @@ if bot.df is not None and not bot.df.empty:
     )
 
   ax.set_title(
-      f"BTC/USDT {selected_tf} — Fixed Zones Engine ({tz_short})",
+      f"BTC/USDT {selected_tf} — Flexible Zones Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
