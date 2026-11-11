@@ -7,7 +7,7 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(
-    page_title="TWT BTC Clean Dual Entry Engine", page_icon="⚡", layout="wide"
+    page_title="TWT BTC Mid-Zone Precision Engine", page_icon="⚡", layout="wide"
 )
 
 # Hide Streamlit Header, Footer, Menu & GitHub Icon via CSS
@@ -38,7 +38,7 @@ ASSET_LIST = ["BTC/USDT"]
 # Safe Auto-refresh every 30 seconds
 count = st_autorefresh(interval=30000, key="twt_btc_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA (BTC PRO) — Clean Dual Entry Engine")
+st.title("⚡ TRADE WITH TUCKYAA (BTC PRO) — Mid-Zone Precision Engine")
 
 col_tf, col_tz = st.columns([1, 2])
 with col_tf:
@@ -62,10 +62,10 @@ st.sidebar.text(
 )
 st.sidebar.text("Active Asset       ———  BTC/USDT Only")
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Dual Entry Rules")
-st.sidebar.text("Demand Zone ➔ Green Candle ➔ 1 Buy Entry")
-st.sidebar.text("Supply Zone ➔ Red Candle   ➔ 1 Sell Entry")
-st.sidebar.text("Risk Mgmt   ➔ ATR Managed SL & Multi-TP")
+st.sidebar.markdown("#### Mid-Zone Rules")
+st.sidebar.text("Demand Midpoint ➔ Green Candle ➔ 1 Buy Entry")
+st.sidebar.text("Supply Midpoint ➔ Red Candle   ➔ 1 Sell Entry")
+st.sidebar.text("Risk Mgmt       ➔ ATR Managed SL & Multi-TP")
 
 
 def get_decimals(price):
@@ -104,7 +104,7 @@ def fetch_btc_data(symbol, tf):
   return None
 
 
-class TWTCleanDualEngine:
+class TWTMidZoneEngine:
 
   def __init__(self, df, symbol, user_tz):
     self.df = df
@@ -115,6 +115,8 @@ class TWTCleanDualEngine:
     self.history = []
     self.demand_box = None
     self.supply_box = None
+    self.demand_mid = 0.0
+    self.supply_mid = 0.0
 
   def calculate_and_scan(self):
     if self.df is None or self.df.empty:
@@ -178,25 +180,27 @@ class TWTCleanDualEngine:
     max_price = max(all_highs)
     total_range = max_price - min_price
 
-    # Structural Demand & Supply Boxes (~20% range each)
+    # Structural Zones (~20% range each) & their Midpoints
     demand_zone_low = min_price
     demand_zone_high = min_price + (total_range * 0.22)
     self.demand_box = (demand_zone_low, demand_zone_high)
+    self.demand_mid = (demand_zone_low + demand_zone_high) / 2.0
 
     supply_zone_high = max_price
     supply_zone_low = max_price - (total_range * 0.22)
     self.supply_box = (supply_zone_low, supply_zone_high)
+    self.supply_mid = (supply_zone_low + supply_zone_high) / 2.0
 
     latest_buy = None
     latest_sell = None
 
-    # Scan backwards from latest candles to find exactly ONE latest Buy and ONE latest Sell
+    # Scan backwards from latest candles to find exact Mid-Zone touches
     for c in reversed(self.candles):
       atr = c["atr"]
       dec = get_decimals(c["close"])
 
-      # Check for Demand Zone BUY (Green candle inside/touching demand zone)
-      if not latest_buy and c["low"] <= demand_zone_high and c["color"] == "Green":
+      # BUY: Price dipped to Demand Midpoint or lower, and formed a Green candle
+      if not latest_buy and c["low"] <= self.demand_mid and c["color"] == "Green":
         sl = round(demand_zone_low - (1.0 * atr), dec)
         tp1 = round(c["close"] + (1.2 * atr), dec)
         tp2 = round(c["close"] + (2.5 * atr), dec)
@@ -207,8 +211,8 @@ class TWTCleanDualEngine:
             "Time": c["time"],
             "Candle #": c["id"],
             "Type": "BUY 🟢",
-            "Setup": "Demand Zone Green Bounce",
-            "Action": "Buy / Long (Support Zone) 🟢",
+            "Setup": "Demand Midpoint Bounce",
+            "Action": "Buy / Long (Demand Mid) 🟢",
             "Entry Price": round(c["close"], dec),
             "Stop Loss (SL)": sl,
             "TP 1": tp1,
@@ -217,8 +221,8 @@ class TWTCleanDualEngine:
             "Is_Within_1hr": c["is_within_1hr"],
         }
 
-      # Check for Supply Zone SELL (Red candle inside/touching supply zone)
-      if not latest_sell and c["high"] >= supply_zone_low and c["color"] == "Red":
+      # SELL: Price rose to Supply Midpoint or higher, and formed a Red candle
+      if not latest_sell and c["high"] >= self.supply_mid and c["color"] == "Red":
         sl = round(supply_zone_high + (1.0 * atr), dec)
         tp1 = round(c["close"] - (1.2 * atr), dec)
         tp2 = round(c["close"] - (2.5 * atr), dec)
@@ -229,8 +233,8 @@ class TWTCleanDualEngine:
             "Time": c["time"],
             "Candle #": c["id"],
             "Type": "SELL 🔴",
-            "Setup": "Supply Zone Red Rejection",
-            "Action": "Sell / Short (Resistance Zone) 🔴",
+            "Setup": "Supply Midpoint Rejection",
+            "Action": "Sell / Short (Supply Mid) 🔴",
             "Entry Price": round(c["close"], dec),
             "Stop Loss (SL)": sl,
             "TP 1": tp1,
@@ -256,24 +260,24 @@ class TWTCleanDualEngine:
 # EXECUTION & DASHBOARD FOR BTC/USDT ONLY
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("🔥 BTC/USDT Clean Dual Entry Dashboard")
+st.subheader("🔥 BTC/USDT Mid-Zone Precision Dashboard")
 
 df_btc = fetch_btc_data("BTC/USDT", selected_tf)
-bot = TWTCleanDualEngine(df_btc, "BTC/USDT", active_tz)
+bot = TWTMidZoneEngine(df_btc, "BTC/USDT", active_tz)
 bot.calculate_and_scan()
 
 if bot.signals:
-  st.success(f"✅ Active Clean Setup(s) Found!")
+  st.success(f"✅ Active Mid-Zone Setup(s) Found!")
   df_display = pd.DataFrame(bot.signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active signal in the last 1 hour. Active clean entries shown in history below.")
+  st.info("ℹ️ No active signal in the last 1 hour. Exact mid-zone entries shown in history below.")
 
 # --- MANUAL INSPECTOR & CHART VIEWER ---
 st.markdown("---")
-st.subheader("📊 BTC/USDT Chart & Clean Dual Entries")
+st.subheader("📊 BTC/USDT Chart & Mid-Zone Entries")
 
 if bot.df is not None and not bot.df.empty:
   curr_p = bot.candles[-1]["close"] if bot.candles else 0.0
@@ -284,11 +288,10 @@ if bot.df is not None and not bot.df.empty:
   with col2:
     st.metric(label="Active Entries Displayed", value=len(bot.history))
   with col3:
-    st.metric(label="Timezone", value=tz_short, delta="Clean Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Mid-Zone Engine Active")
 
-  # Show Dual Entry Table
   if bot.history:
-    st.markdown("### 📋 Exact Dual Entries Feed (1 Buy & 1 Sell)")
+    st.markdown("### 📋 Exact Mid-Zone Entries Feed (1 Buy & 1 Sell)")
     df_history = pd.DataFrame(bot.history).drop(
         columns=["Is_Within_1hr"], errors="ignore"
     )
@@ -306,14 +309,16 @@ if bot.df is not None and not bot.df.empty:
     ax.bar(c["id"], body_height, bottom=lower_val, color=col, width=0.6, edgecolor=col)
     ax.vlines(c["id"], c["low"], c["high"], color=col, linewidth=1.2)
 
-  # Plot Demand and Supply Zones
+  # Plot Demand and Supply Zones & Midlines
   if bot.demand_box:
     d_low, d_high = bot.demand_box
     ax.axhspan(d_low, d_high, color="#26a69a", alpha=0.25, label="Demand Zone (Buy Support)")
+    ax.axhline(bot.demand_mid, color="#00e676", linestyle=":", linewidth=1.5, label="Demand Midpoint")
 
   if bot.supply_box:
     s_low, s_high = bot.supply_box
     ax.axhspan(s_low, s_high, color="#ef5350", alpha=0.25, label="Supply Zone (Sell Resistance)")
+    ax.axhline(bot.supply_mid, color="#ff5252", linestyle=":", linewidth=1.5, label="Supply Midpoint")
 
   lows = [c["low"] for c in bot.candles]
   highs = [c["high"] for c in bot.candles]
@@ -323,7 +328,7 @@ if bot.df is not None and not bot.df.empty:
       margin = curr_p * 0.005
     ax.set_ylim(min(lows) - margin, max(highs) + margin)
 
-  # Plot exactly the two active signals on chart
+  # Plot exact mid-zone signals on chart
   for sig in bot.history:
     is_b = "BUY" in sig["Type"]
     bg_col = "#00e676" if is_b else "#ff5252"
@@ -340,7 +345,7 @@ if bot.df is not None and not bot.df.empty:
     )
 
   ax.set_title(
-      f"BTC/USDT {selected_tf} — Clean Dual Entry Engine ({tz_short})",
+      f"BTC/USDT {selected_tf} — Mid-Zone Precision Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
