@@ -7,7 +7,7 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(
-    page_title="TWT BTC Flexible Zone Strategy by TUCKYAA", page_icon="⚡", layout="wide"
+    page_title="TWT BTC Pro Zone & History Engine", page_icon="⚡", layout="wide"
 )
 
 # Hide Streamlit Header, Footer, Menu & GitHub Icon via CSS
@@ -38,7 +38,7 @@ ASSET_LIST = ["BTC/USDT"]
 # Safe Auto-refresh every 30 seconds
 count = st_autorefresh(interval=30000, key="twt_btc_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA (BTC PRO) — Flexible Zone Engine")
+st.title("⚡ TRADE WITH TUCKYAA (BTC PRO) — Demand & Supply History Engine")
 
 col_tf, col_tz = st.columns([1, 2])
 with col_tf:
@@ -62,9 +62,9 @@ st.sidebar.text(
 )
 st.sidebar.text("Active Asset       ———  BTC/USDT Only")
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Flexible Rules")
-st.sidebar.text("Supply Zone (Sell) : Upper Zone ➔ Bearish Rejection ➔ SELL")
-st.sidebar.text("Demand Zone (Buy)  : Lower Zone ➔ Bullish Bounce ➔ BUY")
+st.sidebar.markdown("#### Engine Rules")
+st.sidebar.text("Supply Zone (Sell) : Upper Structural Resistance ➔ SELL History")
+st.sidebar.text("Demand Zone (Buy)  : Lower Structural Support ➔ BUY History")
 st.sidebar.text("Risk Mgmt          : ATR Managed SL & Multi-TP")
 
 
@@ -104,7 +104,7 @@ def fetch_btc_data(symbol, tf):
   return None
 
 
-class TWTFlexibleZoneEngine:
+class TWTProZoneEngine:
 
   def __init__(self, df, symbol, user_tz):
     self.df = df
@@ -112,6 +112,7 @@ class TWTFlexibleZoneEngine:
     self.user_tz = user_tz
     self.candles = []
     self.signals = []
+    self.history = []
     self.demand_box = None
     self.supply_box = None
 
@@ -167,40 +168,35 @@ class TWTFlexibleZoneEngine:
           "is_within_1hr": is_within_1hr,
       })
 
-    found_signal = None
-
-    # Calculate reasonable Demand & Supply Zones based on recent swing ranges
-    lows = [c["low"] for c in self.candles]
-    highs = [c["high"] for c in self.candles]
+    all_lows = [c["low"] for c in self.candles]
+    all_highs = [c["high"] for c in self.candles]
     
-    if not lows or not highs:
+    if not all_lows or not all_highs:
       return
 
-    min_price = min(lows)
-    max_price = max(highs)
-    atr_val = self.candles[-1]["atr"]
+    min_price = min(all_lows)
+    max_price = max(all_highs)
+    total_range = max_price - min_price
 
-    # Fixed clean boxes
+    # Properly proportioned Demand & Supply structural boxes (taking ~20% range each)
     demand_zone_low = min_price
-    demand_zone_high = min_price + (atr_val * 3.5)
+    demand_zone_high = min_price + (total_range * 0.22)
     self.demand_box = (demand_zone_low, demand_zone_high)
 
     supply_zone_high = max_price
-    supply_zone_low = max_price - (atr_val * 3.5)
+    supply_zone_low = max_price - (total_range * 0.22)
     self.supply_box = (supply_zone_low, supply_zone_high)
 
-    # Scan recent candles for flexible zone interaction & reaction
-    for i in range(len(self.candles) - 1, 10, -1):
-      c = self.candles[i]
-      t_ist = c["dt_ist"].time()
-      is_morning_session = time(1, 0) <= t_ist <= time(11, 0)
-      is_evening_session = time(13, 0) <= t_ist <= time(22, 0)
+    scanned_signals = []
 
+    # Scan all historical candles for valid zone interactions
+    for i in range(5, len(self.candles)):
+      c = self.candles[i]
       atr = c["atr"]
       dec = get_decimals(c["close"])
 
       # ---------------------------------------------------------
-      # 1. DEMAND ZONE BUY SETUP (Flexible Bounce)
+      # 1. DEMAND ZONE BUY SETUP (Support Bounce)
       # ---------------------------------------------------------
       if c["low"] <= demand_zone_high and c["color"] == "Green":
         sl = round(demand_zone_low - (1.0 * atr), dec)
@@ -208,24 +204,23 @@ class TWTFlexibleZoneEngine:
         tp2 = round(c["close"] + (2.5 * atr), dec)
         tp3 = round(c["close"] + (4.0 * atr), dec)
 
-        found_signal = {
+        scanned_signals.append({
             "Asset": self.symbol,
             "Time": c["time"],
             "Candle #": c["id"],
             "Type": "BUY 🟢",
-            "Setup": "Flexible Demand Zone Bounce",
-            "Action": "Buy / Long (Demand Zone) 🟢",
+            "Setup": "Demand Zone Bounce",
+            "Action": "Buy / Long (Support) 🟢",
             "Entry Price": round(c["close"], dec),
             "Stop Loss (SL)": sl,
             "TP 1": tp1,
             "TP 2": tp2,
             "TP 3": tp3,
             "Is_Within_1hr": c["is_within_1hr"],
-        }
-        break
+        })
 
       # ---------------------------------------------------------
-      # 2. SUPPLY ZONE SELL SETUP (Flexible Rejection)
+      # 2. SUPPLY ZONE SELL SETUP (Resistance Rejection)
       # ---------------------------------------------------------
       if c["high"] >= supply_zone_low and c["color"] == "Red":
         sl = round(supply_zone_high + (1.0 * atr), dec)
@@ -233,52 +228,48 @@ class TWTFlexibleZoneEngine:
         tp2 = round(c["close"] - (2.5 * atr), dec)
         tp3 = round(c["close"] - (4.0 * atr), dec)
 
-        found_signal = {
+        scanned_signals.append({
             "Asset": self.symbol,
             "Time": c["time"],
             "Candle #": c["id"],
             "Type": "SELL 🔴",
-            "Setup": "Flexible Supply Zone Rejection",
-            "Action": "Sell / Short (Supply Zone) 🔴",
+            "Setup": "Supply Zone Rejection",
+            "Action": "Sell / Short (Resistance) 🔴",
             "Entry Price": round(c["close"], dec),
             "Stop Loss (SL)": sl,
             "TP 1": tp1,
             "TP 2": tp2,
             "TP 3": tp3,
             "Is_Within_1hr": c["is_within_1hr"],
-        }
-        break
+        })
 
-    if found_signal:
-      self.signals = [found_signal]
-    else:
-      self.signals = []
+    self.history = scanned_signals
+    # Filter recent signals for the top dashboard
+    self.signals = [s for s in scanned_signals if s.get("Is_Within_1hr", False)]
 
 
 # ---------------------------------------------------------
 # EXECUTION & DASHBOARD FOR BTC/USDT ONLY
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("🔥 BTC/USDT Flexible Zone Dashboard")
+st.subheader("🔥 BTC/USDT Pro Zone Dashboard & History")
 
 df_btc = fetch_btc_data("BTC/USDT", selected_tf)
-bot = TWTFlexibleZoneEngine(df_btc, "BTC/USDT", active_tz)
+bot = TWTProZoneEngine(df_btc, "BTC/USDT", active_tz)
 bot.calculate_and_scan()
 
-master_signals = [s for s in bot.signals if s.get("Is_Within_1hr", False)]
-
-if master_signals:
-  st.success("✅ Active Flexible Zone BTC Setup Found!")
-  df_display = pd.DataFrame(master_signals).drop(
+if bot.signals:
+  st.success(f"✅ Found {len(bot.signals)} Active Setup(s) in the Last 1 Hour!")
+  df_display = pd.DataFrame(bot.signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active signal in the last 1 hour. Waiting for price interaction at Demand or Supply zone...")
+  st.info("ℹ️ No active signal in the last 1 hour. Check history feed below for past setups.")
 
 # --- MANUAL INSPECTOR & CHART VIEWER ---
 st.markdown("---")
-st.subheader("📊 BTC/USDT Chart & Flexible Zones Inspector")
+st.subheader("📊 BTC/USDT Chart & Complete Entry History")
 
 if bot.df is not None and not bot.df.empty:
   curr_p = bot.candles[-1]["close"] if bot.candles else 0.0
@@ -287,43 +278,17 @@ if bot.df is not None and not bot.df.empty:
   with col1:
     st.metric(label="Current BTC Price", value=f"{curr_p:.2f}")
   with col2:
-    st.metric(label="Session Window", value="Active Trading Session")
+    st.metric(label="Total Historical Signals", value=len(bot.history))
   with col3:
-    st.metric(label="Timezone", value=tz_short, delta="Flexible Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Pro Zones Engine Active")
 
-  if bot.signals:
-    latest_sig = bot.signals[0]
-    is_buy = "BUY" in latest_sig["Type"]
-    entry_p = latest_sig["Entry Price"]
-    signal_time = latest_sig["Time"]
-
-    st.warning("⚠️ **Don't use after 40 minutes!**")
-
-    if is_buy:
-      st.success(
-          f"🟢 **TWT BTC BUY SETUP: {latest_sig['Action']}**\n\n"
-          f"🕒 **Time ({tz_short}):** `{signal_time}` (Candle"
-          f" #{latest_sig['Candle #']})\n"
-          f"- **Entry Price:** `{entry_p}`\n"
-          f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
-          f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
-          f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`"
-      )
-    else:
-      st.error(
-          f"🔴 **TWT BTC SELL SETUP: {latest_sig['Action']}**\n\n"
-          f"🕒 **Time ({tz_short}):** `{signal_time}` (Candle"
-          f" #{latest_sig['Candle #']})\n"
-          f"- **Entry Price:** `{entry_p}`\n"
-          f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
-          f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
-          f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`"
-      )
-  else:
-    st.warning(
-        "🟡 **STATUS: MONITORING FLEXIBLE DEMAND & SUPPLY ZONES**\n\n"
-        "📌 *Instructions:* Bot is actively scanning for flexible bounce at Demand or rejection at Supply zone."
+  # Show Full History Table
+  if bot.history:
+    st.markdown("### 📋 Complete Entry History Feed (Buyer & Seller)")
+    df_history = pd.DataFrame(bot.history).drop(
+        columns=["Is_Within_1hr"], errors="ignore"
     )
+    st.dataframe(df_history, width="stretch")
 
   # --- CLEAN CANDLESTICK CHART RENDERING ---
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
@@ -337,14 +302,14 @@ if bot.df is not None and not bot.df.empty:
     ax.bar(c["id"], body_height, bottom=lower_val, color=col, width=0.6, edgecolor=col)
     ax.vlines(c["id"], c["low"], c["high"], color=col, linewidth=1.2)
 
-  # Plot Flexible Demand and Supply Boxes
+  # Plot Properly Proportioned Demand and Supply Zones
   if bot.demand_box:
     d_low, d_high = bot.demand_box
-    ax.axhspan(d_low, d_high, color="#26a69a", alpha=0.3, label="Fixed Demand Zone (Buy)")
+    ax.axhspan(d_low, d_high, color="#26a69a", alpha=0.25, label="Demand Zone (Buy Support)")
 
   if bot.supply_box:
     s_low, s_high = bot.supply_box
-    ax.axhspan(s_low, s_high, color="#ef5350", alpha=0.3, label="Fixed Supply Zone (Sell)")
+    ax.axhspan(s_low, s_high, color="#ef5350", alpha=0.25, label="Supply Zone (Sell Resistance)")
 
   lows = [c["low"] for c in bot.candles]
   highs = [c["high"] for c in bot.candles]
@@ -354,7 +319,8 @@ if bot.df is not None and not bot.df.empty:
       margin = curr_p * 0.005
     ax.set_ylim(min(lows) - margin, max(highs) + margin)
 
-  for sig in bot.signals:
+  # Plot all historical signals on chart
+  for sig in bot.history:
     is_b = "BUY" in sig["Type"]
     bg_col = "#00e676" if is_b else "#ff5252"
     txt = " B " if is_b else " S "
@@ -370,7 +336,7 @@ if bot.df is not None and not bot.df.empty:
     )
 
   ax.set_title(
-      f"BTC/USDT {selected_tf} — Flexible Zones Engine ({tz_short})",
+      f"BTC/USDT {selected_tf} — Pro Demand & Supply Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
