@@ -153,9 +153,8 @@ class ProfessionalORBEngine:
       self.orb_low = float(orb_candles["Low"].min())
     else:
       # Fallback to first few candles if specific session time window is missing in data feed
-      fallback_count = max(
-          3, int(self.orb_duration / 5)
-      )  v_slice = self.df.iloc[:fallback_count]
+      fallback_count = max(3, int(self.orb_duration / 5))
+      v_slice = self.df.iloc[:fallback_count]
       self.orb_high = float(v_slice["High"].max())
       self.orb_low = float(v_slice["Low"].min())
 
@@ -198,7 +197,6 @@ class ProfessionalORBEngine:
       ema_cond_bull = (not use_ema) or (close > ema200)
 
       if breakout_condition and ema_cond_bull:
-        # Check retest or continuation momentum confirmation
         sl = (
             round(self.orb_low - (atr * 0.5), 2)
             if use_atr
@@ -304,7 +302,7 @@ if recent_signals:
 else:
   st.info(
       "ℹ️ **Status:** Scanning market structure. Waiting for clean candle"
-      " close breakout confirmation beyond the 75-min Opening Range."
+      " close breakout confirmation beyond the Opening Range."
   )
 
 # ---------------------------------------------------------
