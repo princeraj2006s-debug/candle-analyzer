@@ -1,4 +1,6 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 import ccxt
 import matplotlib.pyplot as plt
 import numpy as np
@@ -6,11 +8,16 @@ import pandas as pd
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
+# ---------------------------------------------------------
+# STREAMLIT PAGE CONFIGURATION
+# ---------------------------------------------------------
 st.set_page_config(
-    page_title="TWT BTC Mid-Zone Precision Engine", page_icon="⚡", layout="wide"
+    page_title="TWT Multi-Asset Mid-Zone Precision Bot",
+    page_icon="⚡",
+    layout="wide",
 )
 
-# Hide Streamlit Header, Footer, Menu & GitHub Icon via CSS
+# Hide Streamlit Default Elements
 hide_streamlit_style = """
     <style>
     #MainMenu {visibility: hidden;}
@@ -20,52 +27,60 @@ hide_streamlit_style = """
     """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-# ---------------------------------------------------------
-# TIMEZONES & EXCLUSIVE BTC/USDT ASSET LIST
-# ---------------------------------------------------------
-TRADING_TIMEZONES = {
-    "(UTC+5:30) Kolkata / India (IST)": timezone(
-        timedelta(hours=5, minutes=30)
-    ),
-    "(UTC+1:00) Berlin / Paris / CET": timezone(timedelta(hours=1)),
-    "(UTC+0:00) London / UTC / GMT": timezone.utc,
-    "(UTC-5:00) New York / US East (EST)": timezone(timedelta(hours=-5)),
-    "(UTC+8:00) Singapore / Hong Kong (SGT)": timezone(timedelta(hours=8)),
-}
-
-ASSET_LIST = ["BTC/USDT"]
-
 # Safe Auto-refresh every 30 seconds
-count = st_autorefresh(interval=30000, key="twt_btc_refresh")
+count = st_autorefresh(interval=30000, key="twt_multi_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA (BTC PRO) — Mid-Zone Precision Engine")
+st.title("⚡ TRADE WITH TUCKYAA — Multi-Asset Mid-Zone Precision Engine")
 
-col_tf, col_tz = st.columns([1, 2])
-with col_tf:
-  selected_tf = st.selectbox(
-      "⏱️ Timeframe", options=["5m", "15m", "30m", "1h"], index=0
-  )
-with col_tz:
-  selected_tz_name = st.selectbox(
-      "🌍 Trading Timezone", options=list(TRADING_TIMEZONES.keys()), index=0
-  )
-  active_tz = TRADING_TIMEZONES[selected_tz_name]
-
-tz_short = selected_tz_name.split(")")[0] + ")"
-
-# Sidebar Panel
-st.sidebar.markdown("### 🤖 TWT BTC Strategy Panel")
+# ---------------------------------------------------------
+# SIDEBAR CONFIGURATION
+# ---------------------------------------------------------
+st.sidebar.markdown("### ⚙️ Multi-Asset Configurations")
 st.sidebar.markdown("---")
-server_time_target = datetime.now(active_tz)
-st.sidebar.text(
-    f"Server time          ———  {server_time_target.strftime('%H:%M')}"
+
+IANA_TIMEZONES = [
+    "Asia/Kolkata",
+    "UTC",
+    "America/New_York",
+    "Europe/London",
+    "Asia/Singapore",
+]
+selected_tz_name = st.sidebar.selectbox(
+    "🌍 Trading Timezone (IANA)", options=IANA_TIMEZONES, index=0
 )
-st.sidebar.text("Active Asset       ———  BTC/USDT Only")
+active_tz = ZoneInfo(selected_tz_name)
+
+selected_tf = st.sidebar.selectbox(
+    "⏱️ Timeframe", options=["5m", "15m", "30m", "1h"], index=0
+)
+
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Mid-Zone Rules")
-st.sidebar.text("Demand Midpoint ➔ Green Candle ➔ 1 Buy Entry")
-st.sidebar.text("Supply Midpoint ➔ Red Candle   ➔ 1 Sell Entry")
-st.sidebar.text("Risk Mgmt       ➔ ATR Managed SL & Multi-TP")
+st.sidebar.text("Demand Midpoint ➔ Green Candle ➔ BUY")
+st.sidebar.text("Supply Midpoint ➔ Red Candle   ➔ SELL")
+
+ASSET_LIST = [
+    "BTC/USDT",
+    "ETH/USDT",
+    "XAUT/USDT",
+    "SOL/USDT",
+    "XRP/USDT",
+    "BNB/USDT",
+    "DOGE/USDT",
+    "MATIC/USDT",
+    "ADA/USDT",
+    "AVAX/USDT",
+    "LINK/USDT",
+    "LTC/USDT",
+    "DOT/USDT",
+    "NEAR/USDT",
+    "APT/USDT",
+    "ARB/USDT",
+    "OP/USDT",
+    "SUI/USDT",
+    "FIL/USDT",
+    "RENDER/USDT",
+]
 
 
 def get_decimals(price):
@@ -77,8 +92,11 @@ def get_decimals(price):
     return 2
 
 
+# ---------------------------------------------------------
+# DATA FETCHING MODULE WITH CCXT
+# ---------------------------------------------------------
 @st.cache_data(ttl=30)
-def fetch_btc_data(symbol, tf):
+def fetch_multi_asset_ohlcv(symbol, timeframe="5m", limit=180):
   exchanges_to_try = [
       (ccxt.binance, symbol),
       (ccxt.bybit, symbol),
@@ -90,13 +108,13 @@ def fetch_btc_data(symbol, tf):
       exchange = ex_class({"enableRateLimit": True, "timeout": 15000})
       exchange.load_markets()
       if sym in exchange.markets:
-        ohlcv_tf = exchange.fetch_ohlcv(sym, timeframe=tf, limit=180)
-        if ohlcv_tf:
+        ohlcv = exchange.fetch_ohlcv(sym, timeframe=timeframe, limit=limit)
+        if ohlcv:
           df = pd.DataFrame(
-              ohlcv_tf,
+              ohlcv,
               columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
           )
-          df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+          df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
           df = df.set_index("timestamp")
           return df
     except Exception:
@@ -104,7 +122,10 @@ def fetch_btc_data(symbol, tf):
   return None
 
 
-class TWTMidZoneEngine:
+# ---------------------------------------------------------
+# MID-ZONE PRECISION ENGINE
+# ---------------------------------------------------------
+class TWTMultiAssetMidZoneEngine:
 
   def __init__(self, df, symbol, user_tz):
     self.df = df
@@ -136,8 +157,6 @@ class TWTMidZoneEngine:
 
     for idx, row in enumerate(self.df.iterrows()):
       dt_utc = row[0]
-      if dt_utc.tzinfo is None:
-        dt_utc = dt_utc.replace(tzinfo=timezone.utc)
       dt_ist = dt_utc.astimezone(IST)
       dt_user_tz = dt_utc.astimezone(self.user_tz)
       timestamp_str = dt_user_tz.strftime("%H:%M")
@@ -172,7 +191,7 @@ class TWTMidZoneEngine:
 
     all_lows = [c["low"] for c in self.candles]
     all_highs = [c["high"] for c in self.candles]
-    
+
     if not all_lows or not all_highs:
       return
 
@@ -180,7 +199,7 @@ class TWTMidZoneEngine:
     max_price = max(all_highs)
     total_range = max_price - min_price
 
-    # Structural Zones (~20% range each) & their Midpoints
+    # Structural Zones (~22% range each) & Midpoints
     demand_zone_low = min_price
     demand_zone_high = min_price + (total_range * 0.22)
     self.demand_box = (demand_zone_low, demand_zone_high)
@@ -194,12 +213,12 @@ class TWTMidZoneEngine:
     latest_buy = None
     latest_sell = None
 
-    # Scan backwards from latest candles to find exact Mid-Zone touches
+    # Scan backwards to get 1 Buy and 1 Sell Midpoint entry
     for c in reversed(self.candles):
       atr = c["atr"]
       dec = get_decimals(c["close"])
 
-      # BUY: Price dipped to Demand Midpoint or lower, and formed a Green candle
+      # BUY Entry: Low touches Demand Midpoint & Green candle
       if not latest_buy and c["low"] <= self.demand_mid and c["color"] == "Green":
         sl = round(demand_zone_low - (1.0 * atr), dec)
         tp1 = round(c["close"] + (1.2 * atr), dec)
@@ -212,7 +231,6 @@ class TWTMidZoneEngine:
             "Candle #": c["id"],
             "Type": "BUY 🟢",
             "Setup": "Demand Midpoint Bounce",
-            "Action": "Buy / Long (Demand Mid) 🟢",
             "Entry Price": round(c["close"], dec),
             "Stop Loss (SL)": sl,
             "TP 1": tp1,
@@ -221,7 +239,7 @@ class TWTMidZoneEngine:
             "Is_Within_1hr": c["is_within_1hr"],
         }
 
-      # SELL: Price rose to Supply Midpoint or higher, and formed a Red candle
+      # SELL Entry: High touches Supply Midpoint & Red candle
       if not latest_sell and c["high"] >= self.supply_mid and c["color"] == "Red":
         sl = round(supply_zone_high + (1.0 * atr), dec)
         tp1 = round(c["close"] - (1.2 * atr), dec)
@@ -234,7 +252,6 @@ class TWTMidZoneEngine:
             "Candle #": c["id"],
             "Type": "SELL 🔴",
             "Setup": "Supply Midpoint Rejection",
-            "Action": "Sell / Short (Supply Mid) 🔴",
             "Entry Price": round(c["close"], dec),
             "Stop Loss (SL)": sl,
             "TP 1": tp1,
@@ -257,41 +274,76 @@ class TWTMidZoneEngine:
 
 
 # ---------------------------------------------------------
-# EXECUTION & DASHBOARD FOR BTC/USDT ONLY
+# MASTER MULTI-ASSET SCANNER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("🔥 BTC/USDT Mid-Zone Precision Dashboard")
+st.subheader("🔥 TWT Master Live Signal Dashboard (20+ Assets)")
 
-df_btc = fetch_btc_data("BTC/USDT", selected_tf)
-bot = TWTMidZoneEngine(df_btc, "BTC/USDT", active_tz)
-bot.calculate_and_scan()
+master_signals = []
+asset_engines = {}
 
-if bot.signals:
-  st.success(f"✅ Active Mid-Zone Setup(s) Found!")
-  df_display = pd.DataFrame(bot.signals).drop(
+
+def scan_asset(sym):
+  df = fetch_multi_asset_ohlcv(sym, selected_tf, limit=180)
+  if df is not None and not df.empty:
+    engine = TWTMultiAssetMidZoneEngine(df, sym, active_tz)
+    engine.calculate_and_scan()
+    recent_sigs = engine.signals
+    return sym, engine, recent_sigs
+  return sym, None, []
+
+
+with st.spinner("⚡ Parallel scanning 20+ assets for Mid-Zone entries..."):
+  with ThreadPoolExecutor(max_workers=5) as executor:
+    futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
+    for future in as_completed(futures):
+      sym, engine, sigs = future.result()
+      if engine:
+        asset_engines[sym] = engine
+      if sigs:
+        master_signals.extend(sigs)
+
+if master_signals:
+  st.success(f"✅ Found {len(master_signals)} active Mid-Zone setup(s) across 20+ assets!")
+  df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active signal in the last 1 hour. Exact mid-zone entries shown in history below.")
+  st.info("ℹ️ No active signals in the last 1 hour across 20+ assets. Select an asset below to inspect its zones.")
 
-# --- MANUAL INSPECTOR & CHART VIEWER ---
+# ---------------------------------------------------------
+# MANUAL ASSET INSPECTOR & CHART VIEWER
+# ---------------------------------------------------------
 st.markdown("---")
-st.subheader("📊 BTC/USDT Chart & Mid-Zone Entries")
+st.subheader("📊 Individual Asset Inspector & Chart")
+
+selected_symbol = st.selectbox(
+    "🔍 Select Asset to Load Mid-Zone Chart & Entries",
+    options=ASSET_LIST,
+    index=0,
+)
+
+if selected_symbol in asset_engines:
+  bot = asset_engines[selected_symbol]
+else:
+  df = fetch_multi_asset_ohlcv(selected_symbol, selected_tf, limit=180)
+  bot = TWTMultiAssetMidZoneEngine(df, selected_symbol, active_tz)
+  bot.calculate_and_scan()
 
 if bot.df is not None and not bot.df.empty:
   curr_p = bot.candles[-1]["close"] if bot.candles else 0.0
 
   col1, col2, col3 = st.columns(3)
   with col1:
-    st.metric(label="Current BTC Price", value=f"{curr_p:.2f}")
+    st.metric(label=f"Current {selected_symbol} Price", value=f"{curr_p:.2f}")
   with col2:
-    st.metric(label="Active Entries Displayed", value=len(bot.history))
+    st.metric(label="Available Mid-Zone Signals", value=len(bot.history))
   with col3:
-    st.metric(label="Timezone", value=tz_short, delta="Mid-Zone Engine Active")
+    st.metric(label="Timezone", value=selected_tz_name.split(")")[0] + ")")
 
   if bot.history:
-    st.markdown("### 📋 Exact Mid-Zone Entries Feed (1 Buy & 1 Sell)")
+    st.markdown(f"### 📋 Exact Mid-Zone Entries Feed for {selected_symbol}")
     df_history = pd.DataFrame(bot.history).drop(
         columns=["Is_Within_1hr"], errors="ignore"
     )
@@ -328,7 +380,6 @@ if bot.df is not None and not bot.df.empty:
       margin = curr_p * 0.005
     ax.set_ylim(min(lows) - margin, max(highs) + margin)
 
-  # Plot exact mid-zone signals on chart
   for sig in bot.history:
     is_b = "BUY" in sig["Type"]
     bg_col = "#00e676" if is_b else "#ff5252"
@@ -345,7 +396,7 @@ if bot.df is not None and not bot.df.empty:
     )
 
   ax.set_title(
-      f"BTC/USDT {selected_tf} — Mid-Zone Precision Engine ({tz_short})",
+      f"{selected_symbol} {selected_tf} — Mid-Zone Precision Visualizer",
       color="white",
       fontsize=14,
   )
@@ -361,4 +412,4 @@ if bot.df is not None and not bot.df.empty:
 
   st.pyplot(fig)
 else:
-  st.error("BTC market data load failed. Please check internet connection.")
+  st.error("Market data fetch failed. Please check your internet connection.")
