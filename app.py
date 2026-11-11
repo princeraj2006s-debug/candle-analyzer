@@ -189,8 +189,14 @@ class TWTMultiAssetMidZoneEngine:
           "is_within_1hr": is_within_1hr,
       })
 
-    all_lows = [c["low"] for c in self.candles]
-    all_highs = [c["high"] for c in self.candles]
+    if not self.candles:
+      return
+
+    # LOCK ZONE CALCULATION: Use completed candles only (exclude current live candle)
+    # This prevents the min/max price range from jittering with live ticks.
+    completed_candles = self.candles[:-1] if len(self.candles) > 1 else self.candles
+    all_lows = [c["low"] for c in completed_candles]
+    all_highs = [c["high"] for c in completed_candles]
 
     if not all_lows or not all_highs:
       return
