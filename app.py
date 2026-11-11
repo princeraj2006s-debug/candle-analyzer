@@ -12,7 +12,7 @@ from streamlit_autorefresh import st_autorefresh
 # PAGE CONFIGURATION & STYLING
 # ==========================================================
 st.set_page_config(
-    page_title="TWT Institutional Pullback Strategy Pro", page_icon="⚡", layout="wide"
+    page_title="TWT Multi-Timeframe Pullback Bot Pro", page_icon="⚡", layout="wide"
 )
 
 st.markdown("""
@@ -40,16 +40,14 @@ ASSET_LIST = [
 ]
 
 # Safe Auto-refresh every 30 seconds
-st_autorefresh(interval=30000, key="twt_institutional_refresh")
+st_autorefresh(interval=30000, key="twt_mtf_refresh")
 
-st.title("⚡ TWT INSTITUTIONAL PULLBACK STRATEGY (PRO)")
+st.title("⚡ TWT MULTI-TIMEFRAME INSTITUTIONAL PULLBACK BOT (PRO)")
 
 # ==========================================================
 # HEADER CONTROLS (TIMEFRAME & TIMEZONE)
 # ==========================================================
-col_tf, col_tz = st.columns([1, 2])
-with col_tf:
-    selected_tf = st.selectbox("⏱️ Timeframe", options=["5m", "15m", "30m", "1h"], index=1)
+col_tz = st.columns([1])[0]
 with col_tz:
     selected_tz_name = st.selectbox("🌍 Trading Timezone", options=list(TRADING_TIMEZONES.keys()), index=0)
     active_tz = TRADING_TIMEZONES[selected_tz_name]
@@ -65,10 +63,10 @@ def get_decimals(price):
         return 2
 
 # ==========================================================
-# ROBUST EXCHANGE DATA FETCHING
+# MULTI-TIMEFRAME EXCHANGE DATA FETCHING (4H, 1H, 15M, 5M)
 # ==========================================================
 @st.cache_data(ttl=30)
-def fetch_institutional_data(symbol, tf):
+def fetch_mtf_data(symbol):
     exchanges_to_try = [
         (ccxt.binance, symbol),
         (ccxt.bybit, symbol),
@@ -79,193 +77,196 @@ def fetch_institutional_data(symbol, tf):
             exchange = ex_class({"enableRateLimit": True, "timeout": 15000})
             exchange.load_markets()
             if sym in exchange.markets:
-                ohlcv_tf = exchange.fetch_ohlcv(sym, timeframe=tf, limit=200)
                 ohlcv_4h = exchange.fetch_ohlcv(sym, timeframe="4h", limit=50)
-                if ohlcv_tf and ohlcv_4h:
-                    df = pd.DataFrame(ohlcv_tf, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
-                    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-                    df = df.set_index("timestamp")
+                ohlcv_1h = exchange.fetch_ohlcv(sym, timeframe="1h", limit=100)
+                ohlcv_15m = exchange.fetch_ohlcv(sym, timeframe="15m", limit=150)
+                ohlcv_5m = exchange.fetch_ohlcv(sym, timeframe="5m", limit=200)
 
-                    df_4h = pd.DataFrame(ohlcv_4h, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
-                    df_4h["timestamp"] = pd.to_datetime(df_4h["timestamp"], unit="ms")
-                    df_4h = df_4h.set_index("timestamp")
-                    
-                    if df.index.tz is None:
-                        df.index = df.index.tz_localize("UTC")
-                    if df_4h.index.tz is None:
-                        df_4h.index = df_4h.index.tz_localize("UTC")
+                if ohlcv_4h and ohlcv_1h and ohlcv_15m and ohlcv_5m:
+                    def to_df(data):
+                        df = pd.DataFrame(data, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
+                        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+                        df = df.set_index("timestamp")
+                        if df.index.tz is None:
+                            df.index = df.index.tz_localize("UTC")
+                        return df
 
-                    return df, df_4h
+                    return to_df(ohlcv_4h), to_df(ohlcv_1h), to_df(ohlcv_15m), to_df(ohlcv_5m)
         except Exception:
             continue
-    return None, None
+    return None, None, None, None
 
 # ==========================================================
-# TWT INSTITUTIONAL PULLBACK ENGINE
+# TWT MULTI-TIMEFRAME PULLBACK ENGINE
 # ==========================================================
-class TWTInstitutionalPullbackEngine:
-    def __init__(self, df, df_4h, symbol, user_tz):
-        self.df = df
+class TWTMultiTimeframeEngine:
+    def __init__(self, df_4h, df_1h, df_15m, df_5m, symbol, user_tz):
         self.df_4h = df_4h
+        self.df_1h = df_1h
+        self.df_15m = df_15m
+        self.df_5m = df_5m
         self.symbol = symbol
         self.user_tz = user_tz
-        self.candles = []
         self.signals = []
 
-    def calculate_and_scan(self):
-        if self.df is None or self.df.empty:
-            return
+    def calculate_indicators(self, df):
+        df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
+        df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
+        df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
 
-        # 1. Indicators: EMA 20, 50, 200, RSI 14, ATR 14
-        self.df["EMA20"] = self.df["Close"].ewm(span=20, adjust=False).mean()
-        self.df["EMA50"] = self.df["Close"].ewm(span=50, adjust=False).mean()
-        self.df["EMA200"] = self.df["Close"].ewm(span=200, adjust=False).mean()
-
-        delta = self.df["Close"].diff()
+        delta = df["Close"].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         rs = gain / loss
-        self.df["RSI"] = 100 - (100 / (1 + rs))
+        df["RSI"] = 100 - (100 / (1 + rs))
 
-        self.df["TR"] = np.maximum(
-            self.df["High"] - self.df["Low"],
+        df["TR"] = np.maximum(
+            df["High"] - df["Low"],
             np.maximum(
-                abs(self.df["High"] - self.df["Close"].shift(1)),
-                abs(self.df["Low"] - self.df["Close"].shift(1)),
+                abs(df["High"] - df["Close"].shift(1)),
+                abs(df["Low"] - df["Close"].shift(1)),
             ),
         )
-        self.df["ATR"] = self.df["TR"].rolling(14).mean()
+        df["ATR"] = df["TR"].rolling(14).mean()
+        return df
 
-        # 4H Overall Direction Benchmark
-        self.df_4h["EMA200"] = self.df_4h["Close"].ewm(span=200, adjust=False).mean()
-        h4_price = float(self.df_4h["Close"].iloc[-1])
+    def run_strategy(self):
+        if any(df is None or df.empty for df in [self.df_4h, self.df_1h, self.df_15m, self.df_5m]):
+            return
+
+        self.df_4h = self.calculate_indicators(self.df_4h)
+        self.df_1h = self.calculate_indicators(self.df_1h)
+        self.df_15m = self.calculate_indicators(self.df_15m)
+        self.df_5m = self.calculate_indicators(self.df_5m)
+
+        # 4H Overall Trend
+        h4_close = float(self.df_4h["Close"].iloc[-1])
         h4_ema200 = float(self.df_4h["EMA200"].iloc[-1])
-        global_trend_bullish = h4_price >= h4_ema200
+        h4_bullish = h4_close >= h4_ema200
+
+        # 1H Market Structure & EMA Confirmation
+        h1_last = self.df_1h.iloc[-1]
+        h1_bullish = (h1_last["Close"] >= h1_last["EMA200"]) and (h1_last["EMA50"] >= h1_last["EMA200"])
+        h1_bearish = (h1_last["Close"] < h1_last["EMA200"]) and (h1_last["EMA50"] < h1_last["EMA200"])
 
         IST = timezone(timedelta(hours=5, minutes=30))
         current_utc_time = datetime.now(timezone.utc)
 
-        buy_count_today = 0
-        sell_count_today = 0
+        buy_signals_count = 0
+        sell_signals_count = 0
 
-        for idx, row in enumerate(self.df.iterrows()):
-            dt_utc = row[0]
+        # Scan 15M for Setup Detection & 5M for Entry Trigger
+        for i in range(20, len(self.df_15m)):
+            m15 = self.df_15m.iloc[i]
+            m15_prev = self.df_15m.iloc[i-1]
+            dt_utc = self.df_15m.index[i]
+            
             if dt_utc.tzinfo is None:
                 dt_utc = dt_utc.replace(tzinfo=timezone.utc)
-            dt_ist = dt_utc.astimezone(IST)
             dt_user_tz = dt_utc.astimezone(self.user_tz)
             timestamp_str = dt_user_tz.strftime("%H:%M")
-
-            r = row[1]
-            o, h, l, c, v = float(r["Open"]), float(r["High"]), float(r["Low"]), float(r["Close"]), float(r["Volume"])
-            ema20 = float(r["EMA20"]) if not pd.isna(r["EMA20"]) else c
-            ema50 = float(r["EMA50"]) if not pd.isna(r["EMA50"]) else c
-            ema200 = float(r["EMA200"]) if not pd.isna(r["EMA200"]) else c
-            rsi = float(r["RSI"]) if not pd.isna(r["RSI"]) else 50.0
-            atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
 
             age_minutes = (current_utc_time - dt_utc).total_seconds() / 60.0
             is_within_1hr = age_minutes <= 60.0
 
-            upper_wick = h - max(o, c)
-            lower_wick = min(o, c) - l
-            rng = h - l
-            upper_wick_pct = (upper_wick / rng * 100) if rng > 0 else 0
-            lower_wick_pct = (lower_wick / rng * 100) if rng > 0 else 0
+            c_val = float(m15["Close"])
+            o_val = float(m15["Open"])
+            dec = get_decimals(c_val)
+            atr = float(m15["ATR"]) if not np.isnan(m15["ATR"]) else (c_val * 0.002)
 
-            self.candles.append({
-                "id": idx + 1,
-                "time": timestamp_str,
-                "dt_ist": dt_ist,
-                "dt_user": dt_user_tz,
-                "color": "Green" if c >= o else "Red",
-                "open": o, "high": h, "low": l, "close": c, "volume": v,
-                "atr": atr, "rsi": rsi,
-                "upper_wick_pct": upper_wick_pct,
-                "lower_wick_pct": lower_wick_pct,
-                "is_within_1hr": is_within_1hr
-            })
+            body_size = abs(c_val - o_val)
+            avg_body = abs(self.df_15m["Close"] - self.df_15m["Open"]).tail(20).mean()
 
-            if idx < 20:
-                continue
+            # --- SELL SETUP RULES (15M Setup + 5M Confirmation + Early Entry Blocker) ---
+            m15_bearish_displacement = (c_val < o_val) and (body_size > avg_body * 1.2)
+            if sell_signals_count < 1 and (not h4_bullish) and h1_bearish and m15_bearish_displacement:
+                # Find latest Lower High in 15M pullback
+                recent_highs = self.df_15m["High"].iloc[i-10:i]
+                latest_lower_high = float(recent_highs.max())
 
-            dec = get_decimals(c)
+                # 5M confirmation check (Bearish rejection + breaking low)
+                m5_slice = self.df_5m[self.df_5m.index >= dt_utc].head(5)
+                if not m5_slice.empty:
+                    m5_last = m5_slice.iloc[-1]
+                    m5_bearish_rej = (m5_last["High"] - max(m5_last["Open"], m5_last["Close"])) > (abs(m5_last["Close"] - m5_last["Open"]) * 1.5)
+                    
+                    if m5_bearish_rej or m5_last["Close"] < m5_last["Open"]:
+                        sl = round(latest_lower_high + (1.2 * atr), dec)
+                        tp2 = round(c_val - (2.5 * atr), dec)  # Min 1:2 RR
+                        rr = round((c_val - tp2) / (sl - c_val), 2) if (sl - c_val) > 0 else 2.0
 
-            # Pullback zone confirmation: Price retraces into EMA 20-50 zone
-            in_pullback_zone = min(ema20, ema50) <= c <= max(ema20, ema50)
+                        if rr >= 2.0:
+                            self.signals.append({
+                                "Asset": self.symbol,
+                                "Time": timestamp_str,
+                                "Type": "SELLER",
+                                "Trend": "Bearish (4H + 1H Structure)",
+                                "Setup": "15M Displacement + Pullback Lower High",
+                                "Confirmation": "5M Bearish Rejection",
+                                "Entry Price": round(c_val, dec),
+                                "Stop Loss (SL)": sl,
+                                "Target 2 (1:2 RR)": tp2,
+                                "RR": f"1:{rr:.2f}",
+                                "Score": 95,
+                                "Is_Within_1hr": is_within_1hr
+                            })
+                            sell_signals_count += 1
 
-            # BUY Entry Rules: 4H price > EMA200, EMA50 >= EMA200, Pullback Zone, Lower Wick 45-57%
-            if buy_count_today < 1 and global_trend_bullish and ema50 >= ema200 and in_pullback_zone and (45.0 <= lower_wick_pct <= 57.0):
-                sl = round(l - (1.2 * atr), dec)
-                tp1 = round(c + (1.2 * atr), dec)
-                tp2 = round(c + (2.5 * atr), dec) # Minimum 1:2 RR Target
-                rr = round((tp2 - c) / (c - sl), 2) if (c - sl) > 0 else 2.0
+            # --- BUY SETUP RULES (15M Setup + 5M Confirmation + Early Entry Blocker) ---
+            m15_bullish_displacement = (c_val > o_val) and (body_size > avg_body * 1.2)
+            if buy_signals_count < 1 and h4_bullish and h1_bullish and m15_bullish_displacement:
+                # Find latest Higher Low in 15M pullback
+                recent_lows = self.df_15m["Low"].iloc[i-10:i]
+                latest_higher_low = float(recent_lows.min())
 
-                self.signals.append({
-                    "Asset": self.symbol,
-                    "Time": timestamp_str,
-                    "Candle #": idx + 1,
-                    "Type": "BUYER",
-                    "Trend": "Bullish (4H + EMA 50/200)",
-                    "Zone": "EMA 20-50 Pullback Zone",
-                    "Score": 95,
-                    "WickRejection": f"Lower Wick {lower_wick_pct:.1f}% (45-57%)",
-                    "Entry Price": round(c, dec),
-                    "Stop Loss (SL)": sl,
-                    "Target 1": tp1,
-                    "Target 2 (1:2 RR)": tp2,
-                    "RR": f"1:{rr:.2f}",
-                    "Status": "VALID",
-                    "Is_Within_1hr": is_within_1hr
-                })
-                buy_count_today += 1
+                # 5M confirmation check (Bullish rejection + breaking high)
+                m5_slice = self.df_5m[self.df_5m.index >= dt_utc].head(5)
+                if not m5_slice.empty:
+                    m5_last = m5_slice.iloc[-1]
+                    m5_bullish_rej = (min(m5_last["Open"], m5_last["Close"]) - m5_last["Low"]) > (abs(m5_last["Close"] - m5_last["Open"]) * 1.5)
 
-            # SELL Entry Rules: 4H price < EMA200, EMA50 <= EMA200, Pullback Zone, Upper Wick 45-57%
-            elif sell_count_today < 1 and (not global_trend_bullish) and ema50 <= ema200 and in_pullback_zone and (45.0 <= upper_wick_pct <= 57.0):
-                sl = round(h + (1.2 * atr), dec)
-                tp1 = round(c - (1.2 * atr), dec)
-                tp2 = round(c - (2.5 * atr), dec) # Minimum 1:2 RR Target
-                rr = round((c - tp2) / (sl - c), 2) if (sl - c) > 0 else 2.0
+                    if m5_bullish_rej or m5_last["Close"] > m5_last["Open"]:
+                        sl = round(latest_higher_low - (1.2 * atr), dec)
+                        tp2 = round(c_val + (2.5 * atr), dec)  # Min 1:2 RR
+                        rr = round((tp2 - c_val) / (c_val - sl), 2) if (c_val - sl) > 0 else 2.0
 
-                self.signals.append({
-                    "Asset": self.symbol,
-                    "Time": timestamp_str,
-                    "Candle #": idx + 1,
-                    "Type": "SELLER",
-                    "Trend": "Bearish (4H + EMA 50/200)",
-                    "Zone": "EMA 20-50 Pullback Zone",
-                    "Score": 95,
-                    "WickRejection": f"Upper Wick {upper_wick_pct:.1f}% (45-57%)",
-                    "Entry Price": round(c, dec),
-                    "Stop Loss (SL)": sl,
-                    "Target 1": tp1,
-                    "Target 2 (1:2 RR)": tp2,
-                    "RR": f"1:{rr:.2f}",
-                    "Status": "VALID",
-                    "Is_Within_1hr": is_within_1hr
-                })
-                sell_count_today += 1
+                        if rr >= 2.0:
+                            self.signals.append({
+                                "Asset": self.symbol,
+                                "Time": timestamp_str,
+                                "Type": "BUYER",
+                                "Trend": "Bullish (4H + 1H Structure)",
+                                "Setup": "15M Displacement + Pullback Higher Low",
+                                "Confirmation": "5M Bullish Rejection",
+                                "Entry Price": round(c_val, dec),
+                                "Stop Loss (SL)": sl,
+                                "Target 2 (1:2 RR)": tp2,
+                                "RR": f"1:{rr:.2f}",
+                                "Score": 95,
+                                "Is_Within_1hr": is_within_1hr
+                            })
+                            buy_signals_count += 1
 
 # ==========================================================
 # MASTER SCANNER DASHBOARD
 # ==========================================================
 st.markdown("---")
-st.subheader("🔥 TWT Master Institutional Signal Dashboard (Last 1 Hour)")
+st.subheader("🔥 TWT Master Multi-Timeframe Signal Dashboard (Last 1 Hour)")
 
 master_signals = []
 asset_engines = {}
 
 def scan_asset(sym):
-    df, df_4h = fetch_institutional_data(sym, selected_tf)
-    if df is not None and not df.empty:
-        engine = TWTInstitutionalPullbackEngine(df, df_4h, sym, active_tz)
-        engine.calculate_and_scan()
+    df_4h, df_1h, df_15m, df_5m = fetch_mtf_data(sym)
+    if df_4h is not None and not df_4h.empty:
+        engine = TWTMultiTimeframeEngine(df_4h, df_1h, df_15m, df_5m, sym, active_tz)
+        engine.run_strategy()
         recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
         latest = recent_sigs[-1] if recent_sigs else None
         return sym, engine, latest
     return sym, None, None
 
-with st.spinner("⚡ Scanning assets with TWT Institutional Pullback Strategy..."):
+with st.spinner("⚡ Scanning assets across 4H, 1H, 15M, and 5M timeframes..."):
     with ThreadPoolExecutor(max_workers=5) as executor:
         futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
         for future in as_completed(futures):
@@ -276,17 +277,17 @@ with st.spinner("⚡ Scanning assets with TWT Institutional Pullback Strategy...
                 master_signals.append(latest)
 
 if master_signals:
-    st.success(f"✅ Found {len(master_signals)} institutional setup(s)!")
+    st.success(f"✅ Found {len(master_signals)} multi-timeframe institutional setup(s)!")
     df_display = pd.DataFrame(master_signals).drop(columns=["Is_Within_1hr"], errors="ignore")
     st.dataframe(df_display, use_container_width=True)
 else:
-    st.info("ℹ️ No institutional signals in the last 1 hour. Waiting for valid pullback & rejection setups...")
+    st.info("ℹ️ No multi-timeframe signals in the last 1 hour matching 1:2 RR and Early Entry Blockers.")
 
 # ==========================================================
 # MANUAL ASSET INSPECTOR & CHART
 # ==========================================================
 st.markdown("---")
-st.subheader("📊 Manual Asset Inspector & Institutional Chart")
+st.subheader("📊 Manual Asset Inspector & MTF Chart")
 
 selected_symbol = st.selectbox(
     "🔍 Select Asset to Load Chart & Complete History",
@@ -300,51 +301,51 @@ if f"paper_trades_{selected_symbol}" not in st.session_state:
 if selected_symbol in asset_engines:
     bot = asset_engines[selected_symbol]
 else:
-    df, df_4h = fetch_institutional_data(selected_symbol, selected_tf)
-    bot = TWTInstitutionalPullbackEngine(df, df_4h, selected_symbol, active_tz)
-    bot.calculate_and_scan()
+    df_4h, df_1h, df_15m, df_5m = fetch_mtf_data(selected_symbol)
+    bot = TWTMultiTimeframeEngine(df_4h, df_1h, df_15m, df_5m, selected_symbol, active_tz)
+    bot.run_strategy()
 
-if bot.df is not None and not bot.df.empty:
-    curr_p = bot.candles[-1]["close"] if bot.candles else 0.0
+if bot.df_15m is not None and not bot.df_15m.empty:
+    curr_p = float(bot.df_15m["Close"].iloc[-1])
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric(label="Current Price", value=f"{curr_p:.2f}")
+        st.metric(label="Current 15M Price", value=f"{curr_p:.2f}")
     with col2:
-        st.metric(label="Current RSI (14)", value=f"{bot.candles[-1]['rsi']:.1f}")
+        st.metric(label="15M RSI (14)", value=f"{bot.df_15m['RSI'].iloc[-1]:.1f}")
     with col3:
-        st.metric(label="Current ATR (14)", value=f"{bot.candles[-1]['atr']:.4f}")
+        st.metric(label="15M ATR (14)", value=f"{bot.df_15m['ATR'].iloc[-1]:.4f}")
     with col4:
-        st.metric(label="Timezone", value=tz_short, delta="Institutional Strategy Active")
+        st.metric(label="Timezone", value=tz_short, delta="MTF Strategy Active")
 
     if bot.signals:
         latest_sig = bot.signals[-1]
         is_buy = latest_sig["Type"] == "BUYER"
         
         if is_buy:
-            st.success(f"🟢 **TWT INSTITUTIONAL BUY SETUP: {selected_symbol}**")
+            st.success(f"🟢 **TWT MTF BUY SETUP: {selected_symbol}**")
             st.code(f"""BUY SETUP DETAILS
 Trend: {latest_sig['Trend']}
-Zone: {latest_sig['Zone']}
-Rejection: {latest_sig['WickRejection']}
+Setup: {latest_sig['Setup']}
+Confirmation: {latest_sig['Confirmation']}
 Entry Price: {latest_sig['Entry Price']}
 Stop Loss: {latest_sig['Stop Loss (SL)']}
 Target 2 (1:2 RR): {latest_sig['Target 2 (1:2 RR)']}
 Risk-to-Reward: {latest_sig['RR']}
-Score: {latest_sig['Score']}/100 (High-Quality Setup)""", language="text")
+Score: {latest_sig['Score']}/100""", language="text")
         else:
-            st.error(f"🔴 **TWT INSTITUTIONAL SELL SETUP: {selected_symbol}**")
+            st.error(f"🔴 **TWT MTF SELL SETUP: {selected_symbol}**")
             st.code(f"""SELL SETUP DETAILS
 Trend: {latest_sig['Trend']}
-Zone: {latest_sig['Zone']}
-Rejection: {latest_sig['WickRejection']}
+Setup: {latest_sig['Setup']}
+Confirmation: {latest_sig['Confirmation']}
 Entry Price: {latest_sig['Entry Price']}
 Stop Loss: {latest_sig['Stop Loss (SL)']}
 Target 2 (1:2 RR): {latest_sig['Target 2 (1:2 RR)']}
 Risk-to-Reward: {latest_sig['RR']}
-Score: {latest_sig['Score']}/100 (High-Quality Setup)""", language="text")
+Score: {latest_sig['Score']}/100""", language="text")
     else:
-        st.warning(f"🟡 **STATUS: WAITING FOR PULLBACK IN EMA 20-50 ZONE ON {selected_symbol}**")
+        st.warning(f"🟡 **STATUS: WAITING FOR 15M SETUP & 5M CONFIRMATION ON {selected_symbol}**")
 
     # Interactive Paper Trading Desk
     st.markdown("---")
@@ -418,56 +419,46 @@ Score: {latest_sig['Score']}/100 (High-Quality Setup)""", language="text")
     # Complete Signal History
     if bot.signals:
         st.markdown("---")
-        st.subheader(f"📋 Complete Signal History for {selected_symbol}")
+        st.subheader(f"📋 Complete MTF Signal History for {selected_symbol}")
         df_history = pd.DataFrame(bot.signals).drop(columns=["Is_Within_1hr"], errors="ignore")
         st.dataframe(df_history, use_container_width=True)
 
-    # Professional Matplotlib Chart with EMAs
+    # Professional Matplotlib Chart (15M Chart with EMAs)
     st.markdown("---")
-    st.subheader(f"📈 Institutional Chart & EMAs — {selected_symbol}")
+    st.subheader(f"📈 15M Institutional Chart & EMAs — {selected_symbol}")
 
     fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
-    for c in bot.candles:
-        col = "#26a69a" if c["color"] == "Green" else "#ef5350"
-        body_size = abs(c["close"] - c["open"])
+    df_15m_plot = bot.df_15m.tail(100)
+    
+    for idx, (dt, row) in enumerate(df_15m_plot.iterrows()):
+        col = "#26a69a" if row["Close"] >= row["Open"] else "#ef5350"
+        body_size = abs(row["Close"] - row["Open"])
         min_body = curr_p * 0.0003
         plot_height = max(body_size, min_body)
-        plot_bottom = min(c["open"], c["close"]) - ((min_body - body_size) / 2) if body_size < min_body else min(c["open"], c["close"])
+        plot_bottom = min(row["Open"], row["Close"]) - ((min_body - body_size) / 2) if body_size < min_body else min(row["Open"], row["Close"])
 
-        ax.bar(c["id"], plot_height, bottom=plot_bottom, color=col, width=0.7)
-        ax.vlines(c["id"], c["low"], c["high"], color="#b2b5be", linewidth=1.3)
+        ax.bar(idx, plot_height, bottom=plot_bottom, color=col, width=0.7)
+        ax.vlines(idx, row["Low"], row["High"], color="#b2b5be", linewidth=1.3)
 
-    # Plot EMAs
-    ema20_vals = bot.df["EMA20"].values
-    ema50_vals = bot.df["EMA50"].values
-    ema200_vals = bot.df["EMA200"].values
-    x_ids = [c["id"] for c in bot.candles]
+    ema20_vals = df_15m_plot["EMA20"].values
+    ema50_vals = df_15m_plot["EMA50"].values
+    ema200_vals = df_15m_plot["EMA200"].values
+    x_ids = list(range(len(df_15m_plot)))
 
-    ax.plot(x_ids, ema20_vals, color="#29b6f6", linewidth=1.2, label="EMA 20")
-    ax.plot(x_ids, ema50_vals, color="#ab47bc", linewidth=1.2, label="EMA 50")
-    ax.plot(x_ids, ema200_vals, color="#ffeb3b", linewidth=1.5, label="EMA 200")
+    ax.plot(x_ids, ema20_vals, color="#29b6f6", linewidth=1.2, label="15M EMA 20")
+    ax.plot(x_ids, ema50_vals, color="#ab47bc", linewidth=1.2, label="15M EMA 50")
+    ax.plot(x_ids, ema200_vals, color="#ffeb3b", linewidth=1.5, label="15M EMA 200")
 
-    lows = [c["low"] for c in bot.candles]
-    highs = [c["high"] for c in bot.candles]
+    lows = df_15m_plot["Low"].values
+    highs = df_15m_plot["High"].values
 
-    if lows and highs:
+    if len(lows) > 0 and len(highs) > 0:
         margin = (max(highs) - min(lows)) * 0.09
         if margin == 0:
             margin = curr_p * 0.005
         ax.set_ylim(min(lows) - margin, max(highs) + margin)
 
-    for sig in bot.signals:
-        is_b = sig["Type"] == "BUYER"
-        bg_col = "#00e676" if is_b else "#ff5252"
-        txt = " B " if is_b else " S "
-        ax.text(
-            sig["Candle #"], sig["Entry Price"], txt,
-            color="white", weight="bold",
-            bbox=dict(boxstyle="round,pad=0.2", facecolor=bg_col, alpha=0.9),
-            ha="center", va="center",
-        )
-
-    ax.set_title(f"{selected_symbol} {selected_tf} — TWT Institutional Pullback Strategy ({tz_short})", color="white", fontsize=14)
+    ax.set_title(f"{selected_symbol} 15M — TWT Multi-Timeframe Strategy ({tz_short})", color="white", fontsize=14)
     ax.set_facecolor("#131722")
     fig.patch.set_facecolor("#1e222d")
     ax.tick_params(colors="white")
