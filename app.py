@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 import ccxt
@@ -11,7 +12,7 @@ from streamlit_autorefresh import st_autorefresh
 # STREAMLIT PAGE CONFIGURATION
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="TWT Professional BTC ORB Retest Bot",
+    page_title="TWT Professional Multi-Asset ORB Retest Bot",
     page_icon="⚡",
     layout="wide",
 )
@@ -29,12 +30,12 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 # Safe Auto-refresh every 30 seconds
 count = st_autorefresh(interval=30000, key="twt_orb_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA — Professional ORB Breakout & Retest Engine")
+st.title("⚡ TRADE WITH TUCKYAA — Multi-Asset ORB Breakout & Retest Engine")
 
 # ---------------------------------------------------------
 # SIDEBAR CONFIGURATION (Strategy Parameters & Controls)
 # ---------------------------------------------------------
-st.sidebar.markdown("### ⚙️ ORB & Session Configurations")
+st.sidebar.markdown("### ⚙️ Multi-Asset ORB Configurations")
 st.sidebar.markdown("---")
 
 # IANA Timezones with automatic DST handling
@@ -82,16 +83,40 @@ fee_slippage_pct = st.sidebar.slider(
     "💸 Fee & Slippage Assumption (%)", min_value=0.0, max_value=0.5, value=0.05, step=0.01
 )
 
+# Complete 20+ Asset List
+ASSET_LIST = [
+    "BTC/USDT",
+    "ETH/USDT",
+    "XAUT/USDT",
+    "SOL/USDT",
+    "XRP/USDT",
+    "BNB/USDT",
+    "DOGE/USDT",
+    "MATIC/USDT",
+    "ADA/USDT",
+    "AVAX/USDT",
+    "LINK/USDT",
+    "LTC/USDT",
+    "DOT/USDT",
+    "NEAR/USDT",
+    "APT/USDT",
+    "ARB/USDT",
+    "OP/USDT",
+    "SUI/USDT",
+    "FIL/USDT",
+    "RENDER/USDT",
+]
+
 
 # ---------------------------------------------------------
 # DATA FETCHING MODULE WITH CCXT (Timezone-Aware UTC)
 # ---------------------------------------------------------
 @st.cache_data(ttl=30)
-def fetch_btc_ohlcv(timeframe="5m", limit=500):
+def fetch_multi_asset_ohlcv(symbol, timeframe="5m", limit=500):
   exchanges_to_try = [
-      (ccxt.binance, "BTC/USDT"),
-      (ccxt.bybit, "BTC/USDT"),
-      (ccxt.kucoin, "BTC/USDT"),
+      (ccxt.binance, symbol),
+      (ccxt.bybit, symbol),
+      (ccxt.kucoin, symbol),
   ]
 
   tf_delta_map = {
@@ -103,22 +128,21 @@ def fetch_btc_ohlcv(timeframe="5m", limit=500):
   tf_delta = tf_delta_map.get(timeframe, timedelta(minutes=5))
   now_utc = datetime.now(timezone.utc)
 
-  for ex_class, symbol in exchanges_to_try:
+  for ex_class, sym in exchanges_to_try:
     try:
       exchange = ex_class({"enableRateLimit": True, "timeout": 15000})
       exchange.load_markets()
-      if symbol in exchange.markets:
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+      if sym in exchange.markets:
+        ohlcv = exchange.fetch_ohlcv(sym, timeframe=timeframe, limit=limit)
         if ohlcv:
           df = pd.DataFrame(
               ohlcv,
               columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
           )
-          # Ensure exchange timestamps are timezone-aware UTC
           df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
           df = df.set_index("timestamp")
 
-          # Remove incomplete current live candle if it hasn't closed yet
+          # Remove incomplete current live candle if unclosed
           if not df.empty and (df.index[-1] + tf_delta > now_utc):
             df = df.iloc[:-1]
 
@@ -133,8 +157,9 @@ def fetch_btc_ohlcv(timeframe="5m", limit=500):
 # ---------------------------------------------------------
 class ProfessionalORBRetestEngine:
 
-  def __init__(self, df, orb_duration, user_tz, session_time, timeframe):
+  def __init__(self, df, symbol, orb_duration, user_tz, session_time, timeframe):
     self.df = df
+    self.symbol = symbol
     self.orb_duration = orb_duration
     self.user_tz = user_tz
     self.session_time = session_time
@@ -146,7 +171,6 @@ class ProfessionalORBRetestEngine:
     self.signals = []
     self.history = []
     
-    # Granular diagnostic state tracking as requested
     self.diag = {
         "session_available": False,
         "orb_complete": False,
@@ -163,10 +187,8 @@ class ProfessionalORBRetestEngine:
   def calculate_indicators(self):
     if self.df is None or self.df.empty:
       return
-    # Calculate EMA 200 safely using historical data without replacing missing values with price
     self.df["EMA200"] = self.df["Close"].ewm(span=200, adjust=False).mean()
 
-    # Calculate ATR using completed candles only
     self.df["TR"] = np.maximum(
         self.df["High"] - self.df["Low"],
         np.maximum(
@@ -184,14 +206,12 @@ class ProfessionalORBRetestEngine:
     tf_mins_map = {"5m": 5, "15m": 15, "30m": 30, "1h": 60}
     tf_mins = tf_mins_map.get(self.timeframe, 5)
 
-    # Validate timeframe compatibility with ORB duration
     if self.orb_duration % tf_mins != 0 or self.orb_duration < tf_mins:
       self.diag["rejection_reason"] = f"Incompatible ORB duration ({self.orb_duration}m) for timeframe ({tf_mins}m)."
       return
 
     expected_candles = int(self.orb_duration / tf_mins)
 
-    # Convert DataFrame index to selected IANA timezone
     df_local = self.df.copy()
     df_local["time_tz"] = df_local.index.tz_convert(self.user_tz)
     df_local["date"] = df_local["time_tz"].dt.date
@@ -205,11 +225,9 @@ class ProfessionalORBRetestEngine:
 
     self.diag["session_available"] = True
 
-    # Filter candles strictly inside session window
     mask = (df_local["time_tz"] >= session_start_local) & (df_local["time_tz"] < session_end_local)
     orb_candles = df_local[mask]
 
-    # Never use fallback candles; strictly verify expected completed count
     if len(orb_candles) >= expected_candles:
       self.orb_high = float(orb_candles["High"].max())
       self.orb_low = float(orb_candles["Low"].min())
@@ -243,7 +261,6 @@ class ProfessionalORBRetestEngine:
     valid_signals = []
     current_utc_time = datetime.now(timezone.utc)
 
-    # Scan all eligible completed candles strictly after the ORB period (no look-ahead bias)
     for i in range(len(df_local)):
       c_time = df_local["time_tz"].iloc[i]
       if c_time < session_end_local:
@@ -268,8 +285,6 @@ class ProfessionalORBRetestEngine:
       if close > self.orb_high and body >= min_body_req:
         self.diag["breakout_found"] = True
 
-        # Search for retest within max allowed retest candles
-        retest_found_flag = False
         for j in range(i + 1, min(i + max_retest + 1, len(df_local))):
           retest_c = df_local.iloc[j]
           r_low = float(retest_c["Low"])
@@ -281,21 +296,17 @@ class ProfessionalORBRetestEngine:
           is_retest = r_low <= (self.orb_high + tolerance) and r_low >= (self.orb_high - tolerance * 2)
 
           if is_retest:
-            retest_found_flag = True
             self.diag["retest_found"] = True
 
-            # Rejection candle check (lower wick / rejection from broken level)
             is_rejection_candle = r_close > r_open and (r_open - r_low) > (r_close - r_open)
             if is_rejection_candle:
               self.diag["rejection_confirmed"] = True
 
-              # Subsequent completed candle must break rejection candle's high
               if j + 1 < len(df_local):
                 conf_c = df_local.iloc[j + 1]
                 if float(conf_c["Close"]) > r_high:
                   self.diag["confirmation_completed"] = True
 
-                  # EMA Filter check (must come from same completed confirmation candle, no replacing with price)
                   if use_ema:
                     if np.isnan(conf_c["EMA200"]):
                       self.diag["ema_filter_passed"] = False
@@ -309,12 +320,10 @@ class ProfessionalORBRetestEngine:
                       continue
                   self.diag["ema_filter_passed"] = True
 
-                  # Stop Loss using actual retest/swing low
                   swing_low = min(r_low, float(conf_c["Low"]))
                   sl = round(swing_low - (atr * 0.5), 2) if use_atr else round(swing_low, 2)
                   entry_price = float(conf_c["Close"]) * (1.0 + (fee_slip / 100.0))
 
-                  # Validate SL boundary (BUY SL must be strictly below entry)
                   if sl >= entry_price:
                     self.diag["risk_validation_passed"] = False
                     self.diag["final_signal_status"] = "Rejected"
@@ -329,6 +338,7 @@ class ProfessionalORBRetestEngine:
                   self.diag["rejection_reason"] = "Signal successfully validated and accepted."
 
                   valid_signals.append({
+                      "Asset": self.symbol,
                       "Type": "BUY 🟢",
                       "Setup": "ORB Breakout + Retest + Rejection Confirmation",
                       "Entry Price": round(entry_price, 2),
@@ -348,7 +358,6 @@ class ProfessionalORBRetestEngine:
       elif close < self.orb_low and body >= min_body_req:
         self.diag["breakout_found"] = True
 
-        retest_found_flag = False
         for j in range(i + 1, min(i + max_retest + 1, len(df_local))):
           retest_c = df_local.iloc[j]
           r_low = float(retest_c["Low"])
@@ -360,7 +369,6 @@ class ProfessionalORBRetestEngine:
           is_retest = r_high >= (self.orb_low - tolerance) and r_high <= (self.orb_low + tolerance * 2)
 
           if is_retest:
-            retest_found_flag = True
             self.diag["retest_found"] = True
 
             is_rejection_candle = r_close < r_open and (r_high - r_open) > (r_open - r_close)
@@ -389,7 +397,6 @@ class ProfessionalORBRetestEngine:
                   sl = round(swing_high + (atr * 0.5), 2) if use_atr else round(swing_high, 2)
                   entry_price = float(conf_c["Close"]) * (1.0 - (fee_slip / 100.0))
 
-                  # Validate SL boundary (SELL SL must be strictly above entry)
                   if sl <= entry_price:
                     self.diag["risk_validation_passed"] = False
                     self.diag["final_signal_status"] = "Rejected"
@@ -404,6 +411,7 @@ class ProfessionalORBRetestEngine:
                   self.diag["rejection_reason"] = "Signal successfully validated and accepted."
 
                   valid_signals.append({
+                      "Asset": self.symbol,
                       "Type": "SELL 🔴",
                       "Setup": "ORB Breakout + Retest + Rejection Confirmation",
                       "Entry Price": round(entry_price, 2),
@@ -417,7 +425,6 @@ class ProfessionalORBRetestEngine:
                   })
                   break
 
-    # Select newest valid signal and prevent duplicate signals per direction per session
     if valid_signals:
       unique_signals = []
       seen_directions = set()
@@ -433,15 +440,73 @@ class ProfessionalORBRetestEngine:
 
 
 # ---------------------------------------------------------
-# EXECUTION & DASHBOARD INTERFACE
+# MASTER SCANNER (Global Feed for Top Dashboard - 20+ Assets)
 # ---------------------------------------------------------
-df_btc = fetch_btc_ohlcv(timeframe=selected_tf, limit=500)
-bot = ProfessionalORBRetestEngine(df_btc, orb_duration_mins, active_tz, session_open_time, selected_tf)
-bot.scan_breakout_and_retest(
-    use_ema_filter, min_breakout_body_atr, max_retest_candles, retest_tolerance_atr, use_atr_buffer, risk_reward_ratio, fee_slippage_pct
+st.markdown("---")
+st.subheader("🔥 TWT Master Live Signal Dashboard (Last 1 Hour — 20+ Assets)")
+
+master_signals = []
+asset_engines = {}
+
+
+def scan_single_asset(sym):
+  df = fetch_multi_asset_ohlcv(sym, selected_tf, limit=500)
+  if df is not None and not df.empty:
+    engine = ProfessionalORBRetestEngine(df, sym, orb_duration_mins, active_tz, session_open_time, selected_tf)
+    engine.scan_breakout_and_retest(
+        use_ema_filter, min_breakout_body_atr, max_retest_candles, retest_tolerance_atr, use_atr_buffer, risk_reward_ratio, fee_slippage_pct
+    )
+    recent_sigs = [s for s in engine.signals if s.get("Is_Recent", False)]
+    latest = recent_sigs[0] if recent_sigs else None
+    return sym, engine, latest
+  return sym, None, None
+
+
+with st.spinner("⚡ Scanning all 20+ assets with Professional ORB Retest Engine..."):
+  with ThreadPoolExecutor(max_workers=5) as executor:
+    futures = {
+        executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
+    }
+    for future in as_completed(futures):
+      sym, engine, latest = future.result()
+      if engine:
+        asset_engines[sym] = engine
+      if latest:
+        master_signals.append(latest)
+
+if master_signals:
+  st.success(f"✅ Found {len(master_signals)} active setup(s) across 20+ assets!")
+  df_display = pd.DataFrame(master_signals).drop(
+      columns=["Is_Recent", "Direction"], errors="ignore"
+  )
+  st.dataframe(df_display, width="stretch")
+else:
+  st.info(
+      "ℹ️ No active signals in the last 1 hour across 20+ assets. Waiting for session and breakout confirmation..."
+  )
+
+# ---------------------------------------------------------
+# MANUAL ASSET SELECTOR & CHART VIEWER
+# ---------------------------------------------------------
+st.markdown("---")
+st.subheader("📊 Manual Asset Inspector & Chart")
+
+selected_symbol = st.selectbox(
+    "🔍 Select Asset to Load Clean Chart & Protected Entry",
+    options=ASSET_LIST,
+    index=0,
 )
 
-# Top Metrics Dashboard Display
+if selected_symbol in asset_engines:
+  bot = asset_engines[selected_symbol]
+else:
+  df = fetch_multi_asset_ohlcv(selected_symbol, selected_tf, limit=500)
+  bot = ProfessionalORBRetestEngine(df, selected_symbol, orb_duration_mins, active_tz, session_open_time, selected_tf)
+  bot.scan_breakout_and_retest(
+      use_ema_filter, min_breakout_body_atr, max_retest_candles, retest_tolerance_atr, use_atr_buffer, risk_reward_ratio, fee_slippage_pct
+  )
+
+# Top Metrics Dashboard Display for Selected Asset
 col_d1, col_d2, col_d3, col_d4 = st.columns(4)
 with col_d1:
   if bot.orb_available:
@@ -464,18 +529,17 @@ with col_d4:
       if bot.df is not None and not bot.df.empty
       else 0.0
   )
-  st.metric(label="⚡ Current BTC Price", value=f"${current_price:,.2f}")
+  st.metric(label=f"⚡ Current {selected_symbol} Price", value=f"${current_price:,.2f}")
 
 st.markdown("---")
 
-# Active Signal Display
 recent_signals = [s for s in bot.signals if s.get("Is_Recent", False)]
 
 if not bot.orb_available:
-  st.warning("⚠️ **WAITING FOR SESSION:** Opening Range is unavailable or incomplete for the current session window.")
+  st.warning(f"⚠️ **WAITING FOR SESSION:** Opening Range for {selected_symbol} is unavailable or incomplete for the current session window.")
 elif recent_signals:
   sig = recent_signals[0]
-  st.success(f"✅ **ACTIVE RETEST SETUP GENERATED: {sig['Type']}**")
+  st.success(f"✅ **ACTIVE RETEST SETUP FOR {selected_symbol}: {sig['Type']}**")
 
   col_s1, col_s2, col_s3 = st.columns(3)
   with col_s1:
@@ -491,14 +555,22 @@ elif recent_signals:
     )
 else:
   st.info(
-      "ℹ️ **Status:** Scanning market. Waiting for ORB breakout followed by a"
-      " clean level retest and rejection confirmation."
+      f"ℹ️ **Status for {selected_symbol}:** Scanning market. Waiting for ORB breakout followed by a clean level retest and rejection confirmation."
   )
+
+# Single Entry History Table for Selected Asset
+if bot.history:
+  st.markdown("---")
+  st.subheader(f"📋 Confirmed Entry History Feed for {selected_symbol}")
+  df_history = pd.DataFrame(bot.history).drop(
+      columns=["Is_Recent", "Direction"], errors="ignore"
+  )
+  st.dataframe(df_history, width="stretch")
 
 # ---------------------------------------------------------
 # DIAGNOSTIC DASHBOARD (Debugging & Execution Tracking)
 # ---------------------------------------------------------
-with st.expander("🛠️ Diagnostic & Execution Status Dashboard", expanded=False):
+with st.expander(f"🛠️ Diagnostic & Execution Status Dashboard ({selected_symbol})", expanded=False):
   diag_col1, diag_col2, diag_col3 = st.columns(3)
   with diag_col1:
     st.text(f"Session Available: {'✅' if bot.diag['session_available'] else '❌'}")
@@ -518,7 +590,7 @@ with st.expander("🛠️ Diagnostic & Execution Status Dashboard", expanded=Fal
 # MATPLOTLIB PROFESSIONAL CHART RENDERER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("📊 Professional ORB Chart & Retest Visualizer")
+st.subheader(f"📊 Professional ORB Chart & Retest Visualizer ({selected_symbol})")
 
 if bot.df is not None and not bot.df.empty:
   fig, ax = plt.subplots(figsize=(14, 7), dpi=100)
@@ -572,7 +644,7 @@ if bot.df is not None and not bot.df.empty:
     )
 
   ax.set_title(
-      f"BTC/USDT {selected_tf} — Professional ORB Retest Engine ({selected_tz_name})",
+      f"{selected_symbol} {selected_tf} — Professional Multi-Asset ORB Engine ({selected_tz_name})",
       color="white",
       fontsize=14,
       weight="bold",
@@ -589,4 +661,4 @@ if bot.df is not None and not bot.df.empty:
 
   st.pyplot(fig)
 else:
-  st.error("Failed to load BTC chart data. Please check internet connection.")
+  st.error("Failed to load market chart data. Please check internet connection.")
