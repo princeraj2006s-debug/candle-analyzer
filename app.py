@@ -8,7 +8,7 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(
-    page_title="TWT Delta Pro Multi-Asset by TUCKYAA", page_icon="⚡", layout="wide"
+    page_title="TWT Delta Pro Strict Engine by TUCKYAA", page_icon="⚡", layout="wide"
 )
 
 # Hide Streamlit Header, Footer, Menu & GitHub Icon via CSS
@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (PRO) — Multi-Asset Retracement Strategy Engine"
+    "⚡ TRADE WITH TUCKYAA (PRO) — Strict Trend & Zone Retracement Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -78,7 +78,7 @@ with col_tz:
 tz_short = selected_tz_name.split(")")[0] + ")"
 
 # Sidebar Panel
-st.sidebar.markdown("### 🤖 TWT Multi-Asset Panel")
+st.sidebar.markdown("### 🤖 TWT Strict Multi-Asset Panel")
 st.sidebar.markdown("---")
 server_time_target = datetime.now(active_tz)
 st.sidebar.text(
@@ -86,9 +86,9 @@ st.sidebar.text(
 )
 st.sidebar.text("Active Assets      ———  20+ Delta Coins")
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Strategy Rules")
-st.sidebar.text("01:00 ➔ 11:00 : 3 Red Zone + Retracement ➔ SELL ONLY")
-st.sidebar.text("13:00 ➔ 21:00 : 3 Green Zone + Retracement ➔ BUY ONLY")
+st.sidebar.markdown("#### Strict Strategy Rules")
+st.sidebar.text("01:00 ➔ 11:00 : Strict Downtrend + 3 Red Zone ➔ SELL ONLY")
+st.sidebar.text("13:00 ➔ 21:00 : Strict Uptrend + 3 Green Zone ➔ BUY ONLY")
 st.sidebar.text("Risk Mgmt    : ATR Managed SL & Multi-TP")
 
 
@@ -128,7 +128,7 @@ def fetch_twt_delta_data(symbol, tf):
   return None
 
 
-class TWT3CandleZoneEngine:
+class TWTStrictZoneEngine:
 
   def __init__(self, df, symbol, user_tz):
     self.df = df
@@ -145,6 +145,10 @@ class TWT3CandleZoneEngine:
 
     IST = timezone(timedelta(hours=5, minutes=30))
     current_utc_time = datetime.now(timezone.utc)
+
+    # Calculate EMAs for strict trend identification
+    self.df["EMA20"] = self.df["Close"].ewm(span=20, adjust=False).mean()
+    self.df["EMA50"] = self.df["Close"].ewm(span=50, adjust=False).mean()
 
     self.df["TR"] = np.maximum(
         self.df["High"] - self.df["Low"],
@@ -172,6 +176,8 @@ class TWT3CandleZoneEngine:
           float(r["Volume"]),
       )
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
+      ema20 = float(r["EMA20"]) if not pd.isna(r["EMA20"]) else c
+      ema50 = float(r["EMA50"]) if not pd.isna(r["EMA50"]) else c
 
       age_minutes = (current_utc_time - dt_utc).total_seconds() / 60.0
       is_within_1hr = age_minutes <= 60.0
@@ -188,12 +194,14 @@ class TWT3CandleZoneEngine:
           "close": c,
           "volume": v,
           "atr": atr,
+          "ema20": ema20,
+          "ema50": ema50,
           "is_within_1hr": is_within_1hr,
       })
 
     found_signal = None
 
-    for i in range(8, len(self.candles)):
+    for i in range(10, len(self.candles)):
       c = self.candles[i]
       t_ist = c["dt_ist"].time()
 
@@ -206,26 +214,32 @@ class TWT3CandleZoneEngine:
       atr = c["atr"]
       dec = get_decimals(c["close"])
 
+      # Strict Trend Checks
+      is_strict_downtrend = c["ema20"] < c["ema50"]
+      is_strict_uptrend = c["ema20"] > c["ema50"]
+
       # ==========================================================
-      # 1. MORNING SESSION (01:00 to 11:00) ➔ SELL SETUP
+      # 1. MORNING SESSION (01:00 to 11:00) ➔ STRICT DOWNTREND + 3 RED ZONE + RETRACEMENT ➔ SELL ONLY
       # ==========================================================
-      if is_morning_session:
-        for start in range(max(0, i - 25), i - 5):
+      if is_morning_session and is_strict_downtrend:
+        for start in range(max(0, i - 30), i - 5):
           c1 = self.candles[start]
           c2 = self.candles[start + 1]
           c3 = self.candles[start + 2]
 
+          # Ensure strictly 3 consecutive Red candles
           if c1["color"] == "Red" and c2["color"] == "Red" and c3["color"] == "Red":
             zone_high = max(c1["high"], c2["high"], c3["high"])
             zone_low = min(c1["low"], c2["low"], c3["low"])
 
             for k in range(start + 3, i - 3):
               touch_c = self.candles[k]
+              # Price touches zone with a Green pullback candle
               if touch_c["color"] == "Green" and touch_c["high"] >= zone_low and touch_c["close"] <= zone_high:
                 if k + 1 < len(self.candles) and self.candles[k + 1]["color"] == "Red":
                   green_count = 0
                   end_idx = k + 1
-                  for g in range(k + 2, min(k + 5, len(self.candles))):
+                  for g in range(k + 2, min(k + 6, len(self.candles))):
                     if self.candles[g]["color"] == "Green":
                       green_count += 1
                       end_idx = g
@@ -247,8 +261,8 @@ class TWT3CandleZoneEngine:
                             "Time": entry_c["time"],
                             "Candle #": entry_c["id"],
                             "Type": "SELL 🔴",
-                            "Setup": "3-Red Zone + Retracement + Red Entry",
-                            "Action": "Sell / Short (S) [Retracement Entry] 🔴",
+                            "Setup": "Strict Downtrend 3-Red Zone Retracement",
+                            "Action": "Sell / Short (S) [Strict Downtrend] 🔴",
                             "Entry Price": round(entry_c["close"], dec),
                             "Stop Loss (SL)": sl,
                             "TP 1": tp1,
@@ -261,25 +275,27 @@ class TWT3CandleZoneEngine:
               break
 
       # ==========================================================
-      # 2. EVENING SESSION (13:00 to 21:00) ➔ BUY SETUP
+      # 2. EVENING SESSION (13:00 to 21:00) ➔ STRICT UPTREND + 3 GREEN ZONE + RETRACEMENT ➔ BUY ONLY
       # ==========================================================
-      if is_evening_session:
-        for start in range(max(0, i - 25), i - 5):
+      if is_evening_session and is_strict_uptrend:
+        for start in range(max(0, i - 30), i - 5):
           c1 = self.candles[start]
           c2 = self.candles[start + 1]
           c3 = self.candles[start + 2]
 
+          # Ensure strictly 3 consecutive Green candles
           if c1["color"] == "Green" and c2["color"] == "Green" and c3["color"] == "Green":
             zone_high = max(c1["high"], c2["high"], c3["high"])
             zone_low = min(c1["low"], c2["low"], c3["low"])
 
             for k in range(start + 3, i - 3):
               touch_c = self.candles[k]
+              # Price touches zone with a Red pullback candle
               if touch_c["color"] == "Red" and touch_c["low"] <= zone_high and touch_c["close"] >= zone_low:
                 if k + 1 < len(self.candles) and self.candles[k + 1]["color"] == "Green":
                   red_count = 0
                   end_idx = k + 1
-                  for r_idx in range(k + 2, min(k + 5, len(self.candles))):
+                  for r_idx in range(k + 2, min(k + 6, len(self.candles))):
                     if self.candles[r_idx]["color"] == "Red":
                       red_count += 1
                       end_idx = r_idx
@@ -301,8 +317,8 @@ class TWT3CandleZoneEngine:
                             "Time": entry_c["time"],
                             "Candle #": entry_c["id"],
                             "Type": "BUY 🟢",
-                            "Setup": "3-Green Zone + Retracement + Green Entry",
-                            "Action": "Buy / Long (B) [Retracement Entry] 🟢",
+                            "Setup": "Strict Uptrend 3-Green Zone Retracement",
+                            "Action": "Buy / Long (B) [Strict Uptrend] 🟢",
                             "Entry Price": round(entry_c["close"], dec),
                             "Stop Loss (SL)": sl,
                             "TP 1": tp1,
@@ -338,7 +354,7 @@ asset_engines = {}
 def scan_single_asset(sym):
   df = fetch_twt_delta_data(sym, selected_tf)
   if df is not None and not df.empty:
-    engine = TWT3CandleZoneEngine(df, sym, active_tz)
+    engine = TWTStrictZoneEngine(df, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
     latest = recent_sigs[0] if recent_sigs else None
@@ -346,7 +362,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20+ assets with Retracement Strategy..."):
+with st.spinner("⚡ Scanning all 20+ assets with Strict Trend & Zone Engine..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -359,14 +375,14 @@ with st.spinner("⚡ Scanning all 20+ assets with Retracement Strategy..."):
         master_signals.append(latest)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} active setup(s) across assets!")
+  st.success(f"✅ Found {len(master_signals)} strict active setup(s) across assets!")
   df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
   st.info(
-      "ℹ️ No active signals in the last 1 hour across 20+ assets. Waiting for setup triggers..."
+      "ℹ️ No active signals in the last 1 hour. Waiting for strict session & trend alignment..."
   )
 
 # ---------------------------------------------------------
@@ -385,7 +401,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df = fetch_twt_delta_data(selected_symbol, selected_tf)
-  bot = TWT3CandleZoneEngine(df, selected_symbol, active_tz)
+  bot = TWTStrictZoneEngine(df, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df is not None and not bot.df.empty:
@@ -397,7 +413,7 @@ if bot.df is not None and not bot.df.empty:
   with col2:
     st.metric(label="Selected Asset", value=selected_symbol)
   with col3:
-    st.metric(label="Timezone", value=tz_short, delta="Multi-Asset Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Strict Trend Engine Active")
 
   if bot.signals:
     latest_sig = bot.signals[0]
@@ -429,8 +445,8 @@ if bot.df is not None and not bot.df.empty:
       )
   else:
     st.warning(
-        "🟡 **STATUS: WAITING FOR RETRACEMENT SETUP**\n\n"
-        "📌 *Instructions:* Monitoring sessions and zone retracement rules."
+        "🟡 **STATUS: WAITING FOR STRICT SETUP**\n\n"
+        "📌 *Instructions:* Monitoring strict trend session rules and 3-candle zones."
     )
 
   if bot.history_signals:
@@ -481,7 +497,7 @@ if bot.df is not None and not bot.df.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} {selected_tf} — TWT Multi-Asset Engine ({tz_short})",
+      f"{selected_symbol} {selected_tf} — TWT Strict Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
