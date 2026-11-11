@@ -8,7 +8,7 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(
-    page_title="TWT BTC Multi-Candle Retracement Strategy by TUCKYAA", page_icon="⚡", layout="wide"
+    page_title="TWT Delta Pro Multi-Asset by TUCKYAA", page_icon="⚡", layout="wide"
 )
 
 # Hide Streamlit Header, Footer, Menu & GitHub Icon via CSS
@@ -22,7 +22,7 @@ hide_streamlit_style = """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# TIMEZONES & EXCLUSIVE BTC/USDT ASSET LIST
+# GLOBAL TRADING TIMEZONES & COMPLETE 20+ ASSETS LIST
 # ---------------------------------------------------------
 TRADING_TIMEZONES = {
     "(UTC+5:30) Kolkata / India (IST)": timezone(
@@ -34,12 +34,35 @@ TRADING_TIMEZONES = {
     "(UTC+8:00) Singapore / Hong Kong (SGT)": timezone(timedelta(hours=8)),
 }
 
-ASSET_LIST = ["BTC/USDT"]
+ASSET_LIST = [
+    "BTC/USDT",
+    "ETH/USDT",
+    "XAUT/USDT",
+    "SOL/USDT",
+    "XRP/USDT",
+    "BNB/USDT",
+    "DOGE/USDT",
+    "MATIC/USDT",
+    "ADA/USDT",
+    "AVAX/USDT",
+    "LINK/USDT",
+    "LTC/USDT",
+    "DOT/USDT",
+    "NEAR/USDT",
+    "APT/USDT",
+    "ARB/USDT",
+    "OP/USDT",
+    "SUI/USDT",
+    "FIL/USDT",
+    "RENDER/USDT",
+]
 
 # Safe Auto-refresh every 30 seconds
-count = st_autorefresh(interval=30000, key="twt_btc_refresh")
+count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA (BTC PRO) — Retracement Zone Entry Engine")
+st.title(
+    "⚡ TRADE WITH TUCKYAA (PRO) — Multi-Asset Retracement Strategy Engine"
+)
 
 col_tf, col_tz = st.columns([1, 2])
 with col_tf:
@@ -55,17 +78,17 @@ with col_tz:
 tz_short = selected_tz_name.split(")")[0] + ")"
 
 # Sidebar Panel
-st.sidebar.markdown("### 🤖 TWT BTC Strategy Panel")
+st.sidebar.markdown("### 🤖 TWT Multi-Asset Panel")
 st.sidebar.markdown("---")
 server_time_target = datetime.now(active_tz)
 st.sidebar.text(
     f"Server time          ———  {server_time_target.strftime('%H:%M')}"
 )
-st.sidebar.text("Active Asset       ———  BTC/USDT Only")
+st.sidebar.text("Active Assets      ———  20+ Delta Coins")
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Retracement Rules")
-st.sidebar.text("01:00 ➔ 11:00 : 3 Red Zone ➔ Green Touch ➔ Red ➔ 2-3 Green ➔ SELL")
-st.sidebar.text("13:00 ➔ 21:00 : 3 Green Zone ➔ Red Touch ➔ Green ➔ 2-3 Red ➔ BUY")
+st.sidebar.markdown("#### Strategy Rules")
+st.sidebar.text("01:00 ➔ 11:00 : 3 Red Zone + Retracement ➔ SELL ONLY")
+st.sidebar.text("13:00 ➔ 21:00 : 3 Green Zone + Retracement ➔ BUY ONLY")
 st.sidebar.text("Risk Mgmt    : ATR Managed SL & Multi-TP")
 
 
@@ -79,7 +102,7 @@ def get_decimals(price):
 
 
 @st.cache_data(ttl=30)
-def fetch_btc_data(symbol, tf):
+def fetch_twt_delta_data(symbol, tf):
   exchanges_to_try = [
       (ccxt.binance, symbol),
       (ccxt.bybit, symbol),
@@ -113,6 +136,7 @@ class TWT3CandleZoneEngine:
     self.user_tz = user_tz
     self.candles = []
     self.signals = []
+    self.history_signals = []
     self.zone_box = None
 
   def calculate_and_scan(self):
@@ -191,20 +215,15 @@ class TWT3CandleZoneEngine:
           c2 = self.candles[start + 1]
           c3 = self.candles[start + 2]
 
-          # 3 consecutive Red candles form zone
           if c1["color"] == "Red" and c2["color"] == "Red" and c3["color"] == "Red":
             zone_high = max(c1["high"], c2["high"], c3["high"])
             zone_low = min(c1["low"], c2["low"], c3["low"])
 
-            # Check sequence: Green candle touches zone -> Red candle -> 2 or 3 Green candles -> Entry Red candle
             for k in range(start + 3, i - 3):
               touch_c = self.candles[k]
               if touch_c["color"] == "Green" and touch_c["high"] >= zone_low and touch_c["close"] <= zone_high:
-                # Next must be a Red candle
                 if k + 1 < len(self.candles) and self.candles[k + 1]["color"] == "Red":
-                  # Followed by 2 or 3 Green candles
                   green_count = 0
-                  valid_sequence = False
                   end_idx = k + 1
                   for g in range(k + 2, min(k + 5, len(self.candles))):
                     if self.candles[g]["color"] == "Green":
@@ -214,7 +233,6 @@ class TWT3CandleZoneEngine:
                       break
 
                   if green_count >= 2:
-                    # After 2-3 green candles, look at the next red candle for entry
                     if end_idx + 1 < len(self.candles):
                       entry_c = self.candles[end_idx + 1]
                       if entry_c["color"] == "Red":
@@ -251,12 +269,10 @@ class TWT3CandleZoneEngine:
           c2 = self.candles[start + 1]
           c3 = self.candles[start + 2]
 
-          # 3 consecutive Green candles form zone
           if c1["color"] == "Green" and c2["color"] == "Green" and c3["color"] == "Green":
             zone_high = max(c1["high"], c2["high"], c3["high"])
             zone_low = min(c1["low"], c2["low"], c3["low"])
 
-            # Check sequence: Red candle touches zone -> Green candle -> 2 or 3 Red candles -> Entry Green candle
             for k in range(start + 3, i - 3):
               touch_c = self.candles[k]
               if touch_c["color"] == "Red" and touch_c["low"] <= zone_high and touch_c["close"] >= zone_low:
@@ -303,45 +319,85 @@ class TWT3CandleZoneEngine:
 
     if found_signal:
       self.signals = [found_signal]
+      self.history_signals = [found_signal]
     else:
       self.signals = []
+      self.history_signals = []
 
 
 # ---------------------------------------------------------
-# EXECUTION & DASHBOARD FOR BTC/USDT ONLY
+# MASTER SCANNER (Global Feed for Top Dashboard)
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("🔥 BTC/USDT Live Strategy Dashboard")
+st.subheader("🔥 TWT Master Live Signal Dashboard (Last 1 Hour)")
 
-df_btc = fetch_btc_data("BTC/USDT", selected_tf)
-bot = TWT3CandleZoneEngine(df_btc, "BTC/USDT", active_tz)
-bot.calculate_and_scan()
+master_signals = []
+asset_engines = {}
 
-master_signals = [s for s in bot.signals if s.get("Is_Within_1hr", False)]
+
+def scan_single_asset(sym):
+  df = fetch_twt_delta_data(sym, selected_tf)
+  if df is not None and not df.empty:
+    engine = TWT3CandleZoneEngine(df, sym, active_tz)
+    engine.calculate_and_scan()
+    recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
+    latest = recent_sigs[0] if recent_sigs else None
+    return sym, engine, latest
+  return sym, None, None
+
+
+with st.spinner("⚡ Scanning all 20+ assets with Retracement Strategy..."):
+  with ThreadPoolExecutor(max_workers=5) as executor:
+    futures = {
+        executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
+    }
+    for future in as_completed(futures):
+      sym, engine, latest = future.result()
+      if engine:
+        asset_engines[sym] = engine
+      if latest:
+        master_signals.append(latest)
 
 if master_signals:
-  st.success("✅ Active Retracement Zone BTC Setup Found!")
+  st.success(f"✅ Found {len(master_signals)} active setup(s) across assets!")
   df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active signal in the last 1 hour. Waiting for exact retracement sequence on BTC...")
+  st.info(
+      "ℹ️ No active signals in the last 1 hour across 20+ assets. Waiting for setup triggers..."
+  )
 
-# --- MANUAL INSPECTOR & CHART VIEWER ---
+# ---------------------------------------------------------
+# MANUAL ASSET SELECTOR & CHART VIEWER
+# ---------------------------------------------------------
 st.markdown("---")
-st.subheader("📊 BTC/USDT Chart & Zone Inspector")
+st.subheader("📊 Manual Asset Inspector & Chart")
+
+selected_symbol = st.selectbox(
+    "🔍 Select Asset to Load Clean Chart & Protected Entry",
+    options=ASSET_LIST,
+    index=0,
+)
+
+if selected_symbol in asset_engines:
+  bot = asset_engines[selected_symbol]
+else:
+  df = fetch_twt_delta_data(selected_symbol, selected_tf)
+  bot = TWT3CandleZoneEngine(df, selected_symbol, active_tz)
+  bot.calculate_and_scan()
 
 if bot.df is not None and not bot.df.empty:
   curr_p = bot.candles[-1]["close"] if bot.candles else 0.0
 
   col1, col2, col3 = st.columns(3)
   with col1:
-    st.metric(label="Current BTC Price", value=f"{curr_p:.2f}")
+    st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col2:
-    st.metric(label="Session Window", value="Active Trading Session")
+    st.metric(label="Selected Asset", value=selected_symbol)
   with col3:
-    st.metric(label="Timezone", value=tz_short, delta="Retracement Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Multi-Asset Engine Active")
 
   if bot.signals:
     latest_sig = bot.signals[0]
@@ -353,8 +409,8 @@ if bot.df is not None and not bot.df.empty:
 
     if is_buy:
       st.success(
-          f"🟢 **TWT BTC BUY SETUP: {latest_sig['Action']}**\n\n"
-          f"🕒 **Time ({tz_short}):** `{signal_time}` (Candle"
+          f"🟢 **TWT BUY SETUP: {latest_sig['Action']}**\n\n"
+          f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
@@ -363,8 +419,8 @@ if bot.df is not None and not bot.df.empty:
       )
     else:
       st.error(
-          f"🔴 **TWT BTC SELL SETUP: {latest_sig['Action']}**\n\n"
-          f"🕒 **Time ({tz_short}):** `{signal_time}` (Candle"
+          f"🔴 **TWT SELL SETUP: {latest_sig['Action']}**\n\n"
+          f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
           f" #{latest_sig['Candle #']})\n"
           f"- **Entry Price:** `{entry_p}`\n"
           f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
@@ -373,9 +429,17 @@ if bot.df is not None and not bot.df.empty:
       )
   else:
     st.warning(
-        "🟡 **STATUS: SCANNING BTC**\n\n"
-        "📌 *Instructions:* Waiting for 3 candles zone -> zone touch -> retracement sequence -> entry candle."
+        "🟡 **STATUS: WAITING FOR RETRACEMENT SETUP**\n\n"
+        "📌 *Instructions:* Monitoring sessions and zone retracement rules."
     )
+
+  if bot.history_signals:
+    st.markdown("---")
+    st.subheader(f"📋 Single Entry History for {selected_symbol}")
+    df_history = pd.DataFrame(bot.history_signals).drop(
+        columns=["Is_Within_1hr"], errors="ignore"
+    )
+    st.dataframe(df_history, width="stretch")
 
   # --- CLEAN CANDLESTICK CHART RENDERING ---
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
@@ -389,7 +453,6 @@ if bot.df is not None and not bot.df.empty:
     ax.bar(c["id"], body_height, bottom=lower_val, color=col, width=0.6, edgecolor=col)
     ax.vlines(c["id"], c["low"], c["high"], color=col, linewidth=1.2)
 
-  # Plot Zone Box if detected
   if bot.zone_box:
     z_low, z_high, start_idx, end_idx = bot.zone_box
     ax.axhspan(z_low, z_high, xmin=start_idx/len(bot.candles), xmax=end_idx/len(bot.candles), color="#ab47bc", alpha=0.3, label="3-Candle Zone")
@@ -418,7 +481,7 @@ if bot.df is not None and not bot.df.empty:
     )
 
   ax.set_title(
-      f"BTC/USDT {selected_tf} — TWT Retracement Engine ({tz_short})",
+      f"{selected_symbol} {selected_tf} — TWT Multi-Asset Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
@@ -433,4 +496,4 @@ if bot.df is not None and not bot.df.empty:
 
   st.pyplot(fig)
 else:
-  st.error("BTC market data load failed. Please check internet connection.")
+  st.error("Market data load failed. Please check internet connection.")
