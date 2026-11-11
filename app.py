@@ -61,7 +61,7 @@ ASSET_LIST = [
 count = st_autorefresh(interval=30000, key="twt_delta_refresh")
 
 st.title(
-    "⚡ TRADE WITH TUCKYAA (PRO) — Clean Candle & Zone-Protected Engine"
+    "⚡ TRADE WITH TUCKYAA (PRO) — 3-Touch Level Reaction Engine"
 )
 
 col_tf, col_tz = st.columns([1, 2])
@@ -91,8 +91,9 @@ st.sidebar.markdown("---")
 st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Strategy Settings")
-st.sidebar.text("Strict Zone Filter : Sell only near Resistance | Buy only near Support")
-st.sidebar.text("Candle Fix       : Full body & wick rendering for all price ranges")
+st.sidebar.text("Entry Logic      : 3-Touch Level Reaction + Small Candle")
+st.sidebar.text("Buy Trigger      : Support 3rd touch + Small Red Candle")
+st.sidebar.text("Sell Trigger     : Resistance 3rd touch + Small Green Candle")
 st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
 st.sidebar.text("Stop loss        : ATR Managed")
 
@@ -250,6 +251,7 @@ class TWTZoneProtectedEngine:
           float(r["Volume"]),
       )
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
+      body = abs(c - o)
 
       age_minutes = (current_utc_time - dt_utc).total_seconds() / 60.0
       is_within_1hr = age_minutes <= 60.0
@@ -266,40 +268,62 @@ class TWTZoneProtectedEngine:
           "close": c,
           "volume": v,
           "atr": atr,
+          "body": body,
           "is_within_1hr": is_within_1hr,
       })
 
+    # 3. 3-Touch Level Reaction Strategy Implementation
+    swing_lows = []
+    swing_highs = []
+    window = 3
+
+    for i in range(window, len(self.candles) - window):
+      is_low = True
+      is_high = True
+      cur_l = self.candles[i]["low"]
+      cur_h = self.candles[i]["high"]
+
+      for j in range(i - window, i + window + 1):
+        if j == i:
+          continue
+        if self.candles[j]["low"] < cur_l:
+          is_low = False
+        if self.candles[j]["high"] > cur_h:
+          is_high = False
+
+      if is_low:
+        swing_lows.append((i, cur_l))
+      if is_high:
+        swing_highs.append((i, cur_h))
+
     found_signal = None
-    buy_state = 0
-    red_streak = 0
+    bodies = [c["body"] for c in self.candles]
+    avg_body = np.mean(bodies) if bodies else 0.001
 
-    # Range buffer for zone checking
-    total_range = self.resistance_lvl - self.support_lvl if self.resistance_lvl > self.support_lvl else 1.0
-
-    for i in range(len(self.candles)):
+    for i in range(len(self.candles) - 15, len(self.candles)):
+      if i < 0:
+        continue
       c = self.candles[i]
+
       if time(1, 0) <= c["dt_ist"].time() <= time(6, 0):
         continue
 
       atr = c["atr"] if not np.isnan(c["atr"]) else (c["close"] * 0.002)
       dec = get_decimals(c["close"])
 
-      # ----------------------------------------------------
-      # 1. BUY SETUP (Must be in lower half near Support)
-      # ----------------------------------------------------
-      if buy_state != 5 and c["close"] >= self.support_lvl:
-        buy_state = 0
-        red_streak = 0
+      # --- BUY SETUP: 3rd Touch Support + Small Red Candle ---
+      matching_support_lows = [
+          lvl
+          for idx, lvl in swing_lows
+          if idx < i and abs(c["low"] - lvl) <= (atr * 1.5)
+      ]
+      if self.support_lvl > 0 and abs(c["low"] - self.support_lvl) <= (
+          atr * 1.5
+      ):
+        matching_support_lows.append(self.support_lvl)
 
-      # Zone check: Buy only if close is in the lower 60% of the range
-      is_near_support = c["close"] <= self.support_lvl + (total_range * 0.6)
-
-      if buy_state != 5 and is_near_support and c["close"] < self.support_lvl + (atr * 0.8):
-        if c["color"] == "Red":
-          red_streak += 1
-          if red_streak >= 3:
-            buy_state = 1
-        elif c["color"] == "Green" and buy_state >= 1:
+      if len(matching_support_lows) >= 2:
+        if c["color"] == "Red" and c["body"] <= avg_body * 1.2:
           sl = round(c["low"] - (1.2 * atr), dec)
           tp1 = round(c["close"] + (1.2 * atr), dec)
           tp2 = round(c["close"] + (2.5 * atr), dec)
@@ -310,8 +334,8 @@ class TWTZoneProtectedEngine:
               "Time": c["time"],
               "Candle #": c["id"],
               "Type": "BUY 🟢",
-              "Setup": "Support Rebound after Red Exhaustion",
-              "Action": "Buy / Long (B) [Support Rebound] 🟢",
+              "Setup": "3-Touch Support Reaction (Small Red)",
+              "Action": "Buy / Long (B) [3rd Touch Support] 🟢",
               "Entry Price": round(c["close"], dec),
               "Stop Loss (SL)": sl,
               "TP 1": tp1,
@@ -321,65 +345,38 @@ class TWTZoneProtectedEngine:
           }
           break
 
-      # ----------------------------------------------------
-      # 2. SELL SETUP (Must be in upper half near Resistance)
-      # ----------------------------------------------------
-      is_near_resistance = (
-          c["high"] >= self.resistance_lvl - (atr * 2.5)
-          or c["close"] >= self.support_lvl + (total_range * 0.4)
-      )
+      # --- SELL SETUP: 3rd Touch Resistance + Small Green Candle ---
+      matching_resistance_highs = [
+          lvl
+          for idx, lvl in swing_highs
+          if idx < i and abs(c["high"] - lvl) <= (atr * 1.5)
+      ]
+      if self.resistance_lvl > 0 and abs(
+          c["high"] - self.resistance_lvl
+      ) <= (atr * 1.5):
+        matching_resistance_highs.append(self.resistance_lvl)
 
-      if is_near_resistance and c["color"] == "Green" and c["close"] >= self.support_lvl + (total_range * 0.35):
-        ref_level = c["low"]
-        sell_state = 1
-        sell_locked = False
+      if len(matching_resistance_highs) >= 2:
+        if c["color"] == "Green" and c["body"] <= avg_body * 1.2:
+          sl = round(c["high"] + (1.2 * atr), dec)
+          tp1 = round(c["close"] - (1.2 * atr), dec)
+          tp2 = round(c["close"] - (2.5 * atr), dec)
+          tp3 = round(c["close"] - (4.0 * atr), dec)
 
-        for m in range(i + 1, len(self.candles)):
-          cm = self.candles[m]
-          # Zone safety: Never sell if price drops down near support
-          if cm["close"] <= self.support_lvl + (total_range * 0.25):
-            break
-
-          if sell_state == 1:
-            if cm["color"] == "Red" and cm["low"] <= ref_level + (cm["atr"] * 0.4):
-              sell_state = 2
-          elif sell_state == 2:
-            if cm["color"] == "Green" and cm["high"] >= ref_level - (cm["atr"] * 0.8):
-              sell_state = 3
-          elif sell_state == 3:
-            if cm["color"] == "Red":
-              sell_state = 4
-          elif sell_state == 4:
-            if cm["color"] == "Red":
-              cm_atr = (
-                  cm["atr"]
-                  if not np.isnan(cm["atr"])
-                  else (cm["close"] * 0.002)
-              )
-              cm_dec = get_decimals(cm["close"])
-              sl = round(cm["high"] + (1.2 * cm_atr), cm_dec)
-              tp1 = round(cm["close"] - (1.2 * cm_atr), cm_dec)
-              tp2 = round(cm["close"] - (2.5 * cm_atr), cm_dec)
-              tp3 = round(cm["close"] - (4.0 * cm_atr), cm_dec)
-
-              found_signal = {
-                  "Asset": self.symbol,
-                  "Time": cm["time"],
-                  "Candle #": cm["id"],
-                  "Type": "SELL 🔴",
-                  "Setup": "Safe 2nd-Red Pullback Rejection",
-                  "Action": "Sell / Short (S) [Safe 2nd-Red Entry] 🔴",
-                  "Entry Price": round(cm["close"], cm_dec),
-                  "Stop Loss (SL)": sl,
-                  "TP 1": tp1,
-                  "TP 2": tp2,
-                  "TP 3": tp3,
-                  "Is_Within_1hr": cm["is_within_1hr"],
-              }
-              sell_locked = True
-              break
-        
-        if sell_locked:
+          found_signal = {
+              "Asset": self.symbol,
+              "Time": c["time"],
+              "Candle #": c["id"],
+              "Type": "SELL 🔴",
+              "Setup": "3-Touch Resistance Reaction (Small Green)",
+              "Action": "Sell / Short (S) [3rd Touch Resistance] 🔴",
+              "Entry Price": round(c["close"], dec),
+              "Stop Loss (SL)": sl,
+              "TP 1": tp1,
+              "TP 2": tp2,
+              "TP 3": tp3,
+              "Is_Within_1hr": c["is_within_1hr"],
+          }
           break
 
     if found_signal:
@@ -411,7 +408,7 @@ def scan_single_asset(sym):
   return sym, None, None
 
 
-with st.spinner("⚡ Scanning all 20 assets with Zone Protection..."):
+with st.spinner("⚡ Scanning all 20 assets with 3-Touch Reaction Logic..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {
         executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
@@ -435,7 +432,7 @@ else:
   )
 
 # ---------------------------------------------------------
-# MANUAL ASSET SELECTOR & CHART VIEWER
+# MANUAL ASSET INSPECTOR & CHART VIEWER
 # ---------------------------------------------------------
 st.markdown("---")
 st.subheader("📊 Manual Asset Inspector & Chart")
@@ -468,7 +465,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
   with col3:
     st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
   with col4:
-    st.metric(label="Timezone", value=tz_short, delta="Zone Protection Active")
+    st.metric(label="Timezone", value=tz_short, delta="3-Touch Engine Active")
 
   if bot.signals:
     latest_sig = bot.signals[0]
@@ -500,9 +497,9 @@ if bot.df_5 is not None and not bot.df_5.empty:
       )
   else:
     st.warning(
-        "🟡 **STATUS: WAITING FOR SETUP**\n\n"
-        "📌 *Instructions:* Monitoring support for Buy and resistance for Sell"
-        " setups (Strategy tags hidden)."
+        "🟡 **STATUS: WAITING FOR 3-TOUCH SETUP**\n\n"
+        "📌 *Instructions:* Monitoring multi-touch support/resistance levels"
+        " for 3rd touch small candle reaction."
     )
 
   # Complete Single History Table
@@ -516,16 +513,15 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
     st.dataframe(df_history, width="stretch")
 
-  # --- CLEAN CANDLESTICK CHART RENDERING (FIXED FOR ALL COINS) ---
+  # --- CLEAN CANDLESTICK CHART RENDERING ---
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
   for c in bot.candles:
     col = "#26a69a" if c["close"] >= c["open"] else "#ef5350"
     lower_val = min(c["open"], c["close"])
     body_height = abs(c["close"] - c["open"])
     if body_height == 0:
-      body_height = curr_p * 0.0005  # Ensure doji is visible
+      body_height = curr_p * 0.0005
 
-    # Draw full candlestick body and wicks cleanly
     ax.bar(c["id"], body_height, bottom=lower_val, color=col, width=0.6, edgecolor=col)
     ax.vlines(c["id"], c["low"], c["high"], color=col, linewidth=1.2)
 
@@ -574,7 +570,6 @@ if bot.df_5 is not None and not bot.df_5.empty:
       margin = curr_p * 0.005
     ax.set_ylim(min(lows) - margin, max(highs) + margin)
 
-  # Plot the FIRST locked signal on the chart
   for sig in bot.signals:
     is_b = "BUY" in sig["Type"]
     bg_col = "#00e676" if is_b else "#ff5252"
@@ -591,7 +586,7 @@ if bot.df_5 is not None and not bot.df_5.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Zone Protected Engine ({tz_short})",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA 3-Touch Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
