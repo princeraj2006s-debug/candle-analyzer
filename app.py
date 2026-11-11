@@ -1,4 +1,3 @@
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, time, timedelta, timezone
 import ccxt
 import matplotlib.pyplot as plt
@@ -7,11 +6,16 @@ import pandas as pd
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
+# ---------------------------------------------------------
+# STREAMLIT PAGE CONFIGURATION
+# ---------------------------------------------------------
 st.set_page_config(
-    page_title="TWT BTC Multi-Candle Retracement Strategy by TUCKYAA", page_icon="⚡", layout="wide"
+    page_title="TWT Professional BTC ORB Trading Bot",
+    page_icon="⚡",
+    layout="wide",
 )
 
-# Hide Streamlit Header, Footer, Menu & GitHub Icon via CSS
+# Hide Streamlit Default Elements
 hide_streamlit_style = """
     <style>
     #MainMenu {visibility: hidden;}
@@ -21,80 +25,71 @@ hide_streamlit_style = """
     """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
+# Safe Auto-refresh every 30 seconds
+count = st_autorefresh(interval=30000, key="twt_orb_refresh")
+
+st.title("⚡ TRADE WITH TUCKYAA — Professional BTC ORB & Retest Engine")
+
 # ---------------------------------------------------------
-# TIMEZONES & EXCLUSIVE BTC/USDT ASSET LIST
+# SIDEBAR CONFIGURATION (Strategy Parameters)
 # ---------------------------------------------------------
+st.sidebar.markdown("### ⚙️ ORB Engine Configurations")
+st.sidebar.markdown("---")
+
+# Timezones
 TRADING_TIMEZONES = {
     "(UTC+5:30) Kolkata / India (IST)": timezone(
         timedelta(hours=5, minutes=30)
     ),
-    "(UTC+1:00) Berlin / Paris / CET": timezone(timedelta(hours=1)),
     "(UTC+0:00) London / UTC / GMT": timezone.utc,
     "(UTC-5:00) New York / US East (EST)": timezone(timedelta(hours=-5)),
     "(UTC+8:00) Singapore / Hong Kong (SGT)": timezone(timedelta(hours=8)),
 }
-
-ASSET_LIST = ["BTC/USDT"]
-
-# Safe Auto-refresh every 30 seconds
-count = st_autorefresh(interval=30000, key="twt_btc_refresh")
-
-st.title("⚡ TRADE WITH TUCKYAA (BTC PRO) — Retracement Zone Entry Engine")
-
-col_tf, col_tz = st.columns([1, 2])
-with col_tf:
-  selected_tf = st.selectbox(
-      "⏱️ Timeframe", options=["5m", "15m", "30m", "1h"], index=0
-  )
-with col_tz:
-  selected_tz_name = st.selectbox(
-      "🌍 Trading Timezone", options=list(TRADING_TIMEZONES.keys()), index=0
-  )
-  active_tz = TRADING_TIMEZONES[selected_tz_name]
-
+selected_tz_name = st.sidebar.selectbox(
+    "🌍 Trading Timezone", options=list(TRADING_TIMEZONES.keys()), index=0
+)
+active_tz = TRADING_TIMEZONES[selected_tz_name]
 tz_short = selected_tz_name.split(")")[0] + ")"
 
-# Sidebar Panel
-st.sidebar.markdown("### 🤖 TWT BTC Strategy Panel")
-st.sidebar.markdown("---")
-server_time_target = datetime.now(active_tz)
-st.sidebar.text(
-    f"Server time          ———  {server_time_target.strftime('%H:%M')}"
+selected_tf = st.sidebar.selectbox(
+    "⏱️ Entry Timeframe", options=["5m", "15m", "30m", "1h"], index=0
 )
-st.sidebar.text("Active Asset       ———  BTC/USDT Only")
+orb_duration_mins = st.sidebar.slider(
+    "⏳ Opening Range Duration (Minutes)", min=15, max=120, value=75, step=5
+)
+
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Retracement Rules")
-st.sidebar.text("01:00 ➔ 11:00 : 3 Red Zone ➔ Green Touch ➔ Red ➔ 2-3 Green ➔ SELL")
-st.sidebar.text("13:00 ➔ 21:00 : 3 Green Zone ➔ Red Touch ➔ Green ➔ 2-3 Red ➔ BUY")
-st.sidebar.text("Risk Mgmt    : ATR Managed SL & Multi-TP")
+st.sidebar.markdown("### 🛡️ Filters & Risk Management")
+use_ema_filter = st.sidebar.checkbox("Enable EMA 200 Trend Filter", value=True)
+use_atr_buffer = st.sidebar.checkbox("Enable ATR Buffer for Stop Loss", value=True)
+risk_reward_ratio = st.sidebar.slider(
+    "🎯 Risk / Reward Target Ratio", min_value=1.0, max_value=5.0, value=2.0, step=0.5
+)
+max_trades_per_day = st.sidebar.number_input(
+    "Max Trades Per Day", min_value=1, max_value=5, value=1
+)
 
 
-def get_decimals(price):
-  if price < 1:
-    return 4
-  elif price < 10:
-    return 3
-  else:
-    return 2
-
-
+# ---------------------------------------------------------
+# DATA FETCHING MODULE WITH CCXT
+# ---------------------------------------------------------
 @st.cache_data(ttl=30)
-def fetch_btc_data(symbol, tf):
+def fetch_btc_ohlcv(timeframe="5m", limit=200):
   exchanges_to_try = [
-      (ccxt.binance, symbol),
-      (ccxt.bybit, symbol),
-      (ccxt.kucoin, symbol),
+      (ccxt.binance, "BTC/USDT"),
+      (ccxt.bybit, "BTC/USDT"),
+      (ccxt.kucoin, "BTC/USDT"),
   ]
 
-  for ex_class, sym in exchanges_to_try:
+  for ex_class, symbol in exchanges_to_try:
     try:
       exchange = ex_class({"enableRateLimit": True, "timeout": 15000})
       exchange.load_markets()
-      if sym in exchange.markets:
-        ohlcv_tf = exchange.fetch_ohlcv(sym, timeframe=tf, limit=160)
-        if ohlcv_tf:
+      if symbol in exchange.markets:
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+        if ohlcv:
           df = pd.DataFrame(
-              ohlcv_tf,
+              ohlcv,
               columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
           )
           df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
@@ -105,23 +100,28 @@ def fetch_btc_data(symbol, tf):
   return None
 
 
-class TWT3CandleZoneEngine:
+# ---------------------------------------------------------
+# TECHNICAL INDICATORS & ORB ENGINE
+# ---------------------------------------------------------
+class ProfessionalORBEngine:
 
-  def __init__(self, df, symbol, user_tz):
+  def __init__(self, df, orb_duration, user_tz):
     self.df = df
-    self.symbol = symbol
+    self.orb_duration = orb_duration
     self.user_tz = user_tz
-    self.candles = []
+    self.orb_high = 0.0
+    self.orb_low = 0.0
+    self.orb_mid = 0.0
     self.signals = []
-    self.zone_box = None
+    self.history = []
 
-  def calculate_and_scan(self):
+  def calculate_indicators(self):
     if self.df is None or self.df.empty:
       return
+    # EMA 200 Calculation
+    self.df["EMA200"] = self.df["Close"].ewm(span=200, adjust=False).mean()
 
-    IST = timezone(timedelta(hours=5, minutes=30))
-    current_utc_time = datetime.now(timezone.utc)
-
+    # ATR Calculation
     self.df["TR"] = np.maximum(
         self.df["High"] - self.df["Low"],
         np.maximum(
@@ -131,296 +131,244 @@ class TWT3CandleZoneEngine:
     )
     self.df["ATR"] = self.df["TR"].rolling(14).mean()
 
-    for idx, row in enumerate(self.df.iterrows()):
-      dt_utc = row[0]
-      if dt_utc.tzinfo is None:
-        dt_utc = dt_utc.replace(tzinfo=timezone.utc)
-      dt_ist = dt_utc.astimezone(IST)
-      dt_user_tz = dt_utc.astimezone(self.user_tz)
-      timestamp_str = dt_user_tz.strftime("%H:%M")
+  def identify_opening_range(self):
+    if self.df is None or self.df.empty:
+      return
+    # Group candles by calendar day and find the high/low of the first N minutes
+    first_timestamp = self.df.index[0]
+    session_start_time = first_timestamp.normalize() + timedelta(
+        hours=9, minutes=30
+    )  # Market open reference
+    session_end_time = session_start_time + timedelta(
+        minutes=self.orb_duration
+    )
 
-      r = row[1]
-      o, h, l, c, v = (
-          float(r["Open"]),
-          float(r["High"]),
-          float(r["Low"]),
-          float(r["Close"]),
-          float(r["Volume"]),
-      )
-      atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
+    orb_candles = self.df[
+        (self.df.index >= session_start_time)
+        & (self.df.index < session_end_time)
+    ]
 
-      age_minutes = (current_utc_time - dt_utc).total_seconds() / 60.0
-      is_within_1hr = age_minutes <= 60.0
+    if not orb_candles.empty:
+      self.orb_high = float(orb_candles["High"].max())
+      self.orb_low = float(orb_candles["Low"].min())
+    else:
+      # Fallback to first few candles if specific session time window is missing in data feed
+      fallback_count = max(
+          3, int(self.orb_duration / 5)
+      )  v_slice = self.df.iloc[:fallback_count]
+      self.orb_high = float(v_slice["High"].max())
+      self.orb_low = float(v_slice["Low"].min())
 
-      self.candles.append({
-          "id": idx + 1,
-          "time": timestamp_str,
-          "dt_ist": dt_ist,
-          "dt_user": dt_user_tz,
-          "color": "Green" if c >= o else "Red",
-          "open": o,
-          "high": h,
-          "low": l,
-          "close": c,
-          "volume": v,
-          "atr": atr,
-          "is_within_1hr": is_within_1hr,
-      })
+    self.orb_mid = (self.orb_high + self.orb_low) / 2.0
+
+  def scan_breakout_and_retest(self, use_ema, use_atr, rr_target):
+    if self.df is None or len(self.df) < 20:
+      return
+
+    self.calculate_indicators()
+    self.identify_opening_range()
 
     found_signal = None
+    current_utc_time = datetime.now(timezone.utc)
 
-    for i in range(8, len(self.candles)):
-      c = self.candles[i]
-      t_ist = c["dt_ist"].time()
+    for i in range(
+        int(self.orb_duration / 5) + 1, len(self.df)
+    ):  # Start scanning after ORB period
+      c = self.df.iloc[i]
+      prev_c = self.df.iloc[i - 1]
+      dt_utc = self.df.index[i]
+      if dt_utc.tzinfo is None:
+        dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+      dt_user = dt_utc.astimezone(self.user_tz)
 
-      is_morning_session = time(1, 0) <= t_ist <= time(11, 0)
-      is_evening_session = time(13, 0) <= t_ist <= time(21, 0)
+      close = float(c["Close"])
+      open_p = float(c["Open"])
+      high = float(c["High"])
+      low = float(c["Low"])
+      ema200 = float(c["EMA200"]) if not np.isnan(c["EMA200"]) else close
+      atr = float(c["ATR"]) if not np.isnan(c["ATR"]) else (close * 0.002)
 
-      if not is_morning_session and not is_evening_session:
-        continue
+      # Age check (within last 1 hour)
+      is_recent = (current_utc_time - dt_utc).total_seconds() / 60.0 <= 60.0
 
-      atr = c["atr"]
-      dec = get_decimals(c["close"])
+      # -------------------------------------------------
+      # BULLISH BREAKOUT & RETEST SETUP
+      # -------------------------------------------------
+      breakout_condition = close > self.orb_high and prev_c["Close"] <= self.orb_high
+      ema_cond_bull = (not use_ema) or (close > ema200)
 
-      # ==========================================================
-      # 1. MORNING SESSION (01:00 to 11:00) ➔ SELL SETUP
-      # ==========================================================
-      if is_morning_session:
-        for start in range(max(0, i - 25), i - 5):
-          c1 = self.candles[start]
-          c2 = self.candles[start + 1]
-          c3 = self.candles[start + 2]
+      if breakout_condition and ema_cond_bull:
+        # Check retest or continuation momentum confirmation
+        sl = (
+            round(self.orb_low - (atr * 0.5), 2)
+            if use_atr
+            else round(self.orb_low, 2)
+        )
+        risk = close - sl
+        if risk <= 0:
+          continue
+        target = round(close + (risk * rr_target), 2)
 
-          # 3 consecutive Red candles form zone
-          if c1["color"] == "Red" and c2["color"] == "Red" and c3["color"] == "Red":
-            zone_high = max(c1["high"], c2["high"], c3["high"])
-            zone_low = min(c1["low"], c2["low"], c3["low"])
+        found_signal = {
+            "Type": "BUY 🟢",
+            "Setup": "ORB Bullish Breakout & Continuation",
+            "Entry Price": round(close, 2),
+            "Stop Loss": sl,
+            "Target": target,
+            "R:R Ratio": f"1:{rr_target}",
+            "Time": dt_user.strftime("%H:%M"),
+            "Reason": "Clean close above ORB High with momentum confirmation.",
+            "Is_Recent": is_recent,
+        }
+        break
 
-            # Check sequence: Green candle touches zone -> Red candle -> 2 or 3 Green candles -> Entry Red candle
-            for k in range(start + 3, i - 3):
-              touch_c = self.candles[k]
-              if touch_c["color"] == "Green" and touch_c["high"] >= zone_low and touch_c["close"] <= zone_high:
-                # Next must be a Red candle
-                if k + 1 < len(self.candles) and self.candles[k + 1]["color"] == "Red":
-                  # Followed by 2 or 3 Green candles
-                  green_count = 0
-                  valid_sequence = False
-                  end_idx = k + 1
-                  for g in range(k + 2, min(k + 5, len(self.candles))):
-                    if self.candles[g]["color"] == "Green":
-                      green_count += 1
-                      end_idx = g
-                    else:
-                      break
+      # -------------------------------------------------
+      # BEARISH BREAKOUT & RETEST SETUP
+      # -------------------------------------------------
+      bear_breakout = close < self.orb_low and prev_c["Close"] >= self.orb_low
+      ema_cond_bear = (not use_ema) or (close < ema200)
 
-                  if green_count >= 2:
-                    # After 2-3 green candles, look at the next red candle for entry
-                    if end_idx + 1 < len(self.candles):
-                      entry_c = self.candles[end_idx + 1]
-                      if entry_c["color"] == "Red":
-                        sl = round(zone_high + (1.2 * atr), dec)
-                        tp1 = round(entry_c["close"] - (1.2 * atr), dec)
-                        tp2 = round(entry_c["close"] - (2.5 * atr), dec)
-                        tp3 = round(entry_c["close"] - (4.0 * atr), dec)
+      if bear_breakout and ema_cond_bear:
+        sl = (
+            round(self.orb_high + (atr * 0.5), 2)
+            if use_atr
+            else round(self.orb_high, 2)
+        )
+        risk = sl - close
+        if risk <= 0:
+          continue
+        target = round(close - (risk * rr_target), 2)
 
-                        self.zone_box = (zone_low, zone_high, start, start + 2)
-                        found_signal = {
-                            "Asset": self.symbol,
-                            "Time": entry_c["time"],
-                            "Candle #": entry_c["id"],
-                            "Type": "SELL 🔴",
-                            "Setup": "3-Red Zone + Retracement + Red Entry",
-                            "Action": "Sell / Short (S) [Retracement Entry] 🔴",
-                            "Entry Price": round(entry_c["close"], dec),
-                            "Stop Loss (SL)": sl,
-                            "TP 1": tp1,
-                            "TP 2": tp2,
-                            "TP 3": tp3,
-                            "Is_Within_1hr": entry_c["is_within_1hr"],
-                        }
-                        break
-            if found_signal:
-              break
-
-      # ==========================================================
-      # 2. EVENING SESSION (13:00 to 21:00) ➔ BUY SETUP
-      # ==========================================================
-      if is_evening_session:
-        for start in range(max(0, i - 25), i - 5):
-          c1 = self.candles[start]
-          c2 = self.candles[start + 1]
-          c3 = self.candles[start + 2]
-
-          # 3 consecutive Green candles form zone
-          if c1["color"] == "Green" and c2["color"] == "Green" and c3["color"] == "Green":
-            zone_high = max(c1["high"], c2["high"], c3["high"])
-            zone_low = min(c1["low"], c2["low"], c3["low"])
-
-            # Check sequence: Red candle touches zone -> Green candle -> 2 or 3 Red candles -> Entry Green candle
-            for k in range(start + 3, i - 3):
-              touch_c = self.candles[k]
-              if touch_c["color"] == "Red" and touch_c["low"] <= zone_high and touch_c["close"] >= zone_low:
-                if k + 1 < len(self.candles) and self.candles[k + 1]["color"] == "Green":
-                  red_count = 0
-                  end_idx = k + 1
-                  for r_idx in range(k + 2, min(k + 5, len(self.candles))):
-                    if self.candles[r_idx]["color"] == "Red":
-                      red_count += 1
-                      end_idx = r_idx
-                    else:
-                      break
-
-                  if red_count >= 2:
-                    if end_idx + 1 < len(self.candles):
-                      entry_c = self.candles[end_idx + 1]
-                      if entry_c["color"] == "Green":
-                        sl = round(zone_low - (1.2 * atr), dec)
-                        tp1 = round(entry_c["close"] + (1.2 * atr), dec)
-                        tp2 = round(entry_c["close"] + (2.5 * atr), dec)
-                        tp3 = round(entry_c["close"] + (4.0 * atr), dec)
-
-                        self.zone_box = (zone_low, zone_high, start, start + 2)
-                        found_signal = {
-                            "Asset": self.symbol,
-                            "Time": entry_c["time"],
-                            "Candle #": entry_c["id"],
-                            "Type": "BUY 🟢",
-                            "Setup": "3-Green Zone + Retracement + Green Entry",
-                            "Action": "Buy / Long (B) [Retracement Entry] 🟢",
-                            "Entry Price": round(entry_c["close"], dec),
-                            "Stop Loss (SL)": sl,
-                            "TP 1": tp1,
-                            "TP 2": tp2,
-                            "TP 3": tp3,
-                            "Is_Within_1hr": entry_c["is_within_1hr"],
-                        }
-                        break
-            if found_signal:
-              break
-
-      if found_signal:
+        found_signal = {
+            "Type": "SELL 🔴",
+            "Setup": "ORB Bearish Breakout & Continuation",
+            "Entry Price": round(close, 2),
+            "Stop Loss": sl,
+            "Target": target,
+            "R:R Ratio": f"1:{rr_target}",
+            "Time": dt_user.strftime("%H:%M"),
+            "Reason": "Clean close below ORB Low with momentum confirmation.",
+            "Is_Recent": is_recent,
+        }
         break
 
     if found_signal:
       self.signals = [found_signal]
+      self.history = [found_signal]
     else:
       self.signals = []
 
 
 # ---------------------------------------------------------
-# EXECUTION & DASHBOARD FOR BTC/USDT ONLY
+# EXECUTION & DASHBOARD INTERFACE
+# ---------------------------------------------------------
+df_btc = fetch_btc_ohlcv(timeframe=selected_tf, limit=150)
+bot = ProfessionalORBEngine(df_btc, orb_duration_mins, active_tz)
+bot.scan_breakout_and_retest(use_ema_filter, use_atr_buffer, risk_reward_ratio)
+
+recent_signals = [s for s in bot.signals if s.get("Is_Recent", False)]
+
+col_d1, col_d2, col_d3, col_d4 = st.columns(4)
+with col_d1:
+  st.metric(label="🟢 Opening Range High (ORB)", value=f"${bot.orb_high:,.2f}")
+with col_d2:
+  st.metric(label="🔴 Opening Range Low (ORB)", value=f"${bot.orb_low:,.2f}")
+with col_d3:
+  st.metric(label="⚪ Opening Range Mid", value=f"${bot.orb_mid:,.2f}")
+with col_d4:
+  current_price = (
+      float(bot.df["Close"].iloc[-1])
+      if bot.df is not None and not bot.df.empty
+      else 0.0
+  )
+  st.metric(label="⚡ Current BTC Price", value=f"${current_price:,.2f}")
+
+st.markdown("---")
+
+if recent_signals:
+  sig = recent_signals[0]
+  st.success(f"✅ **ACTIVE ORB SETUP GENERATED: {sig['Type']}**")
+
+  col_s1, col_s2, col_s3 = st.columns(3)
+  with col_s1:
+    st.info(f"**Setup Type:** {sig['Setup']}\n\n**Entry Time:** {sig['Time']}")
+  with col_s2:
+    st.warning(
+        f"**Suggested Entry:** ${sig['Entry Price']}\n\n**Stop Loss:**"
+        f" ${sig['Stop Loss']}"
+    )
+  with col_s3:
+    st.success(
+        f"**Target:** ${sig['Target']}\n\n**Risk/Reward:** {sig['R:R Ratio']}"
+    )
+else:
+  st.info(
+      "ℹ️ **Status:** Scanning market structure. Waiting for clean candle"
+      " close breakout confirmation beyond the 75-min Opening Range."
+  )
+
+# ---------------------------------------------------------
+# MATPLOTLIB PROFESSIONAL CHART RENDERER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("🔥 BTC/USDT Live Strategy Dashboard")
-
-df_btc = fetch_btc_data("BTC/USDT", selected_tf)
-bot = TWT3CandleZoneEngine(df_btc, "BTC/USDT", active_tz)
-bot.calculate_and_scan()
-
-master_signals = [s for s in bot.signals if s.get("Is_Within_1hr", False)]
-
-if master_signals:
-  st.success("✅ Active Retracement Zone BTC Setup Found!")
-  df_display = pd.DataFrame(master_signals).drop(
-      columns=["Is_Within_1hr"], errors="ignore"
-  )
-  st.dataframe(df_display, width="stretch")
-else:
-  st.info("ℹ️ No active signal in the last 1 hour. Waiting for exact retracement sequence on BTC...")
-
-# --- MANUAL INSPECTOR & CHART VIEWER ---
-st.markdown("---")
-st.subheader("📊 BTC/USDT Chart & Zone Inspector")
+st.subheader("📊 Professional ORB Chart & Retest Visualizer")
 
 if bot.df is not None and not bot.df.empty:
-  curr_p = bot.candles[-1]["close"] if bot.candles else 0.0
+  fig, ax = plt.subplots(figsize=(14, 7), dpi=100)
 
-  col1, col2, col3 = st.columns(3)
-  with col1:
-    st.metric(label="Current BTC Price", value=f"{curr_p:.2f}")
-  with col2:
-    st.metric(label="Session Window", value="Active Trading Session")
-  with col3:
-    st.metric(label="Timezone", value=tz_short, delta="Retracement Engine Active")
+  # Plot Candlesticks
+  for idx, row in enumerate(bot.df.iterrows()):
+    r = row[1]
+    col = "#26a69a" if r["Close"] >= r["Open"] else "#ef5350"
+    lower_v = min(r["Open"], r["Close"])
+    body_h = abs(r["Close"] - r["Open"])
+    if body_h == 0:
+      body_h = r["Close"] * 0.0005
 
-  if bot.signals:
-    latest_sig = bot.signals[0]
-    is_buy = "BUY" in latest_sig["Type"]
-    entry_p = latest_sig["Entry Price"]
-    signal_time = latest_sig["Time"]
+    ax.bar(
+        idx, body_h, bottom=lower_v, color=col, width=0.6, edgecolor=col
+    )
+    ax.vlines(idx, r["Low"], r["High"], color=col, linewidth=1.2)
 
-    st.warning("⚠️ **Don't use after 40 minutes!**")
-
-    if is_buy:
-      st.success(
-          f"🟢 **TWT BTC BUY SETUP: {latest_sig['Action']}**\n\n"
-          f"🕒 **Time ({tz_short}):** `{signal_time}` (Candle"
-          f" #{latest_sig['Candle #']})\n"
-          f"- **Entry Price:** `{entry_p}`\n"
-          f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
-          f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
-          f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`"
-      )
-    else:
-      st.error(
-          f"🔴 **TWT BTC SELL SETUP: {latest_sig['Action']}**\n\n"
-          f"🕒 **Time ({tz_short}):** `{signal_time}` (Candle"
-          f" #{latest_sig['Candle #']})\n"
-          f"- **Entry Price:** `{entry_p}`\n"
-          f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
-          f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
-          f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`"
-      )
-  else:
-    st.warning(
-        "🟡 **STATUS: SCANNING BTC**\n\n"
-        "📌 *Instructions:* Waiting for 3 candles zone -> zone touch -> retracement sequence -> entry candle."
+  # Plot EMA 200 Line if available
+  if "EMA200" in bot.df.columns:
+    ax.plot(
+        range(len(bot.df)),
+        bot.df["EMA200"],
+        color="#29b6f6",
+        linewidth=1.5,
+        label="EMA 200 Trend",
     )
 
-  # --- CLEAN CANDLESTICK CHART RENDERING ---
-  fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
-  for c in bot.candles:
-    col = "#26a69a" if c["close"] >= c["open"] else "#ef5350"
-    lower_val = min(c["open"], c["close"])
-    body_height = abs(c["close"] - c["open"])
-    if body_height == 0:
-      body_height = curr_p * 0.0005
-
-    ax.bar(c["id"], body_height, bottom=lower_val, color=col, width=0.6, edgecolor=col)
-    ax.vlines(c["id"], c["low"], c["high"], color=col, linewidth=1.2)
-
-  # Plot Zone Box if detected
-  if bot.zone_box:
-    z_low, z_high, start_idx, end_idx = bot.zone_box
-    ax.axhspan(z_low, z_high, xmin=start_idx/len(bot.candles), xmax=end_idx/len(bot.candles), color="#ab47bc", alpha=0.3, label="3-Candle Zone")
-
-  lows = [c["low"] for c in bot.candles]
-  highs = [c["high"] for c in bot.candles]
-  if lows and highs:
-    margin = (max(highs) - min(lows)) * 0.09
-    if margin == 0:
-      margin = curr_p * 0.005
-    ax.set_ylim(min(lows) - margin, max(highs) + margin)
-
-  for sig in bot.signals:
-    is_b = "BUY" in sig["Type"]
-    bg_col = "#00e676" if is_b else "#ff5252"
-    txt = " B " if is_b else " S "
-    ax.text(
-        sig["Candle #"],
-        sig["Entry Price"],
-        txt,
-        color="white",
-        weight="bold",
-        bbox=dict(boxstyle="round,pad=0.2", facecolor=bg_col, alpha=0.9),
-        ha="center",
-        va="center",
+  # Plot ORB High & Low Lines
+  if bot.orb_high > 0:
+    ax.axhline(
+        bot.orb_high,
+        color="#00e676",
+        linestyle="--",
+        linewidth=2,
+        label=f"ORB High ({bot.orb_high:,.2f})",
+    )
+    ax.axhline(
+        bot.orb_low,
+        color="#ff5252",
+        linestyle="--",
+        linewidth=2,
+        label=f"ORB Low ({bot.orb_low:,.2f})",
+    )
+    ax.axhline(
+        bot.orb_mid,
+        color="#ab47bc",
+        linestyle=":",
+        linewidth=1.5,
+        label="ORB Midpoint",
     )
 
   ax.set_title(
-      f"BTC/USDT {selected_tf} — TWT Retracement Engine ({tz_short})",
+      f"BTC/USDT {selected_tf} — Professional ORB Engine ({tz_short})",
       color="white",
       fontsize=14,
+      weight="bold",
   )
   ax.set_facecolor("#131722")
   fig.patch.set_facecolor("#1e222d")
@@ -430,7 +378,8 @@ if bot.df is not None and not bot.df.empty:
   for spine in ax.spines.values():
     spine.set_color("#363a45")
   ax.grid(color="#2a2e39", linestyle="--", linewidth=0.5)
+  ax.legend(loc="upper left", facecolor="#1e222d", edgecolor="none", labelcolor="white")
 
   st.pyplot(fig)
 else:
-  st.error("BTC market data load failed. Please check internet connection.")
+  st.error("Failed to load BTC chart data. Please check internet connection.")
