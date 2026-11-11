@@ -1,4 +1,5 @@
 from datetime import datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 import ccxt
 import matplotlib.pyplot as plt
 import numpy as np
@@ -10,7 +11,7 @@ from streamlit_autorefresh import st_autorefresh
 # STREAMLIT PAGE CONFIGURATION
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="TWT Professional BTC ORB Trading Bot",
+    page_title="TWT Professional BTC ORB Retest Bot",
     page_icon="⚡",
     layout="wide",
 )
@@ -28,28 +29,31 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 # Safe Auto-refresh every 30 seconds
 count = st_autorefresh(interval=30000, key="twt_orb_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA — Professional BTC ORB & Retest Engine")
+st.title("⚡ TRADE WITH TUCKYAA — Professional ORB Breakout & Retest Engine")
 
 # ---------------------------------------------------------
-# SIDEBAR CONFIGURATION (Strategy Parameters)
+# SIDEBAR CONFIGURATION (Strategy Parameters & Controls)
 # ---------------------------------------------------------
-st.sidebar.markdown("### ⚙️ ORB Engine Configurations")
+st.sidebar.markdown("### ⚙️ ORB & Session Configurations")
 st.sidebar.markdown("---")
 
-# Timezones
-TRADING_TIMEZONES = {
-    "(UTC+5:30) Kolkata / India (IST)": timezone(
-        timedelta(hours=5, minutes=30)
-    ),
-    "(UTC+0:00) London / UTC / GMT": timezone.utc,
-    "(UTC-5:00) New York / US East (EST)": timezone(timedelta(hours=-5)),
-    "(UTC+8:00) Singapore / Hong Kong (SGT)": timezone(timedelta(hours=8)),
-}
+# IANA Timezones with automatic DST handling
+IANA_TIMEZONES = [
+    "Asia/Kolkata",
+    "UTC",
+    "America/New_York",
+    "Europe/London",
+    "Asia/Singapore",
+]
 selected_tz_name = st.sidebar.selectbox(
-    "🌍 Trading Timezone", options=list(TRADING_TIMEZONES.keys()), index=0
+    "🌍 Trading Timezone (IANA)", options=IANA_TIMEZONES, index=0
 )
-active_tz = TRADING_TIMEZONES[selected_tz_name]
-tz_short = selected_tz_name.split(")")[0] + ")"
+active_tz = ZoneInfo(selected_tz_name)
+
+# Configurable Session Opening Time
+session_open_time = st.sidebar.time_input(
+    "⏰ Session Opening Time", value=time(9, 30)
+)
 
 selected_tf = st.sidebar.selectbox(
     "⏱️ Entry Timeframe", options=["5m", "15m", "30m", "1h"], index=0
@@ -59,27 +63,45 @@ orb_duration_mins = st.sidebar.slider(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("### 🛡️ Filters & Risk Management")
+st.sidebar.markdown("### 🛡️ Strategy Filters & Risk Management")
 use_ema_filter = st.sidebar.checkbox("Enable EMA 200 Trend Filter", value=True)
+min_breakout_body_atr = st.sidebar.slider(
+    "📏 Min Breakout Body (% of ATR)", min_value=0.1, max_value=2.0, value=0.5, step=0.1
+)
+max_retest_candles = st.sidebar.slider(
+    "🔍 Max Candles Allowed for Retest", min_value=5, max_value=50, value=15, step=1
+)
+retest_tolerance_atr = st.sidebar.slider(
+    "🎯 Retest Tolerance (% of ATR)", min_value=0.1, max_value=1.0, value=0.3, step=0.1
+)
 use_atr_buffer = st.sidebar.checkbox("Enable ATR Buffer for Stop Loss", value=True)
 risk_reward_ratio = st.sidebar.slider(
     "🎯 Risk / Reward Target Ratio", min_value=1.0, max_value=5.0, value=2.0, step=0.5
 )
-max_trades_per_day = st.sidebar.number_input(
-    "Max Trades Per Day", min_value=1, max_value=5, value=1
+fee_slippage_pct = st.sidebar.slider(
+    "💸 Fee & Slippage Assumption (%)", min_value=0.0, max_value=0.5, value=0.05, step=0.01
 )
 
 
 # ---------------------------------------------------------
-# DATA FETCHING MODULE WITH CCXT
+# DATA FETCHING MODULE WITH CCXT (Timezone-Aware UTC)
 # ---------------------------------------------------------
 @st.cache_data(ttl=30)
-def fetch_btc_ohlcv(timeframe="5m", limit=200):
+def fetch_btc_ohlcv(timeframe="5m", limit=500):
   exchanges_to_try = [
       (ccxt.binance, "BTC/USDT"),
       (ccxt.bybit, "BTC/USDT"),
       (ccxt.kucoin, "BTC/USDT"),
   ]
+
+  tf_delta_map = {
+      "5m": timedelta(minutes=5),
+      "15m": timedelta(minutes=15),
+      "30m": timedelta(minutes=30),
+      "1h": timedelta(hours=1),
+  }
+  tf_delta = tf_delta_map.get(timeframe, timedelta(minutes=5))
+  now_utc = datetime.now(timezone.utc)
 
   for ex_class, symbol in exchanges_to_try:
     try:
@@ -92,8 +114,14 @@ def fetch_btc_ohlcv(timeframe="5m", limit=200):
               ohlcv,
               columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
           )
-          df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+          # Ensure exchange timestamps are timezone-aware UTC
+          df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
           df = df.set_index("timestamp")
+
+          # Remove incomplete current live candle if it hasn't closed yet
+          if not df.empty and (df.index[-1] + tf_delta > now_utc):
+            df = df.iloc[:-1]
+
           return df
     except Exception:
       continue
@@ -101,27 +129,44 @@ def fetch_btc_ohlcv(timeframe="5m", limit=200):
 
 
 # ---------------------------------------------------------
-# TECHNICAL INDICATORS & ORB ENGINE
+# TECHNICAL INDICATORS & PROFESSIONAL ORB RETEST ENGINE
 # ---------------------------------------------------------
-class ProfessionalORBEngine:
+class ProfessionalORBRetestEngine:
 
-  def __init__(self, df, orb_duration, user_tz):
+  def __init__(self, df, orb_duration, user_tz, session_time, timeframe):
     self.df = df
     self.orb_duration = orb_duration
     self.user_tz = user_tz
+    self.session_time = session_time
+    self.timeframe = timeframe
     self.orb_high = 0.0
     self.orb_low = 0.0
     self.orb_mid = 0.0
+    self.orb_available = False
     self.signals = []
     self.history = []
+    
+    # Granular diagnostic state tracking as requested
+    self.diag = {
+        "session_available": False,
+        "orb_complete": False,
+        "breakout_found": False,
+        "retest_found": False,
+        "rejection_confirmed": False,
+        "confirmation_completed": False,
+        "ema_filter_passed": False,
+        "risk_validation_passed": False,
+        "final_signal_status": "Pending scan...",
+        "rejection_reason": "Initializing scan..."
+    }
 
   def calculate_indicators(self):
     if self.df is None or self.df.empty:
       return
-    # EMA 200 Calculation
+    # Calculate EMA 200 safely using historical data without replacing missing values with price
     self.df["EMA200"] = self.df["Close"].ewm(span=200, adjust=False).mean()
 
-    # ATR Calculation
+    # Calculate ATR using completed candles only
     self.df["TR"] = np.maximum(
         self.df["High"] - self.df["Low"],
         np.maximum(
@@ -133,126 +178,256 @@ class ProfessionalORBEngine:
 
   def identify_opening_range(self):
     if self.df is None or self.df.empty:
+      self.diag["rejection_reason"] = "DataFrame is empty or unavailable."
       return
-    # Group candles by calendar day and find the high/low of the first N minutes
-    first_timestamp = self.df.index[0]
-    session_start_time = first_timestamp.normalize() + timedelta(
-        hours=9, minutes=30
-    )  # Market open reference
-    session_end_time = session_start_time + timedelta(
-        minutes=self.orb_duration
-    )
 
-    orb_candles = self.df[
-        (self.df.index >= session_start_time)
-        & (self.df.index < session_end_time)
-    ]
+    tf_mins_map = {"5m": 5, "15m": 15, "30m": 30, "1h": 60}
+    tf_mins = tf_mins_map.get(self.timeframe, 5)
 
-    if not orb_candles.empty:
+    # Validate timeframe compatibility with ORB duration
+    if self.orb_duration % tf_mins != 0 or self.orb_duration < tf_mins:
+      self.diag["rejection_reason"] = f"Incompatible ORB duration ({self.orb_duration}m) for timeframe ({tf_mins}m)."
+      return
+
+    expected_candles = int(self.orb_duration / tf_mins)
+
+    # Convert DataFrame index to selected IANA timezone
+    df_local = self.df.copy()
+    df_local["time_tz"] = df_local.index.tz_convert(self.user_tz)
+    df_local["date"] = df_local["time_tz"].dt.date
+
+    if df_local.empty:
+      return
+
+    latest_date = df_local["date"].iloc[-1]
+    session_start_local = datetime.combine(latest_date, self.session_time, tzinfo=self.user_tz)
+    session_end_local = session_start_local + timedelta(minutes=self.orb_duration)
+
+    self.diag["session_available"] = True
+
+    # Filter candles strictly inside session window
+    mask = (df_local["time_tz"] >= session_start_local) & (df_local["time_tz"] < session_end_local)
+    orb_candles = df_local[mask]
+
+    # Never use fallback candles; strictly verify expected completed count
+    if len(orb_candles) >= expected_candles:
       self.orb_high = float(orb_candles["High"].max())
       self.orb_low = float(orb_candles["Low"].min())
+      self.orb_mid = (self.orb_high + self.orb_low) / 2.0
+      self.orb_available = True
+      self.diag["orb_complete"] = True
+      self.diag["rejection_reason"] = "ORB successfully calculated from completed session candles."
     else:
-      # Fallback to first few candles if specific session time window is missing in data feed
-      fallback_count = max(3, int(self.orb_duration / 5))
-      v_slice = self.df.iloc[:fallback_count]
-      self.orb_high = float(v_slice["High"].max())
-      self.orb_low = float(v_slice["Low"].min())
+      self.orb_available = False
+      self.diag["orb_complete"] = False
+      self.diag["rejection_reason"] = f"WAITING FOR SESSION: Found {len(orb_candles)}/{expected_candles} completed session candles."
 
-    self.orb_mid = (self.orb_high + self.orb_low) / 2.0
-
-  def scan_breakout_and_retest(self, use_ema, use_atr, rr_target):
-    if self.df is None or len(self.df) < 20:
+  def scan_breakout_and_retest(self, use_ema, min_body_atr, max_retest, retest_tol, use_atr, rr_target, fee_slip):
+    if self.df is None or len(self.df) < 50:
       return
 
     self.calculate_indicators()
     self.identify_opening_range()
 
-    found_signal = None
+    if not self.orb_available:
+      return
+
+    df_local = self.df.copy()
+    df_local["time_tz"] = df_local.index.tz_convert(self.user_tz)
+    df_local["date"] = df_local["time_tz"].dt.date
+    latest_date = df_local["date"].iloc[-1]
+
+    session_start_local = datetime.combine(latest_date, self.session_time, tzinfo=self.user_tz)
+    session_end_local = session_start_local + timedelta(minutes=self.orb_duration)
+
+    valid_signals = []
     current_utc_time = datetime.now(timezone.utc)
 
-    for i in range(
-        int(self.orb_duration / 5) + 1, len(self.df)
-    ):  # Start scanning after ORB period
-      c = self.df.iloc[i]
-      prev_c = self.df.iloc[i - 1]
-      dt_utc = self.df.index[i]
-      if dt_utc.tzinfo is None:
-        dt_utc = dt_utc.replace(tzinfo=timezone.utc)
-      dt_user = dt_utc.astimezone(self.user_tz)
+    # Scan all eligible completed candles strictly after the ORB period (no look-ahead bias)
+    for i in range(len(df_local)):
+      c_time = df_local["time_tz"].iloc[i]
+      if c_time < session_end_local:
+        continue
 
+      c = df_local.iloc[i]
       close = float(c["Close"])
       open_p = float(c["Open"])
       high = float(c["High"])
       low = float(c["Low"])
-      ema200 = float(c["EMA200"]) if not np.isnan(c["EMA200"]) else close
+      body = abs(close - open_p)
+      
+      ema200 = float(c["EMA200"])
       atr = float(c["ATR"]) if not np.isnan(c["ATR"]) else (close * 0.002)
 
-      # Age check (within last 1 hour)
-      is_recent = (current_utc_time - dt_utc).total_seconds() / 60.0 <= 60.0
+      is_recent = (current_utc_time - c.name).total_seconds() / 60.0 <= 60.0
+      min_body_req = atr * min_body_atr
 
       # -------------------------------------------------
-      # BULLISH BREAKOUT & RETEST SETUP
+      # BULLISH BREAKOUT, RETEST & REJECTION CONFIRMATION
       # -------------------------------------------------
-      breakout_condition = close > self.orb_high and prev_c["Close"] <= self.orb_high
-      ema_cond_bull = (not use_ema) or (close > ema200)
+      if close > self.orb_high and body >= min_body_req:
+        self.diag["breakout_found"] = True
 
-      if breakout_condition and ema_cond_bull:
-        sl = (
-            round(self.orb_low - (atr * 0.5), 2)
-            if use_atr
-            else round(self.orb_low, 2)
-        )
-        risk = close - sl
-        if risk <= 0:
-          continue
-        target = round(close + (risk * rr_target), 2)
+        # Search for retest within max allowed retest candles
+        retest_found_flag = False
+        for j in range(i + 1, min(i + max_retest + 1, len(df_local))):
+          retest_c = df_local.iloc[j]
+          r_low = float(retest_c["Low"])
+          r_high = float(retest_c["High"])
+          r_close = float(retest_c["Close"])
+          r_open = float(retest_c["Open"])
 
-        found_signal = {
-            "Type": "BUY 🟢",
-            "Setup": "ORB Bullish Breakout & Continuation",
-            "Entry Price": round(close, 2),
-            "Stop Loss": sl,
-            "Target": target,
-            "R:R Ratio": f"1:{rr_target}",
-            "Time": dt_user.strftime("%H:%M"),
-            "Reason": "Clean close above ORB High with momentum confirmation.",
-            "Is_Recent": is_recent,
-        }
-        break
+          tolerance = atr * retest_tol
+          is_retest = r_low <= (self.orb_high + tolerance) and r_low >= (self.orb_high - tolerance * 2)
+
+          if is_retest:
+            retest_found_flag = True
+            self.diag["retest_found"] = True
+
+            # Rejection candle check (lower wick / rejection from broken level)
+            is_rejection_candle = r_close > r_open and (r_open - r_low) > (r_close - r_open)
+            if is_rejection_candle:
+              self.diag["rejection_confirmed"] = True
+
+              # Subsequent completed candle must break rejection candle's high
+              if j + 1 < len(df_local):
+                conf_c = df_local.iloc[j + 1]
+                if float(conf_c["Close"]) > r_high:
+                  self.diag["confirmation_completed"] = True
+
+                  # EMA Filter check (must come from same completed confirmation candle, no replacing with price)
+                  if use_ema:
+                    if np.isnan(conf_c["EMA200"]):
+                      self.diag["ema_filter_passed"] = False
+                      self.diag["final_signal_status"] = "Rejected"
+                      self.diag["rejection_reason"] = "EMA 200 unavailable for confirmation candle."
+                      continue
+                    if float(conf_c["Close"]) <= float(conf_c["EMA200"]):
+                      self.diag["ema_filter_passed"] = False
+                      self.diag["final_signal_status"] = "Rejected"
+                      self.diag["rejection_reason"] = "Signal rejected: Failed EMA 200 bullish filter."
+                      continue
+                  self.diag["ema_filter_passed"] = True
+
+                  # Stop Loss using actual retest/swing low
+                  swing_low = min(r_low, float(conf_c["Low"]))
+                  sl = round(swing_low - (atr * 0.5), 2) if use_atr else round(swing_low, 2)
+                  entry_price = float(conf_c["Close"]) * (1.0 + (fee_slip / 100.0))
+
+                  # Validate SL boundary (BUY SL must be strictly below entry)
+                  if sl >= entry_price:
+                    self.diag["risk_validation_passed"] = False
+                    self.diag["final_signal_status"] = "Rejected"
+                    self.diag["rejection_reason"] = "Signal rejected: Invalid BUY Stop Loss calculation (SL >= Entry)."
+                    continue
+                  self.diag["risk_validation_passed"] = True
+
+                  risk = entry_price - sl
+                  target = round(entry_price + (risk * rr_target) * (1.0 - (fee_slip / 100.0)), 2)
+
+                  self.diag["final_signal_status"] = "Accepted"
+                  self.diag["rejection_reason"] = "Signal successfully validated and accepted."
+
+                  valid_signals.append({
+                      "Type": "BUY 🟢",
+                      "Setup": "ORB Breakout + Retest + Rejection Confirmation",
+                      "Entry Price": round(entry_price, 2),
+                      "Stop Loss": sl,
+                      "Target": target,
+                      "R:R Ratio": f"1:{rr_target}",
+                      "Time": conf_c["time_tz"].strftime("%H:%M"),
+                      "Reason": "Valid bullish setup confirmed.",
+                      "Is_Recent": is_recent,
+                      "Direction": "BUY"
+                  })
+                  break
 
       # -------------------------------------------------
-      # BEARISH BREAKOUT & RETEST SETUP
+      # BEARISH BREAKOUT, RETEST & REJECTION CONFIRMATION
       # -------------------------------------------------
-      bear_breakout = close < self.orb_low and prev_c["Close"] >= self.orb_low
-      ema_cond_bear = (not use_ema) or (close < ema200)
+      elif close < self.orb_low and body >= min_body_req:
+        self.diag["breakout_found"] = True
 
-      if bear_breakout and ema_cond_bear:
-        sl = (
-            round(self.orb_high + (atr * 0.5), 2)
-            if use_atr
-            else round(self.orb_high, 2)
-        )
-        risk = sl - close
-        if risk <= 0:
-          continue
-        target = round(close - (risk * rr_target), 2)
+        retest_found_flag = False
+        for j in range(i + 1, min(i + max_retest + 1, len(df_local))):
+          retest_c = df_local.iloc[j]
+          r_low = float(retest_c["Low"])
+          r_high = float(retest_c["High"])
+          r_close = float(retest_c["Close"])
+          r_open = float(retest_c["Open"])
 
-        found_signal = {
-            "Type": "SELL 🔴",
-            "Setup": "ORB Bearish Breakout & Continuation",
-            "Entry Price": round(close, 2),
-            "Stop Loss": sl,
-            "Target": target,
-            "R:R Ratio": f"1:{rr_target}",
-            "Time": dt_user.strftime("%H:%M"),
-            "Reason": "Clean close below ORB Low with momentum confirmation.",
-            "Is_Recent": is_recent,
-        }
-        break
+          tolerance = atr * retest_tol
+          is_retest = r_high >= (self.orb_low - tolerance) and r_high <= (self.orb_low + tolerance * 2)
 
-    if found_signal:
-      self.signals = [found_signal]
-      self.history = [found_signal]
+          if is_retest:
+            retest_found_flag = True
+            self.diag["retest_found"] = True
+
+            is_rejection_candle = r_close < r_open and (r_high - r_open) > (r_open - r_close)
+            if is_rejection_candle:
+              self.diag["rejection_confirmed"] = True
+
+              if j + 1 < len(df_local):
+                conf_c = df_local.iloc[j + 1]
+                if float(conf_c["Close"]) < r_low:
+                  self.diag["confirmation_completed"] = True
+
+                  if use_ema:
+                    if np.isnan(conf_c["EMA200"]):
+                      self.diag["ema_filter_passed"] = False
+                      self.diag["final_signal_status"] = "Rejected"
+                      self.diag["rejection_reason"] = "EMA 200 unavailable for confirmation candle."
+                      continue
+                    if float(conf_c["Close"]) >= float(conf_c["EMA200"]):
+                      self.diag["ema_filter_passed"] = False
+                      self.diag["final_signal_status"] = "Rejected"
+                      self.diag["rejection_reason"] = "Signal rejected: Failed EMA 200 bearish filter."
+                      continue
+                  self.diag["ema_filter_passed"] = True
+
+                  swing_high = max(r_high, float(conf_c["High"]))
+                  sl = round(swing_high + (atr * 0.5), 2) if use_atr else round(swing_high, 2)
+                  entry_price = float(conf_c["Close"]) * (1.0 - (fee_slip / 100.0))
+
+                  # Validate SL boundary (SELL SL must be strictly above entry)
+                  if sl <= entry_price:
+                    self.diag["risk_validation_passed"] = False
+                    self.diag["final_signal_status"] = "Rejected"
+                    self.diag["rejection_reason"] = "Signal rejected: Invalid SELL Stop Loss calculation (SL <= Entry)."
+                    continue
+                  self.diag["risk_validation_passed"] = True
+
+                  risk = sl - entry_price
+                  target = round(entry_price - (risk * rr_target) * (1.0 - (fee_slip / 100.0)), 2)
+
+                  self.diag["final_signal_status"] = "Accepted"
+                  self.diag["rejection_reason"] = "Signal successfully validated and accepted."
+
+                  valid_signals.append({
+                      "Type": "SELL 🔴",
+                      "Setup": "ORB Breakout + Retest + Rejection Confirmation",
+                      "Entry Price": round(entry_price, 2),
+                      "Stop Loss": sl,
+                      "Target": target,
+                      "R:R Ratio": f"1:{rr_target}",
+                      "Time": conf_c["time_tz"].strftime("%H:%M"),
+                      "Reason": "Valid bearish setup confirmed.",
+                      "Is_Recent": is_recent,
+                      "Direction": "SELL"
+                  })
+                  break
+
+    # Select newest valid signal and prevent duplicate signals per direction per session
+    if valid_signals:
+      unique_signals = []
+      seen_directions = set()
+      for sig in reversed(valid_signals):
+        if sig["Direction"] not in seen_directions:
+          seen_directions.add(sig["Direction"])
+          unique_signals.append(sig)
+
+      self.signals = unique_signals
+      self.history = valid_signals
     else:
       self.signals = []
 
@@ -260,19 +435,29 @@ class ProfessionalORBEngine:
 # ---------------------------------------------------------
 # EXECUTION & DASHBOARD INTERFACE
 # ---------------------------------------------------------
-df_btc = fetch_btc_ohlcv(timeframe=selected_tf, limit=150)
-bot = ProfessionalORBEngine(df_btc, orb_duration_mins, active_tz)
-bot.scan_breakout_and_retest(use_ema_filter, use_atr_buffer, risk_reward_ratio)
+df_btc = fetch_btc_ohlcv(timeframe=selected_tf, limit=500)
+bot = ProfessionalORBRetestEngine(df_btc, orb_duration_mins, active_tz, session_open_time, selected_tf)
+bot.scan_breakout_and_retest(
+    use_ema_filter, min_breakout_body_atr, max_retest_candles, retest_tolerance_atr, use_atr_buffer, risk_reward_ratio, fee_slippage_pct
+)
 
-recent_signals = [s for s in bot.signals if s.get("Is_Recent", False)]
-
+# Top Metrics Dashboard Display
 col_d1, col_d2, col_d3, col_d4 = st.columns(4)
 with col_d1:
-  st.metric(label="🟢 Opening Range High (ORB)", value=f"${bot.orb_high:,.2f}")
+  if bot.orb_available:
+    st.metric(label="🟢 Opening Range High (ORB)", value=f"${bot.orb_high:,.2f}")
+  else:
+    st.metric(label="🟢 Opening Range High (ORB)", value="WAITING")
 with col_d2:
-  st.metric(label="🔴 Opening Range Low (ORB)", value=f"${bot.orb_low:,.2f}")
+  if bot.orb_available:
+    st.metric(label="🔴 Opening Range Low (ORB)", value=f"${bot.orb_low:,.2f}")
+  else:
+    st.metric(label="🔴 Opening Range Low (ORB)", value="WAITING")
 with col_d3:
-  st.metric(label="⚪ Opening Range Mid", value=f"${bot.orb_mid:,.2f}")
+  if bot.orb_available:
+    st.metric(label="⚪ Opening Range Mid", value=f"${bot.orb_mid:,.2f}")
+  else:
+    st.metric(label="⚪ Opening Range Mid", value="WAITING")
 with col_d4:
   current_price = (
       float(bot.df["Close"].iloc[-1])
@@ -283,9 +468,14 @@ with col_d4:
 
 st.markdown("---")
 
-if recent_signals:
+# Active Signal Display
+recent_signals = [s for s in bot.signals if s.get("Is_Recent", False)]
+
+if not bot.orb_available:
+  st.warning("⚠️ **WAITING FOR SESSION:** Opening Range is unavailable or incomplete for the current session window.")
+elif recent_signals:
   sig = recent_signals[0]
-  st.success(f"✅ **ACTIVE ORB SETUP GENERATED: {sig['Type']}**")
+  st.success(f"✅ **ACTIVE RETEST SETUP GENERATED: {sig['Type']}**")
 
   col_s1, col_s2, col_s3 = st.columns(3)
   with col_s1:
@@ -301,9 +491,28 @@ if recent_signals:
     )
 else:
   st.info(
-      "ℹ️ **Status:** Scanning market structure. Waiting for clean candle"
-      " close breakout confirmation beyond the Opening Range."
+      "ℹ️ **Status:** Scanning market. Waiting for ORB breakout followed by a"
+      " clean level retest and rejection confirmation."
   )
+
+# ---------------------------------------------------------
+# DIAGNOSTIC DASHBOARD (Debugging & Execution Tracking)
+# ---------------------------------------------------------
+with st.expander("🛠️ Diagnostic & Execution Status Dashboard", expanded=False):
+  diag_col1, diag_col2, diag_col3 = st.columns(3)
+  with diag_col1:
+    st.text(f"Session Available: {'✅' if bot.diag['session_available'] else '❌'}")
+    st.text(f"ORB Complete: {'✅' if bot.diag['orb_complete'] else '❌'}")
+    st.text(f"Breakout Found: {'✅' if bot.diag['breakout_found'] else '❌'}")
+  with diag_col2:
+    st.text(f"Retest Found: {'✅' if bot.diag['retest_found'] else '❌'}")
+    st.text(f"Rejection Confirmed: {'✅' if bot.diag['rejection_confirmed'] else '❌'}")
+    st.text(f"Confirmation Completed: {'✅' if bot.diag['confirmation_completed'] else '❌'}")
+  with diag_col3:
+    st.text(f"EMA Filter Passed: {'✅' if bot.diag['ema_filter_passed'] else '❌'}")
+    st.text(f"Risk Validation Passed: {'✅' if bot.diag['risk_validation_passed'] else '❌'}")
+    st.text(f"Final Status: {bot.diag['final_signal_status']}")
+  st.markdown(f"**System Note / Rejection Reason:** `{bot.diag['rejection_reason']}`")
 
 # ---------------------------------------------------------
 # MATPLOTLIB PROFESSIONAL CHART RENDERER
@@ -338,8 +547,8 @@ if bot.df is not None and not bot.df.empty:
         label="EMA 200 Trend",
     )
 
-  # Plot ORB High & Low Lines
-  if bot.orb_high > 0:
+  # Plot ORB High & Low Lines if available
+  if bot.orb_available:
     ax.axhline(
         bot.orb_high,
         color="#00e676",
@@ -363,7 +572,7 @@ if bot.df is not None and not bot.df.empty:
     )
 
   ax.set_title(
-      f"BTC/USDT {selected_tf} — Professional ORB Engine ({tz_short})",
+      f"BTC/USDT {selected_tf} — Professional ORB Retest Engine ({selected_tz_name})",
       color="white",
       fontsize=14,
       weight="bold",
