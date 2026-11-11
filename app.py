@@ -7,7 +7,7 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(
-    page_title="TWT BTC Fixed Demand Zone Strategy by TUCKYAA", page_icon="⚡", layout="wide"
+    page_title="TWT BTC Fixed Demand & Supply Zone Strategy", page_icon="⚡", layout="wide"
 )
 
 # Hide Streamlit Header, Footer, Menu & GitHub Icon via CSS
@@ -38,7 +38,7 @@ ASSET_LIST = ["BTC/USDT"]
 # Safe Auto-refresh every 30 seconds
 count = st_autorefresh(interval=30000, key="twt_btc_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA (BTC PRO) — Fixed Demand Zone Engine")
+st.title("⚡ TRADE WITH TUCKYAA (BTC PRO) — Fixed Demand & Supply Engine")
 
 col_tf, col_tz = st.columns([1, 2])
 with col_tf:
@@ -63,9 +63,9 @@ st.sidebar.text(
 st.sidebar.text("Active Asset       ———  BTC/USDT Only")
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Fixed Zone Rules")
-st.sidebar.text("01:00 ➔ 11:00 : Supply Zone (Fixed Upper Box) ➔ SELL ONLY")
-st.sidebar.text("13:00 ➔ 22:00 : Demand Zone (Fixed Lower Box) ➔ BUY ONLY")
-st.sidebar.text("Pattern      : Box Test ➔ Red Drop ➔ Green Overlap ➔ Red Pullback ➔ Green Entry")
+st.sidebar.text("Supply Zone (Sell) : Upper Fixed Box ➔ Green Test ➔ Red Engulf ➔ Green Pullback ➔ Red Entry")
+st.sidebar.text("Demand Zone (Buy)  : Lower Fixed Box ➔ Red Drop ➔ Green Overlap ➔ Red Pullback ➔ Green Entry")
+st.sidebar.text("Risk Mgmt          : ATR Managed SL & Multi-TP")
 
 
 def get_decimals(price):
@@ -101,12 +101,10 @@ def fetch_btc_data(symbol, tf):
           return df
     except Exception:
       continue
-    except Exception:
-      continue
   return None
 
 
-class TWTFixedDemandZoneEngine:
+class TWTFixedZoneEngine:
 
   def __init__(self, df, symbol, user_tz):
     self.df = df
@@ -114,7 +112,8 @@ class TWTFixedDemandZoneEngine:
     self.user_tz = user_tz
     self.candles = []
     self.signals = []
-    self.zone_box = None
+    self.demand_box = None
+    self.supply_box = None
 
   def calculate_and_scan(self):
     if self.df is None or self.df.empty:
@@ -170,78 +169,112 @@ class TWTFixedDemandZoneEngine:
 
     found_signal = None
 
-    # Find a FIXED Demand Zone (First prominent swing low in the session chart history)
-    # We lock this zone so it never shifts around on newer candles
+    # Lock Fixed Demand Zone (Lower Support) & Fixed Supply Zone (Upper Resistance)
     session_lows = [c["low"] for c in self.candles[:120]] if len(self.candles) >= 120 else [c["low"] for c in self.candles]
-    if not session_lows:
+    session_highs = [c["high"] for c in self.candles[:120]] if len(self.candles) >= 120 else [c["high"] for c in self.candles]
+    
+    if not session_lows or not session_highs:
       return
     
-    fixed_zone_low = min(session_lows)
-    fixed_zone_high = fixed_zone_low + (self.candles[0]["atr"] * 1.8)
-    self.zone_box = (fixed_zone_low, fixed_zone_high, 0, len(self.candles))
+    fixed_demand_low = min(session_lows)
+    fixed_demand_high = fixed_demand_low + (self.candles[0]["atr"] * 1.8)
+    self.demand_box = (fixed_demand_low, fixed_demand_high)
 
-    # Scan for pattern after the fixed zone is established
+    fixed_supply_high = max(session_highs)
+    fixed_supply_low = fixed_supply_high - (self.candles[0]["atr"] * 1.8)
+    self.supply_box = (fixed_supply_low, fixed_supply_high)
+
+    # Scan patterns across candles
     for i in range(15, len(self.candles) - 2):
       c = self.candles[i]
       t_ist = c["dt_ist"].time()
-
       is_morning_session = time(1, 0) <= t_ist <= time(11, 0)
       is_evening_session = time(13, 0) <= t_ist <= time(22, 0)
-
-      if not is_evening_session:  # Focusing on Evening Session BUY Setup from Fixed Demand Zone
-        continue
 
       atr = c["atr"]
       dec = get_decimals(c["close"])
 
-      # Pattern Check:
-      # 1. Price touched or crossed near the fixed demand zone
-      # 2. Followed by 2-3 red candles moving down/crossing
-      # 3. Followed by a Green candle overlapping the red candles
-      # 4. Followed by 1 Red pullback candle
-      # 5. Followed by a Medium Green entry candle
-      
       if i >= 4:
-        c_curr = self.candles[i]     # Potential Entry Green Candle
-        c_prev1 = self.candles[i-1]  # Red Pullback Candle
-        c_prev2 = self.candles[i-2]  # Strong Green Overlap Candle
-        c_prev3 = self.candles[i-3]  # Red Drop Candle 2
-        c_prev4 = self.candles[i-4]  # Red Drop Candle 1
+        c_curr = self.candles[i]     # Entry Candle
+        c_prev1 = self.candles[i-1]  # Pullback Candle
+        c_prev2 = self.candles[i-2]  # Engulfing / Overlap Candle
+        c_prev3 = self.candles[i-3]  # Drop/Test Candle 2
+        c_prev4 = self.candles[i-4]  # Drop/Test Candle 1
 
-        # Check if recent price action interacted with the fixed demand zone box
-        near_zone = any(
-            self.candles[idx]["low"] <= fixed_zone_high 
-            for idx in range(max(0, i-10), i)
-        )
+        # ==========================================================
+        # 1. DEMAND ZONE SETUP (BUY) — Evening Session Focus
+        # ==========================================================
+        if is_evening_session:
+          near_demand = any(
+              self.candles[idx]["low"] <= fixed_demand_high 
+              for idx in range(max(0, i-10), i)
+          )
+          if near_demand:
+            is_red_drop = (c_prev4["color"] == "Red" and c_prev3["color"] == "Red")
+            is_green_overlap = (c_prev2["color"] == "Green" and c_prev2["close"] > c_prev3["open"])
+            is_red_pullback = (c_prev1["color"] == "Red")
+            is_green_entry = (c_curr["color"] == "Green" and c_curr["close"] > c_prev1["open"])
 
-        if near_zone:
-          # Sequence check: Red drop -> Green overlap -> Red pullback -> Green entry
-          is_red_drop = (c_prev4["color"] == "Red" and c_prev3["color"] == "Red")
-          is_green_overlap = (c_prev2["color"] == "Green" and c_prev2["close"] > c_prev3["open"])
-          is_red_pullback = (c_prev1["color"] == "Red")
-          is_green_entry = (c_curr["color"] == "Green" and c_curr["close"] > c_prev1["open"])
+            if is_red_drop and is_green_overlap and is_red_pullback and is_green_entry:
+              sl = round(fixed_demand_low - (1.0 * atr), dec)
+              tp1 = round(c_curr["close"] + (1.2 * atr), dec)
+              tp2 = round(c_curr["close"] + (2.5 * atr), dec)
+              tp3 = round(c_curr["close"] + (4.0 * atr), dec)
 
-          if is_red_drop and is_green_overlap and is_red_pullback and is_green_entry:
-            sl = round(fixed_zone_low - (1.0 * atr), dec)
-            tp1 = round(c_curr["close"] + (1.2 * atr), dec)
-            tp2 = round(c_curr["close"] + (2.5 * atr), dec)
-            tp3 = round(c_curr["close"] + (4.0 * atr), dec)
+              found_signal = {
+                  "Asset": self.symbol,
+                  "Time": c_curr["time"],
+                  "Candle #": c_curr["id"],
+                  "Type": "BUY 🟢",
+                  "Setup": "Fixed Demand Zone + Pullback Bounce",
+                  "Action": "Buy / Long (Fixed Demand Zone) 🟢",
+                  "Entry Price": round(c_curr["close"], dec),
+                  "Stop Loss (SL)": sl,
+                  "TP 1": tp1,
+                  "TP 2": tp2,
+                  "TP 3": tp3,
+                  "Is_Within_1hr": c_curr["is_within_1hr"],
+              }
+              break
 
-            found_signal = {
-                "Asset": self.symbol,
-                "Time": c_curr["time"],
-                "Candle #": c_curr["id"],
-                "Type": "BUY 🟢",
-                "Setup": "Fixed Demand Zone + Pullback Bounce",
-                "Action": "Buy / Long (Fixed Demand Zone) 🟢",
-                "Entry Price": round(c_curr["close"], dec),
-                "Stop Loss (SL)": sl,
-                "TP 1": tp1,
-                "TP 2": tp2,
-                "TP 3": tp3,
-                "Is_Within_1hr": c_curr["is_within_1hr"],
-            }
-            break
+        # ==========================================================
+        # 2. SUPPLY ZONE SETUP (SELL) — Morning Session Focus
+        # ==========================================================
+        if is_morning_session or True:  # Allowing flexible scan or morning focus
+          near_supply = any(
+              self.candles[idx]["high"] >= fixed_supply_low 
+              for idx in range(max(0, i-10), i)
+          )
+          if near_supply:
+            is_green_push = (c_prev4["color"] == "Green" and c_prev3["color"] == "Green")
+            is_red_engulf = (c_prev2["color"] == "Red" and c_prev2["close"] < c_prev3["open"])
+            is_green_pullback = (c_prev1["color"] == "Green")
+            is_red_entry = (c_curr["color"] == "Red" and c_curr["close"] < c_prev1["open"])
+
+            if is_green_push and is_red_engulf and is_green_pullback and is_red_entry:
+              sl = round(fixed_supply_high + (1.0 * atr), dec)
+              tp1 = round(c_curr["close"] - (1.2 * atr), dec)
+              tp2 = round(c_curr["close"] - (2.5 * atr), dec)
+              tp3 = round(c_curr["close"] - (4.0 * atr), dec)
+
+              found_signal = {
+                  "Asset": self.symbol,
+                  "Time": c_curr["time"],
+                  "Candle #": c_curr["id"],
+                  "Type": "SELL 🔴",
+                  "Setup": "Fixed Supply Zone + Pullback Rejection",
+                  "Action": "Sell / Short (Fixed Supply Zone) 🔴",
+                  "Entry Price": round(c_curr["close"], dec),
+                  "Stop Loss (SL)": sl,
+                  "TP 1": tp1,
+                  "TP 2": tp2,
+                  "TP 3": tp3,
+                  "Is_Within_1hr": c_curr["is_within_1hr"],
+              }
+              break
+
+      if found_signal:
+        break
 
     if found_signal:
       self.signals = [found_signal]
@@ -253,16 +286,16 @@ class TWTFixedDemandZoneEngine:
 # EXECUTION & DASHBOARD FOR BTC/USDT ONLY
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("🔥 BTC/USDT Fixed Demand Zone Dashboard")
+st.subheader("🔥 BTC/USDT Fixed Demand & Supply Dashboard")
 
 df_btc = fetch_btc_data("BTC/USDT", selected_tf)
-bot = TWTFixedDemandZoneEngine(df_btc, "BTC/USDT", active_tz)
+bot = TWTFixedZoneEngine(df_btc, "BTC/USDT", active_tz)
 bot.calculate_and_scan()
 
 master_signals = [s for s in bot.signals if s.get("Is_Within_1hr", False)]
 
 if master_signals:
-  st.success("✅ Active Fixed Demand Zone BTC Setup Found!")
+  st.success("✅ Active Fixed Zone BTC Setup Found!")
   df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Within_1hr"], errors="ignore"
   )
@@ -272,7 +305,7 @@ else:
 
 # --- MANUAL INSPECTOR & CHART VIEWER ---
 st.markdown("---")
-st.subheader("📊 BTC/USDT Chart & Fixed Zone Inspector")
+st.subheader("📊 BTC/USDT Chart & Fixed Zones Inspector")
 
 if bot.df is not None and not bot.df.empty:
   curr_p = bot.candles[-1]["close"] if bot.candles else 0.0
@@ -283,7 +316,7 @@ if bot.df is not None and not bot.df.empty:
   with col2:
     st.metric(label="Session Window", value="Active Trading Session")
   with col3:
-    st.metric(label="Timezone", value=tz_short, delta="Fixed Zone Engine Active")
+    st.metric(label="Timezone", value=tz_short, delta="Fixed Zones Engine Active")
 
   if bot.signals:
     latest_sig = bot.signals[0]
@@ -315,8 +348,8 @@ if bot.df is not None and not bot.df.empty:
       )
   else:
     st.warning(
-        "🟡 **STATUS: MONITORING FIXED DEMAND ZONE**\n\n"
-        "📌 *Instructions:* Waiting for the red drop, green overlap, red pullback and green entry pattern at the fixed demand box."
+        "🟡 **STATUS: MONITORING FIXED DEMAND & SUPPLY ZONES**\n\n"
+        "📌 *Instructions:* Waiting for price interaction and pullback pattern at either the fixed Demand box or Supply box."
     )
 
   # --- CLEAN CANDLESTICK CHART RENDERING ---
@@ -331,10 +364,14 @@ if bot.df is not None and not bot.df.empty:
     ax.bar(c["id"], body_height, bottom=lower_val, color=col, width=0.6, edgecolor=col)
     ax.vlines(c["id"], c["low"], c["high"], color=col, linewidth=1.2)
 
-  # Plot Fixed Zone Box
-  if bot.zone_box:
-    z_low, z_high, _, _ = bot.zone_box
-    ax.axhspan(z_low, z_high, color="#26a69a", alpha=0.3, label="Fixed Demand Zone")
+  # Plot Fixed Demand and Supply Boxes
+  if bot.demand_box:
+    d_low, d_high = bot.demand_box
+    ax.axhspan(d_low, d_high, color="#26a69a", alpha=0.3, label="Fixed Demand Zone (Buy)")
+
+  if bot.supply_box:
+    s_low, s_high = bot.supply_box
+    ax.axhspan(s_low, s_high, color="#ef5350", alpha=0.3, label="Fixed Supply Zone (Sell)")
 
   lows = [c["low"] for c in bot.candles]
   highs = [c["high"] for c in bot.candles]
@@ -360,7 +397,7 @@ if bot.df is not None and not bot.df.empty:
     )
 
   ax.set_title(
-      f"BTC/USDT {selected_tf} — Fixed Demand Engine ({tz_short})",
+      f"BTC/USDT {selected_tf} — Fixed Zones Engine ({tz_short})",
       color="white",
       fontsize=14,
   )
@@ -372,6 +409,7 @@ if bot.df is not None and not bot.df.empty:
   for spine in ax.spines.values():
     spine.set_color("#363a45")
   ax.grid(color="#2a2e39", linestyle="--", linewidth=0.5)
+  ax.legend(loc="upper left", facecolor="#1e222d", edgecolor="none", labelcolor="white")
 
   st.pyplot(fig)
 else:
