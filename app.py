@@ -237,20 +237,7 @@ class TWTAdvancedPullbackEngine:
     best_sell = None
     all_detected = []
 
-    # State machines for Seller Pullback Sequence:
-    # Phase 0: Waiting for midpoint touch
-    # Phase 1: Touched mid, waiting to reach top (supply_zone_high)
-    # Phase 2: Reached top, waiting for Red candle down (crossing mid)
-    # Phase 3: Crossed mid down, waiting for Green pullback up
-    # Phase 4: Saw green pullback, ready for Red confirmation entry
     sell_phase = 0
-
-    # State machines for Buyer Pullback Sequence:
-    # Phase 0: Waiting for midpoint touch
-    # Phase 1: Touched mid, waiting to reach bottom (demand_zone_low)
-    # Phase 2: Reached bottom, waiting for Green candle up (crossing mid)
-    # Phase 3: Crossed mid up, waiting for Red pullback down
-    # Phase 4: Saw red pullback, ready for Green confirmation entry
     buy_phase = 0
 
     for c in today_candles:
@@ -296,7 +283,7 @@ class TWTAdvancedPullbackEngine:
             }
             all_detected.append(best_sell)
 
-      # --- BUYER ADVANCED PULLBACK (Post-6AM) -->
+      # --- BUYER ADVANCED PULLBACK (Post-6AM) ---
       if (
           t_obj >= time(6, 0)
           and self.demand_box is not None
