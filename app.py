@@ -12,7 +12,7 @@ from streamlit_autorefresh import st_autorefresh
 # STREAMLIT PAGE CONFIGURATION
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="TWT Multi-Asset Safe Trend-Filtered Bot",
+    page_title="TWT Multi-Asset Pullback Confirmed Bot",
     page_icon="⚡",
     layout="wide",
 )
@@ -30,7 +30,7 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 # Safe Auto-refresh every 30 seconds
 count = st_autorefresh(interval=30000, key="twt_multi_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA — Safe Trend-Filtered Engine")
+st.title("⚡ TRADE WITH TUCKYAA — Pullback Confirmed Precision Engine")
 
 # ---------------------------------------------------------
 # SIDEBAR CONFIGURATION
@@ -55,11 +55,11 @@ selected_tf = st.sidebar.selectbox(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Safe Protection Rules")
+st.sidebar.markdown("#### Pullback Entry Rules")
+st.sidebar.text("Demand Touch ➔ Red Pullback ➔ Green BUY")
+st.sidebar.text("Supply Touch ➔ Green Pullback ➔ Red SELL")
 st.sidebar.text("Trend Filter : EMA 50 Alignment Check")
 st.sidebar.text("Safe Buffer  : 1.8x ATR Wider Stop Loss")
-st.sidebar.text("Supply Zone  : Formed 12:00 AM - 03:00 AM")
-st.sidebar.text("Demand Zone  : Formed 04:00 AM - 06:00 AM")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -125,9 +125,9 @@ def fetch_multi_asset_ohlcv(symbol, timeframe="5m", limit=300):
 
 
 # ---------------------------------------------------------
-# SAFE TREND-FILTERED ENGINE
+# PULLBACK CONFIRMED ENGINE
 # ---------------------------------------------------------
-class TWTSafeEngine:
+class TWTPullbackEngine:
 
   def __init__(self, df, symbol, user_tz):
     self.df = df
@@ -237,66 +237,83 @@ class TWTSafeEngine:
     best_sell = None
     all_detected = []
 
+    supply_touched = False
+    saw_green_pullback = False
+
+    demand_touched = False
+    saw_red_pullback = False
+
     for c in today_candles:
       atr = c["atr"]
       ema = c["ema50"]
       dec = get_decimals(c["close"])
+      t_obj = c["time_obj"]
 
-      # SELL ENTRY: Post-3AM + Supply Mid Rejection + Price BELOW EMA50 (Bearish confirmation)
+      # --- SELL ENTRY WITH PULLBACK (Post-3AM) ---
+      if t_obj >= time(3, 0) and self.supply_box is not None and best_sell is None:
+        if not supply_touched:
+          if c["high"] >= self.supply_mid:
+            supply_touched = True
+        elif not saw_green_pullback:
+          if c["color"] == "Green":
+            saw_green_pullback = True
+        else:
+          if c["color"] == "Red" and c["close"] < ema:
+            sl = round(self.supply_box[1] + (1.8 * atr), dec)
+            tp1 = round(c["close"] - (1.2 * atr), dec)
+            tp2 = round(c["close"] - (2.5 * atr), dec)
+            tp3 = round(c["close"] - (4.0 * atr), dec)
+
+            best_sell = {
+                "Asset": self.symbol,
+                "Date": str(c["date"]),
+                "Time": c["time"],
+                "Candle #": c["id"],
+                "Type": "SELL 🔴",
+                "Setup": "Supply Rejection + Pullback",
+                "Entry Price": round(c["close"], dec),
+                "Stop Loss (SL)": sl,
+                "TP 1": tp1,
+                "TP 2": tp2,
+                "TP 3": tp3,
+                "Is_Within_1hr": c["is_within_1hr"],
+            }
+            all_detected.append(best_sell)
+
+      # --- BUY ENTRY WITH PULLBACK (Post-6AM) ---
       if (
-          best_sell is None
-          and self.supply_box is not None
-          and c["time_obj"] >= time(3, 0)
-      ):
-        if c["high"] >= self.supply_mid and c["color"] == "Red" and c["close"] < ema:
-          sl = round(self.supply_box[1] + (1.8 * atr), dec)  # Wider safe SL
-          tp1 = round(c["close"] - (1.2 * atr), dec)
-          tp2 = round(c["close"] - (2.5 * atr), dec)
-          tp3 = round(c["close"] - (4.0 * atr), dec)
-
-          best_sell = {
-              "Asset": self.symbol,
-              "Date": str(c["date"]),
-              "Time": c["time"],
-              "Candle #": c["id"],
-              "Type": "SELL 🔴",
-              "Setup": "Safe Supply Rejection + EMA Filter",
-              "Entry Price": round(c["close"], dec),
-              "Stop Loss (SL)": sl,
-              "TP 1": tp1,
-              "TP 2": tp2,
-              "TP 3": tp3,
-              "Is_Within_1hr": c["is_within_1hr"],
-          }
-          all_detected.append(best_sell)
-
-      # BUY ENTRY: Post-6AM + Demand Mid Bounce + Price ABOVE EMA50 (Bullish confirmation)
-      if (
-          best_buy is None
+          t_obj >= time(6, 0)
           and self.demand_box is not None
-          and c["time_obj"] >= time(6, 0)
+          and best_buy is None
       ):
-        if c["low"] <= self.demand_mid and c["color"] == "Green" and c["close"] > ema:
-          sl = round(self.demand_box[0] - (1.8 * atr), dec)  # Wider safe SL
-          tp1 = round(c["close"] + (1.2 * atr), dec)
-          tp2 = round(c["close"] + (2.5 * atr), dec)
-          tp3 = round(c["close"] + (4.0 * atr), dec)
+        if not demand_touched:
+          if c["low"] <= self.demand_mid:
+            demand_touched = True
+        elif not saw_red_pullback:
+          if c["color"] == "Red":
+            saw_red_pullback = True
+        else:
+          if c["color"] == "Green" and c["close"] > ema:
+            sl = round(self.demand_box[0] - (1.8 * atr), dec)
+            tp1 = round(c["close"] + (1.2 * atr), dec)
+            tp2 = round(c["close"] + (2.5 * atr), dec)
+            tp3 = round(c["close"] + (4.0 * atr), dec)
 
-          best_buy = {
-              "Asset": self.symbol,
-              "Date": str(c["date"]),
-              "Time": c["time"],
-              "Candle #": c["id"],
-              "Type": "BUY 🟢",
-              "Setup": "Safe Demand Bounce + EMA Filter",
-              "Entry Price": round(c["close"], dec),
-              "Stop Loss (SL)": sl,
-              "TP 1": tp1,
-              "TP 2": tp2,
-              "TP 3": tp3,
-              "Is_Within_1hr": c["is_within_1hr"],
-          }
-          all_detected.append(best_buy)
+            best_buy = {
+                "Asset": self.symbol,
+                "Date": str(c["date"]),
+                "Time": c["time"],
+                "Candle #": c["id"],
+                "Type": "BUY 🟢",
+                "Setup": "Demand Bounce + Pullback",
+                "Entry Price": round(c["close"], dec),
+                "Stop Loss (SL)": sl,
+                "TP 1": tp1,
+                "TP 2": tp2,
+                "TP 3": tp3,
+                "Is_Within_1hr": c["is_within_1hr"],
+            }
+            all_detected.append(best_buy)
 
     self.history = all_detected
     self.recent_signals = [s for s in all_detected if s.get("Is_Within_1hr", False)]
@@ -306,7 +323,7 @@ class TWTSafeEngine:
 # MASTER MULTI-ASSET SCANNER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("🔥 TWT Master Safe Filtered Dashboard (20+ Assets)")
+st.subheader("🔥 TWT Master Pullback Dashboard (20+ Assets)")
 
 master_recent = []
 asset_engines = {}
@@ -315,13 +332,13 @@ asset_engines = {}
 def scan_asset(sym):
   df = fetch_multi_asset_ohlcv(sym, selected_tf, limit=300)
   if df is not None and not df.empty:
-    engine = TWTSafeEngine(df, sym, active_tz)
+    engine = TWTPullbackEngine(df, sym, active_tz)
     engine.calculate_and_scan()
     return sym, engine, engine.recent_signals
   return sym, None, []
 
 
-with st.spinner("⚡ Parallel scanning 20+ assets with Trend Filters & Safe SL..."):
+with st.spinner("⚡ Parallel scanning 20+ assets with Pullback Logic..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
@@ -332,11 +349,11 @@ with st.spinner("⚡ Parallel scanning 20+ assets with Trend Filters & Safe SL..
         master_recent.extend(recent_sigs)
 
 if master_recent:
-  st.success(f"✅ Found {len(master_recent)} safe filtered trade(s) in the last 1 hour!")
+  st.success(f"✅ Found {len(master_recent)} pullback-confirmed trade(s) in the last 1 hour!")
   df_display = pd.DataFrame(master_recent).drop(columns=["Is_Within_1hr"], errors="ignore")
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No recent trades in the last 1 hour across assets. Check individual asset history below.")
+  st.info("ℹ️ No recent pullback trades in the last 1 hour across assets. Check individual asset history below.")
 
 # ---------------------------------------------------------
 # MANUAL ASSET INSPECTOR & CHART VIEWER
@@ -354,7 +371,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df = fetch_multi_asset_ohlcv(selected_symbol, selected_tf, limit=300)
-  bot = TWTSafeEngine(df, selected_symbol, active_tz)
+  bot = TWTPullbackEngine(df, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df is not None and not bot.df.empty:
@@ -373,7 +390,7 @@ if bot.df is not None and not bot.df.empty:
     df_history = pd.DataFrame(bot.history).drop(columns=["Is_Within_1hr"], errors="ignore")
     st.dataframe(df_history, width="stretch")
   else:
-    st.info("ℹ️ No entries locked yet for today (Trend & Zone criteria pending).")
+    st.info("ℹ️ No entries locked yet for today (Waiting for zone touch + pullback confirmation).")
 
   # --- CLEAN CANDLESTICK CHART RENDERING ---
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
@@ -423,7 +440,7 @@ if bot.df is not None and not bot.df.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} {selected_tf} — Safe Filtered Visualizer",
+      f"{selected_symbol} {selected_tf} — Pullback Confirmed Visualizer",
       color="white",
       fontsize=14,
   )
