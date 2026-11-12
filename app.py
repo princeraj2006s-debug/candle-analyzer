@@ -12,7 +12,7 @@ from streamlit_autorefresh import st_autorefresh
 # STREAMLIT PAGE CONFIGURATION
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="TWT Multi-Asset Precision Pattern Bot",
+    page_title="TWT Multi-Asset Ultimate Precision Bot",
     page_icon="⚡",
     layout="wide",
 )
@@ -30,7 +30,7 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 # Safe Auto-refresh every 30 seconds
 count = st_autorefresh(interval=30000, key="twt_multi_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA — Precision Pattern Engine")
+st.title("⚡ TRADE WITH TUCKYAA — Ultimate Precision Engine")
 
 # ---------------------------------------------------------
 # SIDEBAR CONFIGURATION
@@ -55,13 +55,9 @@ selected_tf = st.sidebar.selectbox(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Pattern Rules")
-st.sidebar.text(
-    "BUY  : Mid/Below Close ➔ Zone Breakout Up ➔ Mid/Below Red ➔ Medium Green"
-)
-st.sidebar.text(
-    "SELL : Mid/Top Close ➔ Zone Out ➔ Mid/Upper Green ➔ Medium Red Entry"
-)
+st.sidebar.markdown("#### Ultimate Rules")
+st.sidebar.text("BUY  : Mid/Below Close ➔ Breakout Up ➔ Mid/Below Red ➔ Green Entry")
+st.sidebar.text("SELL : Mid/Top Close ➔ Breakout Down ➔ Mid/Upper Green ➔ Red Entry")
 st.sidebar.text("Trend Filter : EMA 50 Alignment Check")
 st.sidebar.text("Safe Buffer  : 1.8x ATR Wider Stop Loss")
 
@@ -129,9 +125,9 @@ def fetch_multi_asset_ohlcv(symbol, timeframe="5m", limit=300):
 
 
 # ---------------------------------------------------------
-# PRECISION PATTERN ENGINE
+# ULTIMATE PRECISION ENGINE
 # ---------------------------------------------------------
-class TWTPrecisionEngine:
+class TWTUltimatePrecisionEngine:
 
   def __init__(self, df, symbol, user_tz):
     self.df = df
@@ -249,30 +245,25 @@ class TWTPrecisionEngine:
       ema = c["ema50"]
       dec = get_decimals(c["close"])
       t_obj = c["time_obj"]
-      body_size = abs(c["close"] - c["open"])
 
-      # --- SELLER PATTERN LOGIC (Post-3AM) ---
+      # --- SELLER ULTIMATE PATTERN LOGIC (Post-3AM) ---
       if t_obj >= time(3, 0) and self.supply_box is not None and best_sell is None:
         s_low, s_high = self.supply_box
         if sell_phase == 0:
-          # Phase 1: Green candle close at or above supply midpoint/top
+          # Phase 1: Green candle close at or above supply midpoint or top
           if c["color"] == "Green" and c["close"] >= self.supply_mid:
             sell_phase = 1
         elif sell_phase == 1:
-          # Phase 2: Price moves outside/above supply zone high
-          if c["high"] > s_high:
+          # Phase 2: Price goes outside/below supply zone
+          if c["low"] < s_low:
             sell_phase = 2
         elif sell_phase == 2:
           # Phase 3: Green candle closes at midpoint or slightly upper inside zone
           if c["color"] == "Green" and c["close"] >= s_low:
             sell_phase = 3
         elif sell_phase == 3:
-          # Phase 4: Medium size Red candle entry
-          if (
-              c["color"] == "Red"
-              and c["close"] < ema
-              and body_size >= (0.5 * atr)
-          ):
+          # Phase 4: First Red candle entry at or above midpoint/upper zone
+          if c["color"] == "Red" and c["close"] >= self.supply_mid and c["close"] < ema:
             sl = round(s_high + (1.8 * atr), dec)
             tp1 = round(c["close"] - (1.2 * atr), dec)
             tp2 = round(c["close"] - (2.5 * atr), dec)
@@ -284,7 +275,7 @@ class TWTPrecisionEngine:
                 "Time": c["time"],
                 "Candle #": c["id"],
                 "Type": "SELL 🔴",
-                "Setup": "Precision Supply Pattern",
+                "Setup": "Ultimate Supply Pattern",
                 "Entry Price": round(c["close"], dec),
                 "Stop Loss (SL)": sl,
                 "TP 1": tp1,
@@ -294,7 +285,7 @@ class TWTPrecisionEngine:
             }
             all_detected.append(best_sell)
 
-      # --- BUYER PATTERN LOGIC (Post-6AM) ---
+      # --- BUYER ULTIMATE PATTERN LOGIC (Post-6AM) ---
       if (
           t_obj >= time(6, 0)
           and self.demand_box is not None
@@ -311,15 +302,11 @@ class TWTPrecisionEngine:
             buy_phase = 2
         elif buy_phase == 2:
           # Phase 3: Red candle closes at midpoint or below
-          if c["color"] == "Red" and c["close"] <= d_high:
+          if c["color"] == "Red" and c["close"] <= self.demand_mid:
             buy_phase = 3
         elif buy_phase == 3:
-          # Phase 4: Medium size Green candle entry
-          if (
-              c["color"] == "Green"
-              and c["close"] > ema
-              and body_size >= (0.5 * atr)
-          ):
+          # Phase 4: First Green candle entry at or below midpoint/demand range
+          if c["color"] == "Green" and c["close"] <= self.demand_mid and c["close"] > ema:
             sl = round(d_low - (1.8 * atr), dec)
             tp1 = round(c["close"] + (1.2 * atr), dec)
             tp2 = round(c["close"] + (2.5 * atr), dec)
@@ -331,7 +318,7 @@ class TWTPrecisionEngine:
                 "Time": c["time"],
                 "Candle #": c["id"],
                 "Type": "BUY 🟢",
-                "Setup": "Precision Demand Pattern",
+                "Setup": "Ultimate Demand Pattern",
                 "Entry Price": round(c["close"], dec),
                 "Stop Loss (SL)": sl,
                 "TP 1": tp1,
@@ -349,7 +336,7 @@ class TWTPrecisionEngine:
 # MASTER MULTI-ASSET SCANNER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("🔥 TWT Master Precision Pattern Dashboard (20+ Assets)")
+st.subheader("🔥 TWT Master Ultimate Precision Dashboard (20+ Assets)")
 
 master_recent = []
 asset_engines = {}
@@ -358,13 +345,13 @@ asset_engines = {}
 def scan_asset(sym):
   df = fetch_multi_asset_ohlcv(sym, selected_tf, limit=300)
   if df is not None and not df.empty:
-    engine = TWTPrecisionEngine(df, sym, active_tz)
+    engine = TWTUltimatePrecisionEngine(df, sym, active_tz)
     engine.calculate_and_scan()
     return sym, engine, engine.recent_signals
   return sym, None, []
 
 
-with st.spinner("⚡ Parallel scanning 20+ assets with Precision Pattern Logic..."):
+with st.spinner("⚡ Parallel scanning 20+ assets with Ultimate Precision Logic..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
@@ -376,7 +363,7 @@ with st.spinner("⚡ Parallel scanning 20+ assets with Precision Pattern Logic..
 
 if master_recent:
   st.success(
-      f"✅ Found {len(master_recent)} precision pattern trade(s) in the last 1"
+      f"✅ Found {len(master_recent)} ultimate precision trade(s) in the last 1"
       " hour!"
   )
   df_display = pd.DataFrame(master_recent).drop(
@@ -405,7 +392,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df = fetch_multi_asset_ohlcv(selected_symbol, selected_tf, limit=300)
-  bot = TWTPrecisionEngine(df, selected_symbol, active_tz)
+  bot = TWTUltimatePrecisionEngine(df, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df is not None and not bot.df.empty:
@@ -427,8 +414,8 @@ if bot.df is not None and not bot.df.empty:
     st.dataframe(df_history, width="stretch")
   else:
     st.info(
-        "ℹ️ No entries locked yet for today (Waiting for pattern sequence"
-        " completion)."
+        "ℹ️ No entries locked yet for today (Waiting for ultimate pattern"
+        " sequence completion)."
     )
 
   # --- CLEAN CANDLESTICK CHART RENDERING ---
@@ -495,7 +482,7 @@ if bot.df is not None and not bot.df.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} {selected_tf} — Precision Pattern Visualizer",
+      f"{selected_symbol} {selected_tf} — Ultimate Precision Visualizer",
       color="white",
       fontsize=14,
   )
