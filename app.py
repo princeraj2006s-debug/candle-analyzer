@@ -12,7 +12,7 @@ from streamlit_autorefresh import st_autorefresh
 # STREAMLIT PAGE CONFIGURATION
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="TWT Multi-Asset Advanced Pullback Bot",
+    page_title="TWT Multi-Asset Deep Pullback Bot",
     page_icon="⚡",
     layout="wide",
 )
@@ -30,7 +30,7 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 # Safe Auto-refresh every 30 seconds
 count = st_autorefresh(interval=30000, key="twt_multi_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA — Advanced Pullback Precision Engine")
+st.title("⚡ TRADE WITH TUCKYAA — Deep Pullback Precision Engine")
 
 # ---------------------------------------------------------
 # SIDEBAR CONFIGURATION
@@ -55,9 +55,11 @@ selected_tf = st.sidebar.selectbox(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Advanced Pullback Rules")
-st.sidebar.text("BUY  : Mid Touch ➔ Bottom ➔ Green Up ➔ Red Pullback ➔ Green Entry")
-st.sidebar.text("SELL : Mid Touch ➔ Top ➔ Red Down ➔ Green Pullback ➔ Red Entry")
+st.sidebar.markdown("#### Deep Pullback Rules")
+st.sidebar.text("BUY  : Mid ➔ Bottom ➔ Green Up ➔ 3-4 Red Pullback ➔ First Green Entry")
+st.sidebar.text(
+    "SELL : Mid ➔ Top ➔ Red Down ➔ 3-4 Green Pullback ➔ First Red Entry"
+)
 st.sidebar.text("Trend Filter : EMA 50 Alignment Check")
 st.sidebar.text("Safe Buffer  : 1.8x ATR Wider Stop Loss")
 
@@ -125,9 +127,9 @@ def fetch_multi_asset_ohlcv(symbol, timeframe="5m", limit=300):
 
 
 # ---------------------------------------------------------
-# ADVANCED PULLBACK ENGINE
+# DEEP PULLBACK ENGINE
 # ---------------------------------------------------------
-class TWTAdvancedPullbackEngine:
+class TWTDeepPullbackEngine:
 
   def __init__(self, df, symbol, user_tz):
     self.df = df
@@ -238,7 +240,10 @@ class TWTAdvancedPullbackEngine:
     all_detected = []
 
     sell_phase = 0
+    green_pullback_count = 0
+
     buy_phase = 0
+    red_pullback_count = 0
 
     for c in today_candles:
       atr = c["atr"]
@@ -246,7 +251,7 @@ class TWTAdvancedPullbackEngine:
       dec = get_decimals(c["close"])
       t_obj = c["time_obj"]
 
-      # --- SELLER ADVANCED PULLBACK (Post-3AM) ---
+      # --- SELLER DEEP PULLBACK SEQUENCE (Post-3AM) ---
       if t_obj >= time(3, 0) and self.supply_box is not None and best_sell is None:
         if sell_phase == 0:
           if c["high"] >= self.supply_mid:
@@ -257,9 +262,12 @@ class TWTAdvancedPullbackEngine:
         elif sell_phase == 2:
           if c["color"] == "Red" and c["close"] <= self.supply_mid:
             sell_phase = 3
+            green_pullback_count = 0
         elif sell_phase == 3:
           if c["color"] == "Green":
-            sell_phase = 4
+            green_pullback_count += 1
+          elif green_pullback_count >= 3 and c["color"] == "Red":
+            sell_phase = 4  # Ready for entry on first red candle after 3+ green pullbacks
         elif sell_phase == 4:
           if c["color"] == "Red" and c["close"] < ema:
             sl = round(self.supply_box[1] + (1.8 * atr), dec)
@@ -273,7 +281,7 @@ class TWTAdvancedPullbackEngine:
                 "Time": c["time"],
                 "Candle #": c["id"],
                 "Type": "SELL 🔴",
-                "Setup": "Advanced Supply Pullback",
+                "Setup": "Deep Pullback Supply Entry",
                 "Entry Price": round(c["close"], dec),
                 "Stop Loss (SL)": sl,
                 "TP 1": tp1,
@@ -283,7 +291,7 @@ class TWTAdvancedPullbackEngine:
             }
             all_detected.append(best_sell)
 
-      # --- BUYER ADVANCED PULLBACK (Post-6AM) ---
+      # --- BUYER DEEP PULLBACK SEQUENCE (Post-6AM) ---
       if (
           t_obj >= time(6, 0)
           and self.demand_box is not None
@@ -298,9 +306,12 @@ class TWTAdvancedPullbackEngine:
         elif buy_phase == 2:
           if c["color"] == "Green" and c["close"] >= self.demand_mid:
             buy_phase = 3
+            red_pullback_count = 0
         elif buy_phase == 3:
           if c["color"] == "Red":
-            buy_phase = 4
+            red_pullback_count += 1
+          elif red_pullback_count >= 3 and c["color"] == "Green":
+            buy_phase = 4  # Ready for entry on first green candle after 3+ red pullbacks
         elif buy_phase == 4:
           if c["color"] == "Green" and c["close"] > ema:
             sl = round(self.demand_box[0] - (1.8 * atr), dec)
@@ -314,7 +325,7 @@ class TWTAdvancedPullbackEngine:
                 "Time": c["time"],
                 "Candle #": c["id"],
                 "Type": "BUY 🟢",
-                "Setup": "Advanced Demand Pullback",
+                "Setup": "Deep Pullback Demand Entry",
                 "Entry Price": round(c["close"], dec),
                 "Stop Loss (SL)": sl,
                 "TP 1": tp1,
@@ -332,7 +343,7 @@ class TWTAdvancedPullbackEngine:
 # MASTER MULTI-ASSET SCANNER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("🔥 TWT Master Advanced Pullback Dashboard (20+ Assets)")
+st.subheader("🔥 TWT Master Deep Pullback Dashboard (20+ Assets)")
 
 master_recent = []
 asset_engines = {}
@@ -341,13 +352,13 @@ asset_engines = {}
 def scan_asset(sym):
   df = fetch_multi_asset_ohlcv(sym, selected_tf, limit=300)
   if df is not None and not df.empty:
-    engine = TWTAdvancedPullbackEngine(df, sym, active_tz)
+    engine = TWTDeepPullbackEngine(df, sym, active_tz)
     engine.calculate_and_scan()
     return sym, engine, engine.recent_signals
   return sym, None, []
 
 
-with st.spinner("⚡ Parallel scanning 20+ assets with Advanced Pullback Sequence..."):
+with st.spinner("⚡ Parallel scanning 20+ assets with Deep Pullback Logic..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
@@ -358,7 +369,7 @@ with st.spinner("⚡ Parallel scanning 20+ assets with Advanced Pullback Sequenc
         master_recent.extend(recent_sigs)
 
 if master_recent:
-  st.success(f"✅ Found {len(master_recent)} advanced pullback trade(s) in the last 1 hour!")
+  st.success(f"✅ Found {len(master_recent)} deep pullback trade(s) in the last 1 hour!")
   df_display = pd.DataFrame(master_recent).drop(columns=["Is_Within_1hr"], errors="ignore")
   st.dataframe(df_display, width="stretch")
 else:
@@ -380,7 +391,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df = fetch_multi_asset_ohlcv(selected_symbol, selected_tf, limit=300)
-  bot = TWTAdvancedPullbackEngine(df, selected_symbol, active_tz)
+  bot = TWTDeepPullbackEngine(df, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df is not None and not bot.df.empty:
@@ -399,7 +410,7 @@ if bot.df is not None and not bot.df.empty:
     df_history = pd.DataFrame(bot.history).drop(columns=["Is_Within_1hr"], errors="ignore")
     st.dataframe(df_history, width="stretch")
   else:
-    st.info("ℹ️ No entries locked yet for today (Waiting for full pullback sequence completion).")
+    st.info("ℹ️ No entries locked yet for today (Waiting for 3-4 candle deep pullback sequence).")
 
   # --- CLEAN CANDLESTICK CHART RENDERING ---
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
@@ -449,7 +460,7 @@ if bot.df is not None and not bot.df.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} {selected_tf} — Advanced Pullback Visualizer",
+      f"{selected_symbol} {selected_tf} — Deep Pullback Visualizer",
       color="white",
       fontsize=14,
   )
