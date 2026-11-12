@@ -56,8 +56,8 @@ selected_tf = st.sidebar.selectbox(
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Mid-Zone Rules")
-st.sidebar.text("Demand Midpoint ➔ Green Candle ➔ BUY")
-st.sidebar.text("Supply Midpoint ➔ Red Candle   ➔ SELL")
+st.sidebar.text("Demand Midpoint ➔ Green Candle ➔ BUY (1 per day)")
+st.sidebar.text("Supply Midpoint ➔ Red Candle   ➔ SELL (1 per day)")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -177,6 +177,7 @@ class TWTMultiAssetMidZoneEngine:
       self.candles.append({
           "id": idx + 1,
           "time": timestamp_str,
+          "date": dt_user_tz.date(),
           "dt_ist": dt_ist,
           "dt_user": dt_user_tz,
           "color": "Green" if c >= o else "Red",
@@ -213,8 +214,12 @@ class TWTMultiAssetMidZoneEngine:
     latest_buy = None
     latest_sell = None
 
-    # Scan backwards to get 1 Buy and 1 Sell Midpoint entry
-    for c in reversed(self.candles):
+    # Filter strictly for the latest trading day candles to ensure 1 Best Buy & 1 Best Sell per day
+    latest_date = self.candles[-1]["date"] if self.candles else None
+    today_candles = [c for c in self.candles if c["date"] == latest_date] if latest_date else self.candles
+
+    # Scan today's candles backwards to get exactly 1 unique Buy and 1 unique Sell entry
+    for c in reversed(today_candles):
       atr = c["atr"]
       dec = get_decimals(c["close"])
 
@@ -227,6 +232,7 @@ class TWTMultiAssetMidZoneEngine:
 
         latest_buy = {
             "Asset": self.symbol,
+            "Date": str(c["date"]),
             "Time": c["time"],
             "Candle #": c["id"],
             "Type": "BUY 🟢",
@@ -248,6 +254,7 @@ class TWTMultiAssetMidZoneEngine:
 
         latest_sell = {
             "Asset": self.symbol,
+            "Date": str(c["date"]),
             "Time": c["time"],
             "Candle #": c["id"],
             "Type": "SELL 🔴",
