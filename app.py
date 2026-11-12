@@ -12,7 +12,7 @@ from streamlit_autorefresh import st_autorefresh
 # STREAMLIT PAGE CONFIGURATION
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="TWT Multi-Asset Real-Time Zone Bot",
+    page_title="TWT Multi-Asset Safe Trend-Filtered Bot",
     page_icon="⚡",
     layout="wide",
 )
@@ -30,7 +30,7 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 # Safe Auto-refresh every 30 seconds
 count = st_autorefresh(interval=30000, key="twt_multi_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA — Real-Time Anchored Zone Engine")
+st.title("⚡ TRADE WITH TUCKYAA — Safe Trend-Filtered Engine")
 
 # ---------------------------------------------------------
 # SIDEBAR CONFIGURATION
@@ -55,11 +55,11 @@ selected_tf = st.sidebar.selectbox(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Anti-Lookahead Rules")
-st.sidebar.text("Supply Zone : Formed 12:00 AM - 03:00 AM")
-st.sidebar.text("SELL Signal : Triggers ONLY after 03:00 AM")
-st.sidebar.text("Demand Zone : Formed 04:00 AM - 06:00 AM")
-st.sidebar.text("BUY Signal  : Triggers ONLY after 06:00 AM")
+st.sidebar.markdown("#### Safe Protection Rules")
+st.sidebar.text("Trend Filter : EMA 50 Alignment Check")
+st.sidebar.text("Safe Buffer  : 1.8x ATR Wider Stop Loss")
+st.sidebar.text("Supply Zone  : Formed 12:00 AM - 03:00 AM")
+st.sidebar.text("Demand Zone  : Formed 04:00 AM - 06:00 AM")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -125,9 +125,9 @@ def fetch_multi_asset_ohlcv(symbol, timeframe="5m", limit=300):
 
 
 # ---------------------------------------------------------
-# REAL-TIME ANTI-LOOKAHEAD ENGINE
+# SAFE TREND-FILTERED ENGINE
 # ---------------------------------------------------------
-class TWTRealTimeZoneEngine:
+class TWTSafeEngine:
 
   def __init__(self, df, symbol, user_tz):
     self.df = df
@@ -155,6 +155,7 @@ class TWTRealTimeZoneEngine:
         ),
     )
     self.df["ATR"] = self.df["TR"].rolling(14).mean()
+    self.df["EMA50"] = self.df["Close"].ewm(span=50, adjust=False).mean()
 
     for idx, row in enumerate(self.df.iterrows()):
       dt_utc = row[0]
@@ -172,6 +173,7 @@ class TWTRealTimeZoneEngine:
           float(r["Volume"]),
       )
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
+      ema50 = float(r["EMA50"]) if not pd.isna(r["EMA50"]) else c
 
       age_minutes = (current_utc_time - dt_utc).total_seconds() / 60.0
       is_within_1hr = age_minutes <= 60.0
@@ -189,6 +191,7 @@ class TWTRealTimeZoneEngine:
           "close": c,
           "volume": v,
           "atr": atr,
+          "ema50": ema50,
           "is_within_1hr": is_within_1hr,
       })
 
@@ -236,16 +239,17 @@ class TWTRealTimeZoneEngine:
 
     for c in today_candles:
       atr = c["atr"]
+      ema = c["ema50"]
       dec = get_decimals(c["close"])
 
-      # SELL ENTRY: Scan ONLY after 03:00 AM (once Supply Zone is locked)
+      # SELL ENTRY: Post-3AM + Supply Mid Rejection + Price BELOW EMA50 (Bearish confirmation)
       if (
           best_sell is None
           and self.supply_box is not None
           and c["time_obj"] >= time(3, 0)
       ):
-        if c["high"] >= self.supply_mid and c["color"] == "Red":
-          sl = round(self.supply_box[1] + (1.0 * atr), dec)
+        if c["high"] >= self.supply_mid and c["color"] == "Red" and c["close"] < ema:
+          sl = round(self.supply_box[1] + (1.8 * atr), dec)  # Wider safe SL
           tp1 = round(c["close"] - (1.2 * atr), dec)
           tp2 = round(c["close"] - (2.5 * atr), dec)
           tp3 = round(c["close"] - (4.0 * atr), dec)
@@ -256,7 +260,7 @@ class TWTRealTimeZoneEngine:
               "Time": c["time"],
               "Candle #": c["id"],
               "Type": "SELL 🔴",
-              "Setup": "Supply Mid Rejection (Post-3AM)",
+              "Setup": "Safe Supply Rejection + EMA Filter",
               "Entry Price": round(c["close"], dec),
               "Stop Loss (SL)": sl,
               "TP 1": tp1,
@@ -266,14 +270,14 @@ class TWTRealTimeZoneEngine:
           }
           all_detected.append(best_sell)
 
-      # BUY ENTRY: Scan ONLY after 06:00 AM (once 4AM-6AM Demand Zone is completely formed)
+      # BUY ENTRY: Post-6AM + Demand Mid Bounce + Price ABOVE EMA50 (Bullish confirmation)
       if (
           best_buy is None
           and self.demand_box is not None
           and c["time_obj"] >= time(6, 0)
       ):
-        if c["low"] <= self.demand_mid and c["color"] == "Green":
-          sl = round(self.demand_box[0] - (1.0 * atr), dec)
+        if c["low"] <= self.demand_mid and c["color"] == "Green" and c["close"] > ema:
+          sl = round(self.demand_box[0] - (1.8 * atr), dec)  # Wider safe SL
           tp1 = round(c["close"] + (1.2 * atr), dec)
           tp2 = round(c["close"] + (2.5 * atr), dec)
           tp3 = round(c["close"] + (4.0 * atr), dec)
@@ -284,7 +288,7 @@ class TWTRealTimeZoneEngine:
               "Time": c["time"],
               "Candle #": c["id"],
               "Type": "BUY 🟢",
-              "Setup": "Demand Mid Bounce (Post-6AM)",
+              "Setup": "Safe Demand Bounce + EMA Filter",
               "Entry Price": round(c["close"], dec),
               "Stop Loss (SL)": sl,
               "TP 1": tp1,
@@ -302,7 +306,7 @@ class TWTRealTimeZoneEngine:
 # MASTER MULTI-ASSET SCANNER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("🔥 TWT Master Real-Time Live Dashboard (20+ Assets)")
+st.subheader("🔥 TWT Master Safe Filtered Dashboard (20+ Assets)")
 
 master_recent = []
 asset_engines = {}
@@ -311,13 +315,13 @@ asset_engines = {}
 def scan_asset(sym):
   df = fetch_multi_asset_ohlcv(sym, selected_tf, limit=300)
   if df is not None and not df.empty:
-    engine = TWTRealTimeZoneEngine(df, sym, active_tz)
+    engine = TWTSafeEngine(df, sym, active_tz)
     engine.calculate_and_scan()
     return sym, engine, engine.recent_signals
   return sym, None, []
 
 
-with st.spinner("⚡ Parallel scanning 20+ assets with Anti-Lookahead Zones..."):
+with st.spinner("⚡ Parallel scanning 20+ assets with Trend Filters & Safe SL..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
@@ -328,7 +332,7 @@ with st.spinner("⚡ Parallel scanning 20+ assets with Anti-Lookahead Zones...")
         master_recent.extend(recent_sigs)
 
 if master_recent:
-  st.success(f"✅ Found {len(master_recent)} recent active trade(s) in the last 1 hour!")
+  st.success(f"✅ Found {len(master_recent)} safe filtered trade(s) in the last 1 hour!")
   df_display = pd.DataFrame(master_recent).drop(columns=["Is_Within_1hr"], errors="ignore")
   st.dataframe(df_display, width="stretch")
 else:
@@ -350,7 +354,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df = fetch_multi_asset_ohlcv(selected_symbol, selected_tf, limit=300)
-  bot = TWTRealTimeZoneEngine(df, selected_symbol, active_tz)
+  bot = TWTSafeEngine(df, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df is not None and not bot.df.empty:
@@ -369,7 +373,7 @@ if bot.df is not None and not bot.df.empty:
     df_history = pd.DataFrame(bot.history).drop(columns=["Is_Within_1hr"], errors="ignore")
     st.dataframe(df_history, width="stretch")
   else:
-    st.info("ℹ️ No entries locked yet for today (Buy scans after 06:00 AM, Sell after 03:00 AM).")
+    st.info("ℹ️ No entries locked yet for today (Trend & Zone criteria pending).")
 
   # --- CLEAN CANDLESTICK CHART RENDERING ---
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
@@ -383,13 +387,13 @@ if bot.df is not None and not bot.df.empty:
     ax.bar(c["id"], body_height, bottom=lower_val, color=col, width=0.6, edgecolor=col)
     ax.vlines(c["id"], c["low"], c["high"], color=col, linewidth=1.2)
 
-  # Plot 4AM-6AM Demand Zone
+  # Plot Demand Zone
   if bot.demand_box:
     d_low, d_high = bot.demand_box
     ax.axhspan(d_low, d_high, color="#26a69a", alpha=0.25, label="Demand Zone (4AM-6AM)")
     ax.axhline(bot.demand_mid, color="#00e676", linestyle=":", linewidth=1.5, label="Demand Midpoint")
 
-  # Plot 12AM-3AM Supply Zone
+  # Plot Supply Zone
   if bot.supply_box:
     s_low, s_high = bot.supply_box
     ax.axhspan(s_low, s_high, color="#ef5350", alpha=0.25, label="Supply Zone (12AM-3AM)")
@@ -419,7 +423,7 @@ if bot.df is not None and not bot.df.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} {selected_tf} — Real-Time Anchored Zone Visualizer",
+      f"{selected_symbol} {selected_tf} — Safe Filtered Visualizer",
       color="white",
       fontsize=14,
   )
