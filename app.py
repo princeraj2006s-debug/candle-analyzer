@@ -12,7 +12,7 @@ from streamlit_autorefresh import st_autorefresh
 # STREAMLIT PAGE CONFIGURATION
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="TWT Multi-Asset Recent vs History Bot",
+    page_title="TWT Multi-Asset Fixed Anchored Zone Bot",
     page_icon="⚡",
     layout="wide",
 )
@@ -30,7 +30,7 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 # Safe Auto-refresh every 30 seconds
 count = st_autorefresh(interval=30000, key="twt_multi_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA — Recent Dashboard & History Engine")
+st.title("⚡ TRADE WITH TUCKYAA — Fixed Anchored Zone Engine")
 
 # ---------------------------------------------------------
 # SIDEBAR CONFIGURATION
@@ -55,11 +55,11 @@ selected_tf = st.sidebar.selectbox(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Display Rules")
-st.sidebar.text("Master Dashboard : Recent Live Trades (Last 1 hr)")
-st.sidebar.text("Asset Inspector  : Complete History & Chart")
-st.sidebar.text("Demand Midpoint  ➔ Green ➔ BUY")
-st.sidebar.text("Supply Midpoint  ➔ Red   ➔ SELL")
+st.sidebar.markdown("#### Fixed Anchor Rules")
+st.sidebar.text("Zones anchored to Early Session Range (No Shifting)")
+st.sidebar.text("Strictly 1 BUY & 1 SELL locked per Day")
+st.sidebar.text("Demand Midpoint ➔ Green ➔ Locked BUY")
+st.sidebar.text("Supply Midpoint ➔ Red   ➔ Locked SELL")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -125,9 +125,9 @@ def fetch_multi_asset_ohlcv(symbol, timeframe="5m", limit=300):
 
 
 # ---------------------------------------------------------
-# ENGINE WITH RECENT VS HISTORY SEPARATION
+# FIXED ANCHORED ZONE ENGINE
 # ---------------------------------------------------------
-class TWTRecentHistoryEngine:
+class TWTFixedAnchorEngine:
 
   def __init__(self, df, symbol, user_tz):
     self.df = df
@@ -199,14 +199,16 @@ class TWTRecentHistoryEngine:
     if not today_candles:
       today_candles = self.candles
 
-    all_lows = [c["low"] for c in today_candles]
-    all_highs = [c["high"] for c in today_candles]
+    # ANCHOR LOGIC: Use the first 36 candles of the day (or all if fewer) to permanently fix zones
+    anchor_window = today_candles[:36] if len(today_candles) >= 36 else today_candles
+    anchor_lows = [c["low"] for c in anchor_window]
+    anchor_highs = [c["high"] for c in anchor_window]
 
-    if not all_lows or not all_highs:
+    if not anchor_lows or not anchor_highs:
       return
 
-    min_price = min(all_lows)
-    max_price = max(all_highs)
+    min_price = min(anchor_lows)
+    max_price = max(anchor_highs)
     total_range = max_price - min_price if max_price > min_price else 1.0
 
     demand_zone_low = min_price
@@ -223,6 +225,7 @@ class TWTRecentHistoryEngine:
     best_sell = None
     all_detected = []
 
+    # Scan strictly once to lock the very first touch against the ANCHORED zones
     for c in today_candles:
       atr = c["atr"]
       dec = get_decimals(c["close"])
@@ -239,7 +242,7 @@ class TWTRecentHistoryEngine:
             "Time": c["time"],
             "Candle #": c["id"],
             "Type": "BUY 🟢",
-            "Setup": "Demand Midpoint Bounce",
+            "Setup": "Anchored Demand Mid Bounce",
             "Entry Price": round(c["close"], dec),
             "Stop Loss (SL)": sl,
             "TP 1": tp1,
@@ -261,7 +264,7 @@ class TWTRecentHistoryEngine:
             "Time": c["time"],
             "Candle #": c["id"],
             "Type": "SELL 🔴",
-            "Setup": "Supply Midpoint Rejection",
+            "Setup": "Anchored Supply Mid Rejection",
             "Entry Price": round(c["close"], dec),
             "Stop Loss (SL)": sl,
             "TP 1": tp1,
@@ -272,7 +275,6 @@ class TWTRecentHistoryEngine:
         all_detected.append(best_sell)
 
     self.history = all_detected
-    # Master dashboard shows ONLY recent signals formed within the last 1 hour
     self.recent_signals = [s for s in all_detected if s.get("Is_Within_1hr", False)]
 
 
@@ -280,7 +282,7 @@ class TWTRecentHistoryEngine:
 # MASTER MULTI-ASSET SCANNER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("🔥 TWT Master Recent Live Dashboard (20+ Assets)")
+st.subheader("🔥 TWT Master Fixed Anchor Dashboard (20+ Assets)")
 
 master_recent = []
 asset_engines = {}
@@ -289,13 +291,13 @@ asset_engines = {}
 def scan_asset(sym):
   df = fetch_multi_asset_ohlcv(sym, selected_tf, limit=300)
   if df is not None and not df.empty:
-    engine = TWTRecentHistoryEngine(df, sym, active_tz)
+    engine = TWTFixedAnchorEngine(df, sym, active_tz)
     engine.calculate_and_scan()
     return sym, engine, engine.recent_signals
   return sym, None, []
 
 
-with st.spinner("⚡ Parallel scanning 20+ assets for recent live trades..."):
+with st.spinner("⚡ Parallel scanning 20+ assets with Fixed Anchored Zones..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
@@ -319,7 +321,7 @@ st.markdown("---")
 st.subheader("📊 Individual Asset Inspector & History")
 
 selected_symbol = st.selectbox(
-    "🔍 Select Asset to Load Chart & Complete History",
+    "🔍 Select Asset to Load Fixed Anchor Chart",
     options=ASSET_LIST,
     index=0,
 )
@@ -328,7 +330,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df = fetch_multi_asset_ohlcv(selected_symbol, selected_tf, limit=300)
-  bot = TWTRecentHistoryEngine(df, selected_symbol, active_tz)
+  bot = TWTFixedAnchorEngine(df, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df is not None and not bot.df.empty:
@@ -338,16 +340,16 @@ if bot.df is not None and not bot.df.empty:
   with col1:
     st.metric(label=f"Current {selected_symbol} Price", value=f"{curr_p:.2f}")
   with col2:
-    st.metric(label="Total Locked Entries", value=len(bot.history))
+    st.metric(label="Locked Entries", value=len(bot.history))
   with col3:
     st.metric(label="Timezone", value=selected_tz_name.split(")")[0] + ")")
 
   if bot.history:
-    st.markdown(f"### 📋 Complete History Feed for {selected_symbol}")
+    st.markdown(f"### 📋 Locked History Feed for {selected_symbol}")
     df_history = pd.DataFrame(bot.history).drop(columns=["Is_Within_1hr"], errors="ignore")
     st.dataframe(df_history, width="stretch")
   else:
-    st.info("ℹ️ No historical entries for today on this asset yet.")
+    st.info("ℹ️ No entries for today on this asset yet.")
 
   # --- CLEAN CANDLESTICK CHART RENDERING ---
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
@@ -363,12 +365,12 @@ if bot.df is not None and not bot.df.empty:
 
   if bot.demand_box:
     d_low, d_high = bot.demand_box
-    ax.axhspan(d_low, d_high, color="#26a69a", alpha=0.25, label="Demand Zone")
+    ax.axhspan(d_low, d_high, color="#26a69a", alpha=0.25, label="Fixed Demand Zone")
     ax.axhline(bot.demand_mid, color="#00e676", linestyle=":", linewidth=1.5, label="Demand Midpoint")
 
   if bot.supply_box:
     s_low, s_high = bot.supply_box
-    ax.axhspan(s_low, s_high, color="#ef5350", alpha=0.25, label="Supply Zone")
+    ax.axhspan(s_low, s_high, color="#ef5350", alpha=0.25, label="Fixed Supply Zone")
     ax.axhline(bot.supply_mid, color="#ff5252", linestyle=":", linewidth=1.5, label="Supply Midpoint")
 
   lows = [c["low"] for c in bot.candles]
@@ -395,7 +397,7 @@ if bot.df is not None and not bot.df.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} {selected_tf} — Recent vs History Visualizer",
+      f"{selected_symbol} {selected_tf} — Fixed Anchored Precision Visualizer",
       color="white",
       fontsize=14,
   )
