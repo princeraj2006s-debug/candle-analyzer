@@ -59,6 +59,7 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("#### Rules")
 st.sidebar.text("Supply Zone : 4H Anchor High")
 st.sidebar.text("Demand Zone : 4H Anchor Low")
+st.sidebar.text("Entries Only After : 01:30 AM Anchor Candle")
 st.sidebar.text("BUY  : 5M Green Close in Demand Zone (1/day)")
 st.sidebar.text("SELL : 5M Red Close in Supply Zone (1/day)")
 
@@ -160,6 +161,7 @@ class TWTMultiTFEngine:
       candles_4h.append({
           "date": dt_user.date(),
           "time_obj": dt_user.time(),
+          "dt_user": dt_user,
           "high": float(r["High"]),
           "low": float(r["Low"])
       })
@@ -180,6 +182,8 @@ class TWTMultiTFEngine:
         key=lambda x: abs(datetime.combine(latest_date, x["time_obj"]) - datetime.combine(latest_date, anchor_target)),
         default=today_4h[0]
     )
+
+    anchor_dt = anchor_4h["dt_user"]
 
     s_high = anchor_4h["high"]
     s_low = s_high - ((anchor_4h["high"] - anchor_4h["low"]) * 0.3)
@@ -211,6 +215,7 @@ class TWTMultiTFEngine:
           "id": idx + 1,
           "time": dt_user.strftime("%H:%M"),
           "date": dt_user.date(),
+          "dt_user": dt_user,
           "color": "Green" if c >= o else "Red",
           "open": o, "high": h, "low": l, "close": c,
           "atr": atr,
@@ -225,6 +230,10 @@ class TWTMultiTFEngine:
     first_sell = None
 
     for c in today_5m:
+      # STRICT RULE: Entries only allowed AFTER the 01:30 AM anchor candle time
+      if c["dt_user"] <= anchor_dt:
+        continue
+
       atr = c["atr"]
       dec = get_decimals(c["close"])
 
@@ -293,7 +302,7 @@ def scan_asset(sym):
   return sym, None, []
 
 
-with st.spinner("⚡ Scanning 20+ assets (4H Zones + 5M Entries)..."):
+with st.spinner("⚡ Scanning 20+ assets (4H Zones + 5M Entries after 01:30)..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
@@ -308,7 +317,7 @@ if master_signals:
   df_display = pd.DataFrame(master_signals).drop(columns=["Is_Within_1hr"], errors="ignore")
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active 5M zone-close signals in the last 1 hour.")
+  st.info("ℹ️ No active 5M zone-close signals after 01:30 AM in the last 1 hour.")
 
 # ---------------------------------------------------------
 # MANUAL ASSET INSPECTOR & CHART VIEWER (5M Chart)
