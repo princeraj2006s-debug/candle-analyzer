@@ -12,7 +12,7 @@ from streamlit_autorefresh import st_autorefresh
 # STREAMLIT PAGE CONFIGURATION
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="TWT Zone-Bottom Precision Bot",
+    page_title="TWT Multi-Asset Advanced Pullback Bot",
     page_icon="⚡",
     layout="wide",
 )
@@ -30,7 +30,7 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 # Safe Auto-refresh every 30 seconds
 count = st_autorefresh(interval=30000, key="twt_multi_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA — Zone-Bottom Precision Engine")
+st.title("⚡ TRADE WITH TUCKYAA — Advanced Pullback Precision Engine")
 
 # ---------------------------------------------------------
 # SIDEBAR CONFIGURATION
@@ -55,9 +55,9 @@ selected_tf = st.sidebar.selectbox(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Bottom-Touch Rules")
-st.sidebar.text("BUY  : Demand Zone Bottom Touch ➔ Green Confirmation")
-st.sidebar.text("SELL : Supply Zone Top Touch ➔ Red Confirmation")
+st.sidebar.markdown("#### Advanced Pullback Rules")
+st.sidebar.text("BUY  : Mid Touch ➔ Bottom ➔ Green Up ➔ Red Pullback ➔ Green Entry")
+st.sidebar.text("SELL : Mid Touch ➔ Top ➔ Red Down ➔ Green Pullback ➔ Red Entry")
 st.sidebar.text("Trend Filter : EMA 50 Alignment Check")
 st.sidebar.text("Safe Buffer  : 1.8x ATR Wider Stop Loss")
 
@@ -125,9 +125,9 @@ def fetch_multi_asset_ohlcv(symbol, timeframe="5m", limit=300):
 
 
 # ---------------------------------------------------------
-# ZONE-BOTTOM PRECISION ENGINE
+# ADVANCED PULLBACK ENGINE
 # ---------------------------------------------------------
-class TWTBottomTouchEngine:
+class TWTAdvancedPullbackEngine:
 
   def __init__(self, df, symbol, user_tz):
     self.df = df
@@ -237,77 +237,92 @@ class TWTBottomTouchEngine:
     best_sell = None
     all_detected = []
 
+    sell_phase = 0
+    buy_phase = 0
+
     for c in today_candles:
       atr = c["atr"]
       ema = c["ema50"]
       dec = get_decimals(c["close"])
       t_obj = c["time_obj"]
 
-      # --- SELLER ENTRY AT SUPPLY TOP (Post-3AM) ---
-      if (
-          best_sell is None
-          and self.supply_box is not None
-          and t_obj >= time(3, 0)
-      ):
-        # Check if price touches or goes above supply zone bottom/top and shows red rejection
-        if (
-            c["high"] >= self.supply_box[0]
-            and c["color"] == "Red"
-            and c["close"] < ema
-        ):
-          sl = round(self.supply_box[1] + (1.8 * atr), dec)
-          tp1 = round(c["close"] - (1.2 * atr), dec)
-          tp2 = round(c["close"] - (2.5 * atr), dec)
-          tp3 = round(c["close"] - (4.0 * atr), dec)
+      # --- SELLER ADVANCED PULLBACK (Post-3AM) ---
+      if t_obj >= time(3, 0) and self.supply_box is not None and best_sell is None:
+        if sell_phase == 0:
+          if c["high"] >= self.supply_mid:
+            sell_phase = 1
+        elif sell_phase == 1:
+          if c["high"] >= self.supply_box[1]:
+            sell_phase = 2
+        elif sell_phase == 2:
+          if c["color"] == "Red" and c["close"] <= self.supply_mid:
+            sell_phase = 3
+        elif sell_phase == 3:
+          if c["color"] == "Green":
+            sell_phase = 4
+        elif sell_phase == 4:
+          if c["color"] == "Red" and c["close"] < ema:
+            sl = round(self.supply_box[1] + (1.8 * atr), dec)
+            tp1 = round(c["close"] - (1.2 * atr), dec)
+            tp2 = round(c["close"] - (2.5 * atr), dec)
+            tp3 = round(c["close"] - (4.0 * atr), dec)
 
-          best_sell = {
-              "Asset": self.symbol,
-              "Date": str(c["date"]),
-              "Time": c["time"],
-              "Candle #": c["id"],
-              "Type": "SELL 🔴",
-              "Setup": "Supply Top Rejection",
-              "Entry Price": round(c["close"], dec),
-              "Stop Loss (SL)": sl,
-              "TP 1": tp1,
-              "TP 2": tp2,
-              "TP 3": tp3,
-              "Is_Within_1hr": c["is_within_1hr"],
-          }
-          all_detected.append(best_sell)
+            best_sell = {
+                "Asset": self.symbol,
+                "Date": str(c["date"]),
+                "Time": c["time"],
+                "Candle #": c["id"],
+                "Type": "SELL 🔴",
+                "Setup": "Advanced Supply Pullback",
+                "Entry Price": round(c["close"], dec),
+                "Stop Loss (SL)": sl,
+                "TP 1": tp1,
+                "TP 2": tp2,
+                "TP 3": tp3,
+                "Is_Within_1hr": c["is_within_1hr"],
+            }
+            all_detected.append(best_sell)
 
-      # --- BUYER ENTRY AT DEMAND BOTTOM (Post-6AM) ---
+      # --- BUYER ADVANCED PULLBACK (Post-6AM) ---
       if (
-          best_buy is None
+          t_obj >= time(6, 0)
           and self.demand_box is not None
-          and t_obj >= time(6, 0)
+          and best_buy is None
       ):
-        # Check if price touches or drops below demand zone top/bottom and shows green bounce
-        if (
-            c["low"] <= self.demand_box[1]
-            and c["color"] == "Green"
-            and c["close"] > ema
-        ):
-          sl = round(self.demand_box[0] - (1.8 * atr), dec)
-          tp1 = round(c["close"] + (1.2 * atr), dec)
-          tp2 = round(c["close"] + (2.5 * atr), dec)
-          tp3 = round(c["close"] + (4.0 * atr), dec)
+        if buy_phase == 0:
+          if c["low"] <= self.demand_mid:
+            buy_phase = 1
+        elif buy_phase == 1:
+          if c["low"] <= self.demand_box[0]:
+            buy_phase = 2
+        elif buy_phase == 2:
+          if c["color"] == "Green" and c["close"] >= self.demand_mid:
+            buy_phase = 3
+        elif buy_phase == 3:
+          if c["color"] == "Red":
+            buy_phase = 4
+        elif buy_phase == 4:
+          if c["color"] == "Green" and c["close"] > ema:
+            sl = round(self.demand_box[0] - (1.8 * atr), dec)
+            tp1 = round(c["close"] + (1.2 * atr), dec)
+            tp2 = round(c["close"] + (2.5 * atr), dec)
+            tp3 = round(c["close"] + (4.0 * atr), dec)
 
-          best_buy = {
-              "Asset": self.symbol,
-              "Date": str(c["date"]),
-              "Time": c["time"],
-              "Candle #": c["id"],
-              "Type": "BUY 🟢",
-              "Setup": "Demand Bottom Bounce",
-              "Entry Price": round(c["close"], dec),
-              "Stop Loss (SL)": sl,
-              "TP 1": tp1,
-              "TP 2": tp2,
-              "TP 3": tp3,
-              "Is_Within_1hr": c["is_within_1hr"],
-          }
-          all_detected.append(best_buy)
+            best_buy = {
+                "Asset": self.symbol,
+                "Date": str(c["date"]),
+                "Time": c["time"],
+                "Candle #": c["id"],
+                "Type": "BUY 🟢",
+                "Setup": "Advanced Demand Pullback",
+                "Entry Price": round(c["close"], dec),
+                "Stop Loss (SL)": sl,
+                "TP 1": tp1,
+                "TP 2": tp2,
+                "TP 3": tp3,
+                "Is_Within_1hr": c["is_within_1hr"],
+            }
+            all_detected.append(best_buy)
 
     self.history = all_detected
     self.recent_signals = [s for s in all_detected if s.get("Is_Within_1hr", False)]
@@ -317,7 +332,7 @@ class TWTBottomTouchEngine:
 # MASTER MULTI-ASSET SCANNER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("🔥 TWT Master Zone-Bottom Dashboard (20+ Assets)")
+st.subheader("🔥 TWT Master Advanced Pullback Dashboard (20+ Assets)")
 
 master_recent = []
 asset_engines = {}
@@ -326,13 +341,13 @@ asset_engines = {}
 def scan_asset(sym):
   df = fetch_multi_asset_ohlcv(sym, selected_tf, limit=300)
   if df is not None and not df.empty:
-    engine = TWTBottomTouchEngine(df, sym, active_tz)
+    engine = TWTAdvancedPullbackEngine(df, sym, active_tz)
     engine.calculate_and_scan()
     return sym, engine, engine.recent_signals
   return sym, None, []
 
 
-with st.spinner("⚡ Parallel scanning 20+ assets with Zone-Bottom Logic..."):
+with st.spinner("⚡ Parallel scanning 20+ assets with Advanced Pullback Sequence..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
@@ -343,7 +358,7 @@ with st.spinner("⚡ Parallel scanning 20+ assets with Zone-Bottom Logic..."):
         master_recent.extend(recent_sigs)
 
 if master_recent:
-  st.success(f"✅ Found {len(master_recent)} zone-bottom trade(s) in the last 1 hour!")
+  st.success(f"✅ Found {len(master_recent)} advanced pullback trade(s) in the last 1 hour!")
   df_display = pd.DataFrame(master_recent).drop(columns=["Is_Within_1hr"], errors="ignore")
   st.dataframe(df_display, width="stretch")
 else:
@@ -365,7 +380,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df = fetch_multi_asset_ohlcv(selected_symbol, selected_tf, limit=300)
-  bot = TWTBottomTouchEngine(df, selected_symbol, active_tz)
+  bot = TWTAdvancedPullbackEngine(df, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df is not None and not bot.df.empty:
@@ -384,7 +399,7 @@ if bot.df is not None and not bot.df.empty:
     df_history = pd.DataFrame(bot.history).drop(columns=["Is_Within_1hr"], errors="ignore")
     st.dataframe(df_history, width="stretch")
   else:
-    st.info("ℹ️ No entries locked yet for today (Waiting for zone boundary touch).")
+    st.info("ℹ️ No entries locked yet for today (Waiting for full pullback sequence completion).")
 
   # --- CLEAN CANDLESTICK CHART RENDERING ---
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
@@ -434,7 +449,7 @@ if bot.df is not None and not bot.df.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} {selected_tf} — Zone-Bottom Visualizer",
+      f"{selected_symbol} {selected_tf} — Advanced Pullback Visualizer",
       color="white",
       fontsize=14,
   )
