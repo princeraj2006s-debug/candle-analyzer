@@ -12,7 +12,7 @@ from streamlit_autorefresh import st_autorefresh
 # STREAMLIT PAGE CONFIGURATION
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="TWT Multi-Asset Advanced Pullback Bot",
+    page_title="TWT Multi-Asset Strict Rule Engine",
     page_icon="⚡",
     layout="wide",
 )
@@ -30,7 +30,7 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 # Safe Auto-refresh every 30 seconds
 count = st_autorefresh(interval=30000, key="twt_multi_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA — Advanced Pullback Precision Engine")
+st.title("⚡ TRADE WITH TUCKYAA — Strict Multi-Condition Precision Engine")
 
 # ---------------------------------------------------------
 # SIDEBAR CONFIGURATION
@@ -55,9 +55,9 @@ selected_tf = st.sidebar.selectbox(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Advanced Pullback Rules")
-st.sidebar.text("BUY  : Mid Touch ➔ Bottom ➔ Green Up ➔ Red Pullback ➔ Green Entry")
-st.sidebar.text("SELL : Mid Touch ➔ Top ➔ Red Down ➔ Green Pullback ➔ Red Entry")
+st.sidebar.markdown("#### Strict Entry Rules")
+st.sidebar.text("BUY  : 3 Specific Scenarios (Bottom/Mid Close & Retest)")
+st.sidebar.text("SELL : Mirror Scenarios for Top/Mid Close & Retest")
 st.sidebar.text("Trend Filter : EMA 50 Alignment Check")
 st.sidebar.text("Safe Buffer  : 1.8x ATR Wider Stop Loss")
 
@@ -125,9 +125,9 @@ def fetch_multi_asset_ohlcv(symbol, timeframe="5m", limit=300):
 
 
 # ---------------------------------------------------------
-# ADVANCED PULLBACK ENGINE
+# STRICT MULTI-CONDITION ENGINE
 # ---------------------------------------------------------
-class TWTAdvancedPullbackEngine:
+class TWTStrictConditionEngine:
 
   def __init__(self, df, symbol, user_tz):
     self.df = df
@@ -237,102 +237,162 @@ class TWTAdvancedPullbackEngine:
     best_sell = None
     all_detected = []
 
-    sell_phase = 0
-    buy_phase = 0
+    sell_scenario = 0
+    buy_scenario = 0
 
     for c in today_candles:
       atr = c["atr"]
       ema = c["ema50"]
       dec = get_decimals(c["close"])
       t_obj = c["time_obj"]
+      body_size = abs(c["close"] - c["open"])
 
-      # --- SELLER ADVANCED PULLBACK (Post-3AM) ---
+      # --- SELLER STRICT SCENARIOS (Post-3AM) ---
       if t_obj >= time(3, 0) and self.supply_box is not None and best_sell is None:
-        if sell_phase == 0:
-          if c["high"] >= self.supply_mid:
-            sell_phase = 1
-        elif sell_phase == 1:
-          if c["high"] >= self.supply_box[1]:
-            sell_phase = 2
-        elif sell_phase == 2:
-          if c["color"] == "Red" and c["close"] <= self.supply_mid:
-            sell_phase = 3
-        elif sell_phase == 3:
-          if c["color"] == "Green":
-            sell_phase = 4
-        elif sell_phase == 4:
+        s_low, s_high = self.supply_box
+
+        if sell_scenario == 0:
+          # Check initial triggers for 3 Seller scenarios
+          if c["color"] == "Red" and c["high"] >= s_high:
+            sell_scenario = 11  # Scenario 1 start
+          elif c["color"] == "Green" and c["high"] >= s_high:
+            sell_scenario = 21  # Scenario 2 start
+          elif c["color"] == "Green" and c["close"] >= self.supply_mid:
+            sell_scenario = 31  # Scenario 3 start
+
+        # Seller Scenario 1 State Machine
+        elif sell_scenario == 11:
+          if c["color"] == "Green" and c["close"] <= self.supply_mid:
+            sell_scenario = 12
+          else:
+            sell_scenario = 0
+        elif sell_scenario == 12:
           if c["color"] == "Red" and c["close"] < ema:
-            sl = round(self.supply_box[1] + (1.8 * atr), dec)
-            tp1 = round(c["close"] - (1.2 * atr), dec)
-            tp2 = round(c["close"] - (2.5 * atr), dec)
-            tp3 = round(c["close"] - (4.0 * atr), dec)
-
-            best_sell = {
-                "Asset": self.symbol,
-                "Date": str(c["date"]),
-                "Time": c["time"],
-                "Candle #": c["id"],
-                "Type": "SELL 🔴",
-                "Setup": "Advanced Supply Pullback",
-                "Entry Price": round(c["close"], dec),
-                "Stop Loss (SL)": sl,
-                "TP 1": tp1,
-                "TP 2": tp2,
-                "TP 3": tp3,
-                "Is_Within_1hr": c["is_within_1hr"],
-            }
+            best_sell = self._create_signal(c, "SELL 🔴", "Seller Scenario 1", s_high, atr, dec)
             all_detected.append(best_sell)
+          else:
+            sell_scenario = 0
 
-      # --- BUYER ADVANCED PULLBACK (Post-6AM) ---
-      if (
-          t_obj >= time(6, 0)
-          and self.demand_box is not None
-          and best_buy is None
-      ):
-        if buy_phase == 0:
-          if c["low"] <= self.demand_mid:
-            buy_phase = 1
-        elif buy_phase == 1:
-          if c["low"] <= self.demand_box[0]:
-            buy_phase = 2
-        elif buy_phase == 2:
-          if c["color"] == "Green" and c["close"] >= self.demand_mid:
-            buy_phase = 3
-        elif buy_phase == 3:
-          if c["color"] == "Red":
-            buy_phase = 4
-        elif buy_phase == 4:
+        # Seller Scenario 2 State Machine
+        elif sell_scenario == 21:
+          if c["color"] == "Red" and c["close"] < s_low:
+            sell_scenario = 22
+          else:
+            sell_scenario = 0
+        elif sell_scenario == 22:
+          if c["color"] == "Green" and abs(c["close"] - self.supply_mid) <= (atr * 0.5):
+            sell_scenario = 23
+          else:
+            sell_scenario = 0
+        elif sell_scenario == 23:
+          if c["color"] == "Red" and body_size >= (0.4 * atr) and c["close"] < ema:
+            best_sell = self._create_signal(c, "SELL 🔴", "Seller Scenario 2", s_high, atr, dec)
+            all_detected.append(best_sell)
+          else:
+            sell_scenario = 0
+
+        # Seller Scenario 3 State Machine
+        elif sell_scenario == 31:
+          if c["high"] > s_high:
+            sell_scenario = 32
+          else:
+            sell_scenario = 0
+        elif sell_scenario == 32:
+          if c["color"] == "Red" and abs(c["close"] - self.supply_mid) <= (atr * 0.5) and c["close"] < ema:
+            best_sell = self._create_signal(c, "SELL 🔴", "Seller Scenario 3", s_high, atr, dec)
+            all_detected.append(best_sell)
+          else:
+            sell_scenario = 0
+
+      # --- BUYER STRICT SCENARIOS (Post-6AM) ---
+      if t_obj >= time(6, 0) and self.demand_box is not None and best_buy is None:
+        d_low, d_high = self.demand_box
+
+        if buy_scenario == 0:
+          # Check initial triggers for 3 Buyer scenarios
+          if c["color"] == "Green" and c["low"] <= d_low:
+            buy_scenario = 11  # Scenario 1 start
+          elif c["color"] == "Red" and c["low"] <= d_low:
+            buy_scenario = 21  # Scenario 2 start
+          elif c["color"] == "Red" and c["close"] <= self.demand_mid:
+            buy_scenario = 31  # Scenario 3 start
+
+        # Buyer Scenario 1 State Machine
+        elif buy_scenario == 11:
+          if c["color"] == "Red" and c["close"] >= self.demand_mid:
+            buy_scenario = 12
+          else:
+            buy_scenario = 0
+        elif buy_scenario == 12:
           if c["color"] == "Green" and c["close"] > ema:
-            sl = round(self.demand_box[0] - (1.8 * atr), dec)
-            tp1 = round(c["close"] + (1.2 * atr), dec)
-            tp2 = round(c["close"] + (2.5 * atr), dec)
-            tp3 = round(c["close"] + (4.0 * atr), dec)
-
-            best_buy = {
-                "Asset": self.symbol,
-                "Date": str(c["date"]),
-                "Time": c["time"],
-                "Candle #": c["id"],
-                "Type": "BUY 🟢",
-                "Setup": "Advanced Demand Pullback",
-                "Entry Price": round(c["close"], dec),
-                "Stop Loss (SL)": sl,
-                "TP 1": tp1,
-                "TP 2": tp2,
-                "TP 3": tp3,
-                "Is_Within_1hr": c["is_within_1hr"],
-            }
+            best_buy = self._create_signal(c, "BUY 🟢", "Buyer Scenario 1", d_low, atr, dec)
             all_detected.append(best_buy)
+          else:
+            buy_scenario = 0
+
+        # Buyer Scenario 2 State Machine
+        elif buy_scenario == 21:
+          if c["color"] == "Green" and c["close"] > d_high:
+            buy_scenario = 22
+          else:
+            buy_scenario = 0
+        elif buy_scenario == 22:
+          if c["color"] == "Red" and abs(c["close"] - self.demand_mid) <= (atr * 0.5):
+            buy_scenario = 23
+          else:
+            buy_scenario = 0
+        elif buy_scenario == 23:
+          if c["color"] == "Green" and body_size >= (0.4 * atr) and c["close"] > ema:
+            best_buy = self._create_signal(c, "BUY 🟢", "Buyer Scenario 2", d_low, atr, dec)
+            all_detected.append(best_buy)
+          else:
+            buy_scenario = 0
+
+        # Buyer Scenario 3 State Machine
+        elif buy_scenario == 31:
+          if c["low"] < d_low:
+            buy_scenario = 32
+          else:
+            buy_scenario = 0
+        elif buy_scenario == 32:
+          if c["color"] == "Green" and abs(c["close"] - self.demand_mid) <= (atr * 0.5) and c["close"] > ema:
+            best_buy = self._create_signal(c, "BUY 🟢", "Buyer Scenario 3", d_low, atr, dec)
+            all_detected.append(best_buy)
+          else:
+            buy_scenario = 0
 
     self.history = all_detected
     self.recent_signals = [s for s in all_detected if s.get("Is_Within_1hr", False)]
+
+  def _create_signal(self, c, sig_type, setup_name, zone_boundary, atr, dec):
+    entry_price = round(c["close"], dec)
+    is_buy = "BUY" in sig_type
+    sl = round(zone_boundary - (1.8 * atr) if is_buy else zone_boundary + (1.8 * atr), dec)
+    tp1 = round(entry_price + (1.2 * atr) if is_buy else entry_price - (1.2 * atr), dec)
+    tp2 = round(entry_price + (2.5 * atr) if is_buy else entry_price - (2.5 * atr), dec)
+    tp3 = round(entry_price + (4.0 * atr) if is_buy else entry_price - (4.0 * atr), dec)
+
+    return {
+        "Asset": self.symbol,
+        "Date": str(c["date"]),
+        "Time": c["time"],
+        "Candle #": c["id"],
+        "Type": sig_type,
+        "Setup": setup_name,
+        "Entry Price": entry_price,
+        "Stop Loss (SL)": sl,
+        "TP 1": tp1,
+        "TP 2": tp2,
+        "TP 3": tp3,
+        "Is_Within_1hr": c["is_within_1hr"],
+    }
 
 
 # ---------------------------------------------------------
 # MASTER MULTI-ASSET SCANNER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("🔥 TWT Master Advanced Pullback Dashboard (20+ Assets)")
+st.subheader("🔥 TWT Master Strict Rule Dashboard (20+ Assets)")
 
 master_recent = []
 asset_engines = {}
@@ -341,13 +401,13 @@ asset_engines = {}
 def scan_asset(sym):
   df = fetch_multi_asset_ohlcv(sym, selected_tf, limit=300)
   if df is not None and not df.empty:
-    engine = TWTAdvancedPullbackEngine(df, sym, active_tz)
+    engine = TWTStrictConditionEngine(df, sym, active_tz)
     engine.calculate_and_scan()
     return sym, engine, engine.recent_signals
   return sym, None, []
 
 
-with st.spinner("⚡ Parallel scanning 20+ assets with Advanced Pullback Sequence..."):
+with st.spinner("⚡ Parallel scanning 20+ assets with Strict Rule Logic..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
@@ -358,11 +418,11 @@ with st.spinner("⚡ Parallel scanning 20+ assets with Advanced Pullback Sequenc
         master_recent.extend(recent_sigs)
 
 if master_recent:
-  st.success(f"✅ Found {len(master_recent)} advanced pullback trade(s) in the last 1 hour!")
+  st.success(f"✅ Found {len(master_recent)} strict rule trade(s) in the last 1 hour!")
   df_display = pd.DataFrame(master_recent).drop(columns=["Is_Within_1hr"], errors="ignore")
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No recent trades in the last 1 hour across assets. Check individual asset history below.")
+  st.info("ℹ️ No recent trades matching strict rules in the last 1 hour. Bot skips invalid setups.")
 
 # ---------------------------------------------------------
 # MANUAL ASSET INSPECTOR & CHART VIEWER
@@ -380,7 +440,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df = fetch_multi_asset_ohlcv(selected_symbol, selected_tf, limit=300)
-  bot = TWTAdvancedPullbackEngine(df, selected_symbol, active_tz)
+  bot = TWTStrictConditionEngine(df, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df is not None and not bot.df.empty:
@@ -399,7 +459,7 @@ if bot.df is not None and not bot.df.empty:
     df_history = pd.DataFrame(bot.history).drop(columns=["Is_Within_1hr"], errors="ignore")
     st.dataframe(df_history, width="stretch")
   else:
-    st.info("ℹ️ No entries locked yet for today (Waiting for full pullback sequence completion).")
+    st.info("ℹ️ No entries locked yet for today (Waiting for strict condition match).")
 
   # --- CLEAN CANDLESTICK CHART RENDERING ---
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
@@ -449,7 +509,7 @@ if bot.df is not None and not bot.df.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} {selected_tf} — Advanced Pullback Visualizer",
+      f"{selected_symbol} {selected_tf} — Strict Rule Visualizer",
       color="white",
       fontsize=14,
   )
