@@ -12,7 +12,7 @@ from streamlit_autorefresh import st_autorefresh
 # STREAMLIT PAGE CONFIGURATION
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="TWT Multi-Asset Strict Rule Engine",
+    page_title="TWT Multi-Asset Fixed Strict Engine",
     page_icon="⚡",
     layout="wide",
 )
@@ -30,7 +30,7 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 # Safe Auto-refresh every 30 seconds
 count = st_autorefresh(interval=30000, key="twt_multi_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA — Strict Multi-Condition Precision Engine")
+st.title("⚡ TRADE WITH TUCKYAA — Fixed Strict Precision Engine")
 
 # ---------------------------------------------------------
 # SIDEBAR CONFIGURATION
@@ -55,9 +55,9 @@ selected_tf = st.sidebar.selectbox(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Strict Entry Rules")
-st.sidebar.text("BUY  : 3 Specific Scenarios (Bottom/Mid Close & Retest)")
-st.sidebar.text("SELL : Mirror Scenarios for Top/Mid Close & Retest")
+st.sidebar.markdown("#### Fixed Strict Entry Rules")
+st.sidebar.text("BUY  : 3 Specific Scenarios (Demand Zone)")
+st.sidebar.text("SELL : 3 Fixed Mirror Scenarios (Supply Zone)")
 st.sidebar.text("Trend Filter : EMA 50 Alignment Check")
 st.sidebar.text("Safe Buffer  : 1.8x ATR Wider Stop Loss")
 
@@ -125,9 +125,9 @@ def fetch_multi_asset_ohlcv(symbol, timeframe="5m", limit=300):
 
 
 # ---------------------------------------------------------
-# STRICT MULTI-CONDITION ENGINE
+# FIXED STRICT ENGINE
 # ---------------------------------------------------------
-class TWTStrictConditionEngine:
+class TWTFixedStrictEngine:
 
   def __init__(self, df, symbol, user_tz):
     self.df = df
@@ -245,121 +245,90 @@ class TWTStrictConditionEngine:
       ema = c["ema50"]
       dec = get_decimals(c["close"])
       t_obj = c["time_obj"]
-      body_size = abs(c["close"] - c["open"])
 
-      # --- SELLER STRICT SCENARIOS (Post-3AM) ---
+      # --- SELLER FIXED SCENARIOS (Post-3AM) ---
       if t_obj >= time(3, 0) and self.supply_box is not None and best_sell is None:
         s_low, s_high = self.supply_box
 
         if sell_scenario == 0:
-          # Check initial triggers for 3 Seller scenarios
           if c["color"] == "Red" and c["high"] >= s_high:
-            sell_scenario = 11  # Scenario 1 start
+            sell_scenario = 11
           elif c["color"] == "Green" and c["high"] >= s_high:
-            sell_scenario = 21  # Scenario 2 start
+            sell_scenario = 21
           elif c["color"] == "Green" and c["close"] >= self.supply_mid:
-            sell_scenario = 31  # Scenario 3 start
+            sell_scenario = 31
 
-        # Seller Scenario 1 State Machine
         elif sell_scenario == 11:
           if c["color"] == "Green" and c["close"] <= self.supply_mid:
             sell_scenario = 12
-          else:
-            sell_scenario = 0
         elif sell_scenario == 12:
-          if c["color"] == "Red" and c["close"] < ema:
+          if c["color"] == "Red":
             best_sell = self._create_signal(c, "SELL 🔴", "Seller Scenario 1", s_high, atr, dec)
             all_detected.append(best_sell)
-          else:
-            sell_scenario = 0
+            sell_scenario = 99
 
-        # Seller Scenario 2 State Machine
         elif sell_scenario == 21:
           if c["color"] == "Red" and c["close"] < s_low:
             sell_scenario = 22
-          else:
-            sell_scenario = 0
         elif sell_scenario == 22:
-          if c["color"] == "Green" and abs(c["close"] - self.supply_mid) <= (atr * 0.5):
+          if c["color"] == "Green" and c["close"] >= self.supply_mid:
             sell_scenario = 23
-          else:
-            sell_scenario = 0
         elif sell_scenario == 23:
-          if c["color"] == "Red" and body_size >= (0.4 * atr) and c["close"] < ema:
+          if c["color"] == "Red":
             best_sell = self._create_signal(c, "SELL 🔴", "Seller Scenario 2", s_high, atr, dec)
             all_detected.append(best_sell)
-          else:
-            sell_scenario = 0
+            sell_scenario = 99
 
-        # Seller Scenario 3 State Machine
         elif sell_scenario == 31:
           if c["high"] > s_high:
             sell_scenario = 32
-          else:
-            sell_scenario = 0
         elif sell_scenario == 32:
-          if c["color"] == "Red" and abs(c["close"] - self.supply_mid) <= (atr * 0.5) and c["close"] < ema:
+          if c["color"] == "Red" and c["close"] <= self.supply_mid:
             best_sell = self._create_signal(c, "SELL 🔴", "Seller Scenario 3", s_high, atr, dec)
             all_detected.append(best_sell)
-          else:
-            sell_scenario = 0
+            sell_scenario = 99
 
-      # --- BUYER STRICT SCENARIOS (Post-6AM) ---
+      # --- BUYER FIXED SCENARIOS (Post-6AM) ---
       if t_obj >= time(6, 0) and self.demand_box is not None and best_buy is None:
         d_low, d_high = self.demand_box
 
         if buy_scenario == 0:
-          # Check initial triggers for 3 Buyer scenarios
           if c["color"] == "Green" and c["low"] <= d_low:
-            buy_scenario = 11  # Scenario 1 start
+            buy_scenario = 11
           elif c["color"] == "Red" and c["low"] <= d_low:
-            buy_scenario = 21  # Scenario 2 start
+            buy_scenario = 21
           elif c["color"] == "Red" and c["close"] <= self.demand_mid:
-            buy_scenario = 31  # Scenario 3 start
+            buy_scenario = 31
 
-        # Buyer Scenario 1 State Machine
         elif buy_scenario == 11:
           if c["color"] == "Red" and c["close"] >= self.demand_mid:
             buy_scenario = 12
-          else:
-            buy_scenario = 0
         elif buy_scenario == 12:
-          if c["color"] == "Green" and c["close"] > ema:
+          if c["color"] == "Green":
             best_buy = self._create_signal(c, "BUY 🟢", "Buyer Scenario 1", d_low, atr, dec)
             all_detected.append(best_buy)
-          else:
-            buy_scenario = 0
+            buy_scenario = 99
 
-        # Buyer Scenario 2 State Machine
         elif buy_scenario == 21:
           if c["color"] == "Green" and c["close"] > d_high:
             buy_scenario = 22
-          else:
-            buy_scenario = 0
         elif buy_scenario == 22:
-          if c["color"] == "Red" and abs(c["close"] - self.demand_mid) <= (atr * 0.5):
+          if c["color"] == "Red" and c["close"] <= self.demand_mid:
             buy_scenario = 23
-          else:
-            buy_scenario = 0
         elif buy_scenario == 23:
-          if c["color"] == "Green" and body_size >= (0.4 * atr) and c["close"] > ema:
+          if c["color"] == "Green":
             best_buy = self._create_signal(c, "BUY 🟢", "Buyer Scenario 2", d_low, atr, dec)
             all_detected.append(best_buy)
-          else:
-            buy_scenario = 0
+            buy_scenario = 99
 
-        # Buyer Scenario 3 State Machine
         elif buy_scenario == 31:
           if c["low"] < d_low:
             buy_scenario = 32
-          else:
-            buy_scenario = 0
         elif buy_scenario == 32:
-          if c["color"] == "Green" and abs(c["close"] - self.demand_mid) <= (atr * 0.5) and c["close"] > ema:
+          if c["color"] == "Green" and c["close"] >= self.demand_mid:
             best_buy = self._create_signal(c, "BUY 🟢", "Buyer Scenario 3", d_low, atr, dec)
             all_detected.append(best_buy)
-          else:
-            buy_scenario = 0
+            buy_scenario = 99
 
     self.history = all_detected
     self.recent_signals = [s for s in all_detected if s.get("Is_Within_1hr", False)]
@@ -392,7 +361,7 @@ class TWTStrictConditionEngine:
 # MASTER MULTI-ASSET SCANNER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("🔥 TWT Master Strict Rule Dashboard (20+ Assets)")
+st.subheader("🔥 TWT Master Fixed Engine Dashboard (20+ Assets)")
 
 master_recent = []
 asset_engines = {}
@@ -401,13 +370,13 @@ asset_engines = {}
 def scan_asset(sym):
   df = fetch_multi_asset_ohlcv(sym, selected_tf, limit=300)
   if df is not None and not df.empty:
-    engine = TWTStrictConditionEngine(df, sym, active_tz)
+    engine = TWTFixedStrictEngine(df, sym, active_tz)
     engine.calculate_and_scan()
     return sym, engine, engine.recent_signals
   return sym, None, []
 
 
-with st.spinner("⚡ Parallel scanning 20+ assets with Strict Rule Logic..."):
+with st.spinner("⚡ Parallel scanning 20+ assets with Fixed Strict Logic..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
@@ -418,11 +387,11 @@ with st.spinner("⚡ Parallel scanning 20+ assets with Strict Rule Logic..."):
         master_recent.extend(recent_sigs)
 
 if master_recent:
-  st.success(f"✅ Found {len(master_recent)} strict rule trade(s) in the last 1 hour!")
+  st.success(f"✅ Found {len(master_recent)} fixed strict trade(s) in the last 1 hour!")
   df_display = pd.DataFrame(master_recent).drop(columns=["Is_Within_1hr"], errors="ignore")
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No recent trades matching strict rules in the last 1 hour. Bot skips invalid setups.")
+  st.info("ℹ️ No recent trades matching fixed strict rules in the last 1 hour.")
 
 # ---------------------------------------------------------
 # MANUAL ASSET INSPECTOR & CHART VIEWER
@@ -440,7 +409,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df = fetch_multi_asset_ohlcv(selected_symbol, selected_tf, limit=300)
-  bot = TWTStrictConditionEngine(df, selected_symbol, active_tz)
+  bot = TWTFixedStrictEngine(df, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df is not None and not bot.df.empty:
@@ -459,7 +428,7 @@ if bot.df is not None and not bot.df.empty:
     df_history = pd.DataFrame(bot.history).drop(columns=["Is_Within_1hr"], errors="ignore")
     st.dataframe(df_history, width="stretch")
   else:
-    st.info("ℹ️ No entries locked yet for today (Waiting for strict condition match).")
+    st.info("ℹ️ No entries locked yet for today (Waiting for strict scenario match).")
 
   # --- CLEAN CANDLESTICK CHART RENDERING ---
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
@@ -509,7 +478,7 @@ if bot.df is not None and not bot.df.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} {selected_tf} — Strict Rule Visualizer",
+      f"{selected_symbol} {selected_tf} — Fixed Visualizer",
       color="white",
       fontsize=14,
   )
