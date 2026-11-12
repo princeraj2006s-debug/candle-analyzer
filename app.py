@@ -12,7 +12,7 @@ from streamlit_autorefresh import st_autorefresh
 # STREAMLIT PAGE CONFIGURATION
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="TWT Fixed Non-Shifting Precision Engine",
+    page_title="TWT 4H Anchor Zone Precision Bot",
     page_icon="⚡",
     layout="wide",
 )
@@ -30,7 +30,7 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 # Safe Auto-refresh every 30 seconds
 count = st_autorefresh(interval=30000, key="twt_multi_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA — Fixed Non-Shifting Zone Engine")
+st.title("⚡ TRADE WITH TUCKYAA — 4H Anchor Zone Precision Engine")
 
 # ---------------------------------------------------------
 # SIDEBAR CONFIGURATION
@@ -51,14 +51,16 @@ selected_tz_name = st.sidebar.selectbox(
 active_tz = ZoneInfo(selected_tz_name)
 
 selected_tf = st.sidebar.selectbox(
-    "⏱️ Timeframe", options=["5m", "15m", "30m", "1h"], index=0
+    "⏱️ Timeframe", options=["4h", "1h", "30m", "15m", "5m"], index=0
 )
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Fixed Zone Rules")
-st.sidebar.text("Supply Zone : 12:00 AM - 03:00 AM (Locked)")
-st.sidebar.text("Demand Zone : 04:00 AM - 06:00 AM (Locked)")
-st.sidebar.text("Strict Midpoint Bounce ➔ 1 Buy & 1 Sell Max Per Day")
+st.sidebar.markdown("#### 4H Anchor Zone Rules")
+st.sidebar.text("Anchor Candle : ~01:30 AM")
+st.sidebar.text("Supply Zone   : Anchor High")
+st.sidebar.text("Demand Zone   : Anchor Low")
+st.sidebar.text("BUY  : Green Close in Demand Zone (1/day)")
+st.sidebar.text("SELL : Red Close in Supply Zone (1/day)")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -97,7 +99,7 @@ def get_decimals(price):
 # DATA FETCHING MODULE WITH CCXT
 # ---------------------------------------------------------
 @st.cache_data(ttl=30)
-def fetch_multi_asset_ohlcv(symbol, timeframe="5m", limit=300):
+def fetch_multi_asset_ohlcv(symbol, timeframe="4h", limit=100):
   exchanges_to_try = [
       (ccxt.binance, symbol),
       (ccxt.bybit, symbol),
@@ -124,9 +126,9 @@ def fetch_multi_asset_ohlcv(symbol, timeframe="5m", limit=300):
 
 
 # ---------------------------------------------------------
-# FIXED NON-SHIFTING ZONE ENGINE
+# 4H ANCHOR ZONE ENGINE
 # ---------------------------------------------------------
-class TWTFixedZoneEngine:
+class TWTAnchorZoneEngine:
 
   def __init__(self, df, symbol, user_tz):
     self.df = df
@@ -137,8 +139,6 @@ class TWTFixedZoneEngine:
     self.history = []
     self.demand_box = None
     self.supply_box = None
-    self.demand_mid = 0.0
-    self.supply_mid = 0.0
 
   def calculate_and_scan(self):
     if self.df is None or self.df.empty:
@@ -155,7 +155,6 @@ class TWTFixedZoneEngine:
         ),
     )
     self.df["ATR"] = self.df["TR"].rolling(14).mean()
-    self.df["EMA50"] = self.df["Close"].ewm(span=50, adjust=False).mean()
 
     for idx, row in enumerate(self.df.iterrows()):
       dt_utc = row[0]
@@ -172,7 +171,6 @@ class TWTFixedZoneEngine:
           float(r["Volume"]),
       )
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
-      ema50 = float(r["EMA50"]) if not pd.isna(r["EMA50"]) else c
 
       age_minutes = (current_utc_time - dt_utc).total_seconds() / 60.0
       is_within_1hr = age_minutes <= 60.0
@@ -191,7 +189,6 @@ class TWTFixedZoneEngine:
           "close": c,
           "volume": v,
           "atr": atr,
-          "ema50": ema50,
           "is_within_1hr": is_within_1hr,
       })
 
@@ -203,56 +200,37 @@ class TWTFixedZoneEngine:
     if not today_candles:
       today_candles = self.candles
 
-    # 1. SUPPLY ZONE: Formed strictly between 00:00 AM and 03:00 AM (LOCKED)
-    supply_build_candles = [
-        c for c in today_candles if time(0, 0) <= c["time_obj"] < time(3, 0)
-    ]
-    if supply_build_candles:
-      s_lows = [c["low"] for c in supply_build_candles]
-      s_highs = [c["high"] for c in supply_build_candles]
-      s_min, s_max = min(s_lows), max(s_highs)
-      s_range = s_max - s_min if s_max > s_min else (s_max * 0.005)
-      supply_zone_high = s_max
-      supply_zone_low = s_max - (s_range * 0.5)
-      self.supply_box = (supply_zone_low, supply_zone_high)
-      self.supply_mid = (supply_zone_low + supply_zone_high) / 2.0
-    else:
-      all_highs = [c["high"] for c in today_candles]
-      s_max = max(all_highs) if all_highs else 100.0
-      self.supply_box = (s_max * 0.995, s_max)
-      self.supply_mid = (self.supply_box[0] + self.supply_box[1]) / 2.0
+    # Find the anchor candle closest to 01:30 AM in user timezone
+    anchor_target_time = time(1, 30)
+    anchor_candle = min(
+        today_candles,
+        key=lambda x: abs(
+            datetime.combine(latest_date, x["time_obj"])
+            - datetime.combine(latest_date, anchor_target_time)
+        ),
+        default=today_candles[0],
+    )
 
-    # 2. DEMAND ZONE: Formed strictly between 04:00 AM and 06:00 AM (LOCKED)
-    demand_build_candles = [
-        c for c in today_candles if time(4, 0) <= c["time_obj"] < time(6, 0)
-    ]
-    if demand_build_candles:
-      d_lows = [c["low"] for c in demand_build_candles]
-      d_highs = [c["high"] for c in demand_build_candles]
-      d_min, d_max = min(d_lows), max(d_highs)
-      d_range = d_max - d_min if d_max > d_min else (d_min * 0.005)
-      demand_zone_low = d_min
-      demand_zone_high = d_min + (d_range * 0.5)
-      self.demand_box = (demand_zone_low, demand_zone_high)
-      self.demand_mid = (demand_zone_low + demand_zone_high) / 2.0
-    else:
-      all_lows = [c["low"] for c in today_candles]
-      d_min = min(all_lows) if all_lows else 10.0
-      self.demand_box = (d_min, d_min * 1.005)
-      self.demand_mid = (self.demand_box[0] + self.demand_box[1]) / 2.0
+    # Supply Zone = Anchor High, Demand Zone = Anchor Low (Fixed & Non-shifting)
+    s_high = anchor_candle["high"]
+    s_low = s_high - ((anchor_candle["high"] - anchor_candle["low"]) * 0.3) if anchor_candle["high"] > anchor_candle["low"] else s_high * 0.995
+    self.supply_box = (s_low, s_high)
+
+    d_low = anchor_candle["low"]
+    d_high = d_low + ((anchor_candle["high"] - anchor_candle["low"]) * 0.3) if anchor_candle["high"] > anchor_candle["low"] else d_low * 1.005
+    self.demand_box = (d_low, d_high)
 
     first_buy = None
     first_sell = None
 
-    # Scan forward chronologically to lock the FIRST valid setup of the day permanently
+    # Scan forward chronologically to lock the FIRST valid entry of the day
     for c in today_candles:
       atr = c["atr"]
-      ema = c["ema50"]
       dec = get_decimals(c["close"])
 
-      # BUY Entry: Strict check - Must touch demand zone, form green candle, and respect trend/midpoint
-      if not first_buy and c["low"] <= self.demand_mid and c["color"] == "Green" and c["close"] > ema:
-        sl = round(self.demand_box[0] - (1.8 * atr), dec)
+      # BUY Entry: Green candle closes inside Demand Zone
+      if not first_buy and c["color"] == "Green" and self.demand_box[0] <= c["close"] <= self.demand_box[1]:
+        sl = round(self.demand_box[0] - (1.5 * atr), dec)
         tp1 = round(c["close"] + (1.2 * atr), dec)
         tp2 = round(c["close"] + (2.5 * atr), dec)
         tp3 = round(c["close"] + (4.0 * atr), dec)
@@ -263,7 +241,7 @@ class TWTFixedZoneEngine:
             "Time": c["time"],
             "Candle #": c["id"],
             "Type": "BUY 🟢",
-            "Setup": "Locked Demand Midpoint Bounce",
+            "Setup": "Demand Zone Green Close",
             "Entry Price": round(c["close"], dec),
             "Stop Loss (SL)": sl,
             "TP 1": tp1,
@@ -272,9 +250,9 @@ class TWTFixedZoneEngine:
             "Is_Within_1hr": c["is_within_1hr"],
         }
 
-      # SELL Entry: Strict check - Must touch supply zone, form red candle, and respect trend/midpoint
-      if not first_sell and c["high"] >= self.supply_mid and c["color"] == "Red" and c["close"] < ema:
-        sl = round(self.supply_box[1] + (1.8 * atr), dec)
+      # SELL Entry: Red candle closes inside Supply Zone
+      if not first_sell and c["color"] == "Red" and self.supply_box[0] <= c["close"] <= self.supply_box[1]:
+        sl = round(self.supply_box[1] + (1.5 * atr), dec)
         tp1 = round(c["close"] - (1.2 * atr), dec)
         tp2 = round(c["close"] - (2.5 * atr), dec)
         tp3 = round(c["close"] - (4.0 * atr), dec)
@@ -285,7 +263,7 @@ class TWTFixedZoneEngine:
             "Time": c["time"],
             "Candle #": c["id"],
             "Type": "SELL 🔴",
-            "Setup": "Locked Supply Midpoint Rejection",
+            "Setup": "Supply Zone Red Close",
             "Entry Price": round(c["close"], dec),
             "Stop Loss (SL)": sl,
             "TP 1": tp1,
@@ -315,16 +293,16 @@ asset_engines = {}
 
 
 def scan_asset(sym):
-  df = fetch_multi_asset_ohlcv(sym, selected_tf, limit=300)
+  df = fetch_multi_asset_ohlcv(sym, selected_tf, limit=100)
   if df is not None and not df.empty:
-    engine = TWTFixedZoneEngine(df, sym, active_tz)
+    engine = TWTAnchorZoneEngine(df, sym, active_tz)
     engine.calculate_and_scan()
     recent_sigs = engine.signals
     return sym, engine, recent_sigs
   return sym, None, []
 
 
-with st.spinner("⚡ Parallel scanning 20+ assets with Non-Shifting Zones..."):
+with st.spinner("⚡ Parallel scanning 20+ assets with 4H Anchor Zones..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
@@ -341,7 +319,7 @@ if master_signals:
   )
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active valid signals in the last 1 hour. Bot is filtering out false/forced entries.")
+  st.info("ℹ️ No active valid signals in the last 1 hour matching zone close rules.")
 
 # ---------------------------------------------------------
 # MANUAL ASSET INSPECTOR & CHART VIEWER
@@ -350,7 +328,7 @@ st.markdown("---")
 st.subheader("📊 Individual Asset Inspector & Chart")
 
 selected_symbol = st.selectbox(
-    "🔍 Select Asset to Load Fixed Zone Chart",
+    "🔍 Select Asset to Load Anchor Zone Chart",
     options=ASSET_LIST,
     index=0,
 )
@@ -358,8 +336,8 @@ selected_symbol = st.selectbox(
 if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
-  df = fetch_multi_asset_ohlcv(selected_symbol, selected_tf, limit=300)
-  bot = TWTFixedZoneEngine(df, selected_symbol, active_tz)
+  df = fetch_multi_asset_ohlcv(selected_symbol, selected_tf, limit=100)
+  bot = TWTAnchorZoneEngine(df, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df is not None and not bot.df.empty:
@@ -392,16 +370,14 @@ if bot.df is not None and not bot.df.empty:
     ax.bar(c["id"], body_height, bottom=lower_val, color=col, width=0.6, edgecolor=col)
     ax.vlines(c["id"], c["low"], c["high"], color=col, linewidth=1.2)
 
-  # Plot Demand and Supply Zones & Midlines (Locked)
+  # Plot Demand and Supply Zones (Fixed & Non-shifting)
   if bot.demand_box:
     d_low, d_high = bot.demand_box
-    ax.axhspan(d_low, d_high, color="#26a69a", alpha=0.25, label="Demand Zone (4AM-6AM)")
-    ax.axhline(bot.demand_mid, color="#00e676", linestyle=":", linewidth=1.5, label="Demand Midpoint")
+    ax.axhspan(d_low, d_high, color="#26a69a", alpha=0.25, label="Demand Zone (01:30 Anchor Low)")
 
   if bot.supply_box:
     s_low, s_high = bot.supply_box
-    ax.axhspan(s_low, s_high, color="#ef5350", alpha=0.25, label="Supply Zone (12AM-3AM)")
-    ax.axhline(bot.supply_mid, color="#ff5252", linestyle=":", linewidth=1.5, label="Supply Midpoint")
+    ax.axhspan(s_low, s_high, color="#ef5350", alpha=0.25, label="Supply Zone (01:30 Anchor High)")
 
   lows = [c["low"] for c in bot.candles]
   highs = [c["high"] for c in bot.candles]
@@ -427,7 +403,7 @@ if bot.df is not None and not bot.df.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} {selected_tf} — Fixed Non-Shifting Visualizer",
+      f"{selected_symbol} {selected_tf} — 4H Anchor Zone Visualizer",
       color="white",
       fontsize=14,
   )
