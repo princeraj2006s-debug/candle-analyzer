@@ -164,7 +164,11 @@ class TWTMultiTFEngine:
           "low": float(r["Low"])
       })
 
-    latest_date = candles_4h[-1]["date"] if candles_h4 := candles_4h else datetime.now().date()
+    if candles_4h:
+      latest_date = candles_4h[-1]["date"]
+    else:
+      latest_date = datetime.now().date()
+
     today_4h = [c for c in candles_4h if c["date"] == latest_date]
     if not today_4h:
       today_4h = candles_4h
@@ -203,7 +207,6 @@ class TWTMultiTFEngine:
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
       age_min = (current_utc_time - dt_utc).total_seconds() / 60.0
 
-      self.candles_5m.candles if hasattr(self, 'candles') else None
       self.candles_5m.append({
           "id": idx + 1,
           "time": dt_user.strftime("%H:%M"),
