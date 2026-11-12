@@ -12,7 +12,7 @@ from streamlit_autorefresh import st_autorefresh
 # STREAMLIT PAGE CONFIGURATION
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="TWT Multi-Asset Mid-Zone Precision Bot",
+    page_title="TWT Multi-Asset Safe Trend-Filtered Bot",
     page_icon="⚡",
     layout="wide",
 )
@@ -30,7 +30,7 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 # Safe Auto-refresh every 30 seconds
 count = st_autorefresh(interval=30000, key="twt_multi_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA — Multi-Asset Mid-Zone Precision Engine")
+st.title("⚡ TRADE WITH TUCKYAA — Safe Trend-Filtered Engine")
 
 # ---------------------------------------------------------
 # SIDEBAR CONFIGURATION
@@ -55,9 +55,11 @@ selected_tf = st.sidebar.selectbox(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Mid-Zone Rules")
-st.sidebar.text("Demand Midpoint ➔ Green Candle ➔ BUY")
-st.sidebar.text("Supply Midpoint ➔ Red Candle   ➔ SELL")
+st.sidebar.markdown("#### Safe Protection Rules")
+st.sidebar.text("Trend Filter : EMA 50 Alignment Check")
+st.sidebar.text("Safe Buffer  : 1.8x ATR Wider Stop Loss")
+st.sidebar.text("Supply Zone  : Formed 12:00 AM - 03:00 AM")
+st.sidebar.text("Demand Zone  : Formed 04:00 AM - 06:00 AM")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -96,7 +98,7 @@ def get_decimals(price):
 # DATA FETCHING MODULE WITH CCXT
 # ---------------------------------------------------------
 @st.cache_data(ttl=30)
-def fetch_multi_asset_ohlcv(symbol, timeframe="5m", limit=180):
+def fetch_multi_asset_ohlcv(symbol, timeframe="5m", limit=300):
   exchanges_to_try = [
       (ccxt.binance, symbol),
       (ccxt.bybit, symbol),
@@ -123,16 +125,16 @@ def fetch_multi_asset_ohlcv(symbol, timeframe="5m", limit=180):
 
 
 # ---------------------------------------------------------
-# MID-ZONE PRECISION ENGINE
+# SAFE TREND-FILTERED ENGINE
 # ---------------------------------------------------------
-class TWTMultiAssetMidZoneEngine:
+class TWTSafeEngine:
 
   def __init__(self, df, symbol, user_tz):
     self.df = df
     self.symbol = symbol
     self.user_tz = user_tz
     self.candles = []
-    self.signals = []
+    self.recent_signals = []
     self.history = []
     self.demand_box = None
     self.supply_box = None
@@ -143,7 +145,6 @@ class TWTMultiAssetMidZoneEngine:
     if self.df is None or self.df.empty:
       return
 
-    IST = timezone(timedelta(hours=5, minutes=30))
     current_utc_time = datetime.now(timezone.utc)
 
     self.df["TR"] = np.maximum(
@@ -154,10 +155,12 @@ class TWTMultiAssetMidZoneEngine:
         ),
     )
     self.df["ATR"] = self.df["TR"].rolling(14).mean()
+    self.df["EMA50"] = self.df["Close"].ewm(span=50, adjust=False).mean()
 
     for idx, row in enumerate(self.df.iterrows()):
       dt_utc = row[0]
-      dt_ist = dt_utc.astimezone(IST)
+      if dt_utc.tzinfo is None:
+        dt_utc = dt_utc.replace(tzinfo=timezone.utc)
       dt_user_tz = dt_utc.astimezone(self.user_tz)
       timestamp_str = dt_user_tz.strftime("%H:%M")
 
@@ -170,6 +173,7 @@ class TWTMultiAssetMidZoneEngine:
           float(r["Volume"]),
       )
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
+      ema50 = float(r["EMA50"]) if not pd.isna(r["EMA50"]) else c
 
       age_minutes = (current_utc_time - dt_utc).total_seconds() / 60.0
       is_within_1hr = age_minutes <= 60.0
@@ -177,8 +181,9 @@ class TWTMultiAssetMidZoneEngine:
       self.candles.append({
           "id": idx + 1,
           "time": timestamp_str,
-          "dt_ist": dt_ist,
           "dt_user": dt_user_tz,
+          "time_obj": dt_user_tz.time(),
+          "date": dt_user_tz.date(),
           "color": "Green" if c >= o else "Red",
           "open": o,
           "high": h,
@@ -186,140 +191,161 @@ class TWTMultiAssetMidZoneEngine:
           "close": c,
           "volume": v,
           "atr": atr,
+          "ema50": ema50,
           "is_within_1hr": is_within_1hr,
       })
 
-    all_lows = [c["low"] for c in self.candles]
-    all_highs = [c["high"] for c in self.candles]
-
-    if not all_lows or not all_highs:
+    if not self.candles:
       return
 
-    min_price = min(all_lows)
-    max_price = max(all_highs)
-    total_range = max_price - min_price
+    latest_date = self.candles[-1]["date"]
+    today_candles = [c for c in self.candles if c["date"] == latest_date]
+    if not today_candles:
+      today_candles = self.candles
 
-    # Structural Zones (~22% range each) & Midpoints
-    demand_zone_low = min_price
-    demand_zone_high = min_price + (total_range * 0.22)
-    self.demand_box = (demand_zone_low, demand_zone_high)
-    self.demand_mid = (demand_zone_low + demand_zone_high) / 2.0
+    # 1. SUPPLY ZONE: Formed strictly between 00:00 AM and 03:00 AM
+    supply_build_candles = [
+        c for c in today_candles if time(0, 0) <= c["time_obj"] < time(3, 0)
+    ]
+    if supply_build_candles:
+      s_lows = [c["low"] for c in supply_build_candles]
+      s_highs = [c["high"] for c in supply_build_candles]
+      s_min, s_max = min(s_lows), max(s_highs)
+      s_range = s_max - s_min if s_max > s_min else (s_max * 0.005)
 
-    supply_zone_high = max_price
-    supply_zone_low = max_price - (total_range * 0.22)
-    self.supply_box = (supply_zone_low, supply_zone_high)
-    self.supply_mid = (supply_zone_low + supply_zone_high) / 2.0
+      supply_zone_high = s_max
+      supply_zone_low = s_max - (s_range * 0.25)
+      self.supply_box = (supply_zone_low, supply_zone_high)
+      self.supply_mid = (supply_zone_low + supply_zone_high) / 2.0
 
-    latest_buy = None
-    latest_sell = None
+    # 2. DEMAND ZONE: Formed strictly between 04:00 AM and 06:00 AM
+    demand_build_candles = [
+        c for c in today_candles if time(4, 0) <= c["time_obj"] < time(6, 0)
+    ]
+    if demand_build_candles:
+      d_lows = [c["low"] for c in demand_build_candles]
+      d_highs = [c["high"] for c in demand_build_candles]
+      d_min, d_max = min(d_lows), max(d_highs)
+      d_range = d_max - d_min if d_max > d_min else (d_min * 0.005)
 
-    # Scan backwards to get 1 Buy and 1 Sell Midpoint entry
-    for c in reversed(self.candles):
+      demand_zone_low = d_min
+      demand_zone_high = d_min + (d_range * 0.25)
+      self.demand_box = (demand_zone_low, demand_zone_high)
+      self.demand_mid = (demand_zone_low + demand_zone_high) / 2.0
+
+    best_buy = None
+    best_sell = None
+    all_detected = []
+
+    for c in today_candles:
       atr = c["atr"]
+      ema = c["ema50"]
       dec = get_decimals(c["close"])
 
-      # BUY Entry: Low touches Demand Midpoint & Green candle
-      if not latest_buy and c["low"] <= self.demand_mid and c["color"] == "Green":
-        sl = round(demand_zone_low - (1.0 * atr), dec)
-        tp1 = round(c["close"] + (1.2 * atr), dec)
-        tp2 = round(c["close"] + (2.5 * atr), dec)
-        tp3 = round(c["close"] + (4.0 * atr), dec)
+      # SELL ENTRY: Post-3AM + Supply Mid Rejection + Price BELOW EMA50 (Bearish confirmation)
+      if (
+          best_sell is None
+          and self.supply_box is not None
+          and c["time_obj"] >= time(3, 0)
+      ):
+        if c["high"] >= self.supply_mid and c["color"] == "Red" and c["close"] < ema:
+          sl = round(self.supply_box[1] + (1.8 * atr), dec)  # Wider safe SL
+          tp1 = round(c["close"] - (1.2 * atr), dec)
+          tp2 = round(c["close"] - (2.5 * atr), dec)
+          tp3 = round(c["close"] - (4.0 * atr), dec)
 
-        latest_buy = {
-            "Asset": self.symbol,
-            "Time": c["time"],
-            "Candle #": c["id"],
-            "Type": "BUY 🟢",
-            "Setup": "Demand Midpoint Bounce",
-            "Entry Price": round(c["close"], dec),
-            "Stop Loss (SL)": sl,
-            "TP 1": tp1,
-            "TP 2": tp2,
-            "TP 3": tp3,
-            "Is_Within_1hr": c["is_within_1hr"],
-        }
+          best_sell = {
+              "Asset": self.symbol,
+              "Date": str(c["date"]),
+              "Time": c["time"],
+              "Candle #": c["id"],
+              "Type": "SELL 🔴",
+              "Setup": "Safe Supply Rejection + EMA Filter",
+              "Entry Price": round(c["close"], dec),
+              "Stop Loss (SL)": sl,
+              "TP 1": tp1,
+              "TP 2": tp2,
+              "TP 3": tp3,
+              "Is_Within_1hr": c["is_within_1hr"],
+          }
+          all_detected.append(best_sell)
 
-      # SELL Entry: High touches Supply Midpoint & Red candle
-      if not latest_sell and c["high"] >= self.supply_mid and c["color"] == "Red":
-        sl = round(supply_zone_high + (1.0 * atr), dec)
-        tp1 = round(c["close"] - (1.2 * atr), dec)
-        tp2 = round(c["close"] - (2.5 * atr), dec)
-        tp3 = round(c["close"] - (4.0 * atr), dec)
+      # BUY ENTRY: Post-6AM + Demand Mid Bounce + Price ABOVE EMA50 (Bullish confirmation)
+      if (
+          best_buy is None
+          and self.demand_box is not None
+          and c["time_obj"] >= time(6, 0)
+      ):
+        if c["low"] <= self.demand_mid and c["color"] == "Green" and c["close"] > ema:
+          sl = round(self.demand_box[0] - (1.8 * atr), dec)  # Wider safe SL
+          tp1 = round(c["close"] + (1.2 * atr), dec)
+          tp2 = round(c["close"] + (2.5 * atr), dec)
+          tp3 = round(c["close"] + (4.0 * atr), dec)
 
-        latest_sell = {
-            "Asset": self.symbol,
-            "Time": c["time"],
-            "Candle #": c["id"],
-            "Type": "SELL 🔴",
-            "Setup": "Supply Midpoint Rejection",
-            "Entry Price": round(c["close"], dec),
-            "Stop Loss (SL)": sl,
-            "TP 1": tp1,
-            "TP 2": tp2,
-            "TP 3": tp3,
-            "Is_Within_1hr": c["is_within_1hr"],
-        }
+          best_buy = {
+              "Asset": self.symbol,
+              "Date": str(c["date"]),
+              "Time": c["time"],
+              "Candle #": c["id"],
+              "Type": "BUY 🟢",
+              "Setup": "Safe Demand Bounce + EMA Filter",
+              "Entry Price": round(c["close"], dec),
+              "Stop Loss (SL)": sl,
+              "TP 1": tp1,
+              "TP 2": tp2,
+              "TP 3": tp3,
+              "Is_Within_1hr": c["is_within_1hr"],
+          }
+          all_detected.append(best_buy)
 
-      if latest_buy and latest_sell:
-        break
-
-    collected = []
-    if latest_buy:
-      collected.append(latest_buy)
-    if latest_sell:
-      collected.append(latest_sell)
-
-    self.history = collected
-    self.signals = [s for s in collected if s.get("Is_Within_1hr", False)]
+    self.history = all_detected
+    self.recent_signals = [s for s in all_detected if s.get("Is_Within_1hr", False)]
 
 
 # ---------------------------------------------------------
 # MASTER MULTI-ASSET SCANNER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("🔥 TWT Master Live Signal Dashboard (20+ Assets)")
+st.subheader("🔥 TWT Master Safe Filtered Dashboard (20+ Assets)")
 
-master_signals = []
+master_recent = []
 asset_engines = {}
 
 
 def scan_asset(sym):
-  df = fetch_multi_asset_ohlcv(sym, selected_tf, limit=180)
+  df = fetch_multi_asset_ohlcv(sym, selected_tf, limit=300)
   if df is not None and not df.empty:
-    engine = TWTMultiAssetMidZoneEngine(df, sym, active_tz)
+    engine = TWTSafeEngine(df, sym, active_tz)
     engine.calculate_and_scan()
-    recent_sigs = engine.signals
-    return sym, engine, recent_sigs
+    return sym, engine, engine.recent_signals
   return sym, None, []
 
 
-with st.spinner("⚡ Parallel scanning 20+ assets for Mid-Zone entries..."):
+with st.spinner("⚡ Parallel scanning 20+ assets with Trend Filters & Safe SL..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
-      sym, engine, sigs = future.result()
+      sym, engine, recent_sigs = future.result()
       if engine:
         asset_engines[sym] = engine
-      if sigs:
-        master_signals.extend(sigs)
+      if recent_sigs:
+        master_recent.extend(recent_sigs)
 
-if master_signals:
-  st.success(f"✅ Found {len(master_signals)} active Mid-Zone setup(s) across 20+ assets!")
-  df_display = pd.DataFrame(master_signals).drop(
-      columns=["Is_Within_1hr"], errors="ignore"
-  )
+if master_recent:
+  st.success(f"✅ Found {len(master_recent)} safe filtered trade(s) in the last 1 hour!")
+  df_display = pd.DataFrame(master_recent).drop(columns=["Is_Within_1hr"], errors="ignore")
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active signals in the last 1 hour across 20+ assets. Select an asset below to inspect its zones.")
+  st.info("ℹ️ No recent trades in the last 1 hour across assets. Check individual asset history below.")
 
 # ---------------------------------------------------------
 # MANUAL ASSET INSPECTOR & CHART VIEWER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("📊 Individual Asset Inspector & Chart")
+st.subheader("📊 Individual Asset Inspector & History")
 
 selected_symbol = st.selectbox(
-    "🔍 Select Asset to Load Mid-Zone Chart & Entries",
+    "🔍 Select Asset to Load Chart",
     options=ASSET_LIST,
     index=0,
 )
@@ -327,8 +353,8 @@ selected_symbol = st.selectbox(
 if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
-  df = fetch_multi_asset_ohlcv(selected_symbol, selected_tf, limit=180)
-  bot = TWTMultiAssetMidZoneEngine(df, selected_symbol, active_tz)
+  df = fetch_multi_asset_ohlcv(selected_symbol, selected_tf, limit=300)
+  bot = TWTSafeEngine(df, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.df is not None and not bot.df.empty:
@@ -338,16 +364,16 @@ if bot.df is not None and not bot.df.empty:
   with col1:
     st.metric(label=f"Current {selected_symbol} Price", value=f"{curr_p:.2f}")
   with col2:
-    st.metric(label="Available Mid-Zone Signals", value=len(bot.history))
+    st.metric(label="Locked Entries Today", value=len(bot.history))
   with col3:
     st.metric(label="Timezone", value=selected_tz_name.split(")")[0] + ")")
 
   if bot.history:
-    st.markdown(f"### 📋 Exact Mid-Zone Entries Feed for {selected_symbol}")
-    df_history = pd.DataFrame(bot.history).drop(
-        columns=["Is_Within_1hr"], errors="ignore"
-    )
+    st.markdown(f"### 📋 Locked History Feed for {selected_symbol}")
+    df_history = pd.DataFrame(bot.history).drop(columns=["Is_Within_1hr"], errors="ignore")
     st.dataframe(df_history, width="stretch")
+  else:
+    st.info("ℹ️ No entries locked yet for today (Trend & Zone criteria pending).")
 
   # --- CLEAN CANDLESTICK CHART RENDERING ---
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
@@ -361,15 +387,16 @@ if bot.df is not None and not bot.df.empty:
     ax.bar(c["id"], body_height, bottom=lower_val, color=col, width=0.6, edgecolor=col)
     ax.vlines(c["id"], c["low"], c["high"], color=col, linewidth=1.2)
 
-  # Plot Demand and Supply Zones & Midlines
+  # Plot Demand Zone
   if bot.demand_box:
     d_low, d_high = bot.demand_box
-    ax.axhspan(d_low, d_high, color="#26a69a", alpha=0.25, label="Demand Zone (Buy Support)")
+    ax.axhspan(d_low, d_high, color="#26a69a", alpha=0.25, label="Demand Zone (4AM-6AM)")
     ax.axhline(bot.demand_mid, color="#00e676", linestyle=":", linewidth=1.5, label="Demand Midpoint")
 
+  # Plot Supply Zone
   if bot.supply_box:
     s_low, s_high = bot.supply_box
-    ax.axhspan(s_low, s_high, color="#ef5350", alpha=0.25, label="Supply Zone (Sell Resistance)")
+    ax.axhspan(s_low, s_high, color="#ef5350", alpha=0.25, label="Supply Zone (12AM-3AM)")
     ax.axhline(bot.supply_mid, color="#ff5252", linestyle=":", linewidth=1.5, label="Supply Midpoint")
 
   lows = [c["low"] for c in bot.candles]
@@ -396,7 +423,7 @@ if bot.df is not None and not bot.df.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} {selected_tf} — Mid-Zone Precision Visualizer",
+      f"{selected_symbol} {selected_tf} — Safe Filtered Visualizer",
       color="white",
       fontsize=14,
   )
