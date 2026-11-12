@@ -12,7 +12,7 @@ from streamlit_autorefresh import st_autorefresh
 # STREAMLIT PAGE CONFIGURATION
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="TWT 4H Anchor Zone Precision Bot",
+    page_title="TWT 4H Zone & 5M Entry Precision Bot",
     page_icon="⚡",
     layout="wide",
 )
@@ -30,7 +30,7 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 # Safe Auto-refresh every 30 seconds
 count = st_autorefresh(interval=30000, key="twt_multi_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA — 4H Anchor Zone Precision Engine")
+st.title("⚡ TRADE WITH TUCKYAA — 4H Zone & 5M Entry Engine")
 
 # ---------------------------------------------------------
 # SIDEBAR CONFIGURATION
@@ -50,17 +50,17 @@ selected_tz_name = st.sidebar.selectbox(
 )
 active_tz = ZoneInfo(selected_tz_name)
 
-selected_tf = st.sidebar.selectbox(
-    "⏱️ Timeframe", options=["4h", "1h", "30m", "15m", "5m"], index=0
-)
+# Fixed Scan Timeframe for Entries
+selected_tf = "5m"
+st.sidebar.text("⏱️ Entry Timeframe : 5m (Fixed)")
+st.sidebar.text("📊 Zone Timeframe  : 4h (Anchor ~01:30)")
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### 4H Anchor Zone Rules")
-st.sidebar.text("Anchor Candle : ~01:30 AM")
-st.sidebar.text("Supply Zone   : Anchor High")
-st.sidebar.text("Demand Zone   : Anchor Low")
-st.sidebar.text("BUY  : Green Close in Demand Zone (1/day)")
-st.sidebar.text("SELL : Red Close in Supply Zone (1/day)")
+st.sidebar.markdown("#### Rules")
+st.sidebar.text("Supply Zone : 4H Anchor High")
+st.sidebar.text("Demand Zone : 4H Anchor Low")
+st.sidebar.text("BUY  : 5M Green Close in Demand Zone (1/day)")
+st.sidebar.text("SELL : 5M Red Close in Supply Zone (1/day)")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -99,7 +99,7 @@ def get_decimals(price):
 # DATA FETCHING MODULE WITH CCXT
 # ---------------------------------------------------------
 @st.cache_data(ttl=30)
-def fetch_multi_asset_ohlcv(symbol, timeframe="4h", limit=100):
+def fetch_data(symbol):
   exchanges_to_try = [
       (ccxt.binance, symbol),
       (ccxt.bybit, symbol),
@@ -111,164 +111,153 @@ def fetch_multi_asset_ohlcv(symbol, timeframe="4h", limit=100):
       exchange = ex_class({"enableRateLimit": True, "timeout": 15000})
       exchange.load_markets()
       if sym in exchange.markets:
-        ohlcv = exchange.fetch_ohlcv(sym, timeframe=timeframe, limit=limit)
-        if ohlcv:
-          df = pd.DataFrame(
-              ohlcv,
-              columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
-          )
-          df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
-          df = df.set_index("timestamp")
-          return df
+        # Fetch 4H data for Zones
+        ohlcv_4h = exchange.fetch_ohlcv(sym, timeframe="4h", limit=50)
+        # Fetch 5M data for Entries
+        ohlcv_5m = exchange.fetch_ohlcv(sym, timeframe="5m", limit=300)
+        if ohlcv_4h and ohlcv_5m:
+          df_4h = pd.DataFrame(ohlcv_4h, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
+          df_4h["timestamp"] = pd.to_datetime(df_4h["timestamp"], unit="ms", utc=True)
+          df_4h = df_4h.set_index("timestamp")
+
+          df_5m = pd.DataFrame(ohlcv_5m, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
+          df_5m["timestamp"] = pd.to_datetime(df_5m["timestamp"], unit="ms", utc=True)
+          df_5m = df_5m.set_index("timestamp")
+          return df_4h, df_5m
     except Exception:
       continue
-  return None
+  return None, None
 
 
 # ---------------------------------------------------------
-# 4H ANCHOR ZONE ENGINE
+# MULTI-TIMEFRAME ENGINE
 # ---------------------------------------------------------
-class TWTAnchorZoneEngine:
+class TWTMultiTFEngine:
 
-  def __init__(self, df, symbol, user_tz):
-    self.df = df
+  def __init__(self, df_4h, df_5m, symbol, user_tz):
+    self.df_4h = df_4h
+    self.df_5m = df_5m
     self.symbol = symbol
     self.user_tz = user_tz
-    self.candles = []
-    self.signals = []
+    self.candles_5m = []
     self.history = []
+    self.signals = []
     self.demand_box = None
     self.supply_box = None
 
   def calculate_and_scan(self):
-    if self.df is None or self.df.empty:
+    if self.df_4h is None or self.df_4h.empty or self.df_5m is None or self.df_5m.empty:
       return
 
-    IST = timezone(timedelta(hours=5, minutes=30))
     current_utc_time = datetime.now(timezone.utc)
 
-    self.df["TR"] = np.maximum(
-        self.df["High"] - self.df["Low"],
-        np.maximum(
-            abs(self.df["High"] - self.df["Close"].shift(1)),
-            abs(self.df["Low"] - self.df["Close"].shift(1)),
-        ),
-    )
-    self.df["ATR"] = self.df["TR"].rolling(14).mean()
-
-    for idx, row in enumerate(self.df.iterrows()):
+    # 1. Calculate 4H Anchor Zones
+    candles_4h = []
+    for row in self.df_4h.iterrows():
       dt_utc = row[0]
-      dt_ist = dt_utc.astimezone(IST)
-      dt_user_tz = dt_utc.astimezone(self.user_tz)
-      timestamp_str = dt_user_tz.strftime("%H:%M")
-
+      dt_user = dt_utc.astimezone(self.user_tz)
       r = row[1]
-      o, h, l, c, v = (
-          float(r["Open"]),
-          float(r["High"]),
-          float(r["Low"]),
-          float(r["Close"]),
-          float(r["Volume"]),
-      )
-      atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
-
-      age_minutes = (current_utc_time - dt_utc).total_seconds() / 60.0
-      is_within_1hr = age_minutes <= 60.0
-
-      self.candles.append({
-          "id": idx + 1,
-          "time": timestamp_str,
-          "time_obj": dt_user_tz.time(),
-          "date": dt_user_tz.date(),
-          "dt_ist": dt_ist,
-          "dt_user": dt_user_tz,
-          "color": "Green" if c >= o else "Red",
-          "open": o,
-          "high": h,
-          "low": l,
-          "close": c,
-          "volume": v,
-          "atr": atr,
-          "is_within_1hr": is_within_1hr,
+      candles_4h.append({
+          "date": dt_user.date(),
+          "time_obj": dt_user.time(),
+          "high": float(r["High"]),
+          "low": float(r["Low"])
       })
 
-    if not self.candles:
-      return
+    latest_date = candles_4h[-1]["date"] if candles_h4 := candles_4h else datetime.now().date()
+    today_4h = [c for c in candles_4h if c["date"] == latest_date]
+    if not today_4h:
+      today_4h = candles_4h
 
-    latest_date = self.candles[-1]["date"]
-    today_candles = [c for c in self.candles if c["date"] == latest_date]
-    if not today_candles:
-      today_candles = self.candles
-
-    # Find the anchor candle closest to 01:30 AM in user timezone
-    anchor_target_time = time(1, 30)
-    anchor_candle = min(
-        today_candles,
-        key=lambda x: abs(
-            datetime.combine(latest_date, x["time_obj"])
-            - datetime.combine(latest_date, anchor_target_time)
-        ),
-        default=today_candles[0],
+    # Find anchor candle closest to 01:30 AM
+    anchor_target = time(1, 30)
+    anchor_4h = min(
+        today_4h,
+        key=lambda x: abs(datetime.combine(latest_date, x["time_obj"]) - datetime.combine(latest_date, anchor_target)),
+        default=today_4h[0]
     )
 
-    # Supply Zone = Anchor High, Demand Zone = Anchor Low (Fixed & Non-shifting)
-    s_high = anchor_candle["high"]
-    s_low = s_high - ((anchor_candle["high"] - anchor_candle["low"]) * 0.3) if anchor_candle["high"] > anchor_candle["low"] else s_high * 0.995
+    s_high = anchor_4h["high"]
+    s_low = s_high - ((anchor_4h["high"] - anchor_4h["low"]) * 0.3)
     self.supply_box = (s_low, s_high)
 
-    d_low = anchor_candle["low"]
-    d_high = d_low + ((anchor_candle["high"] - anchor_candle["low"]) * 0.3) if anchor_candle["high"] > anchor_candle["low"] else d_low * 1.005
+    d_low = anchor_4h["low"]
+    d_high = d_low + ((anchor_4h["high"] - anchor_4h["low"]) * 0.3)
     self.demand_box = (d_low, d_high)
+
+    # 2. Process 5M Candles for Entries
+    self.df_5m["TR"] = np.maximum(
+        self.df_5m["High"] - self.df_5m["Low"],
+        np.maximum(
+            abs(self.df_5m["High"] - self.df_5m["Close"].shift(1)),
+            abs(self.df_5m["Low"] - self.df_5m["Close"].shift(1)),
+        ),
+    )
+    self.df_5m["ATR"] = self.df_5m["TR"].rolling(14).mean()
+
+    for idx, row in enumerate(self.df_5m.iterrows()):
+      dt_utc = row[0]
+      dt_user = dt_utc.astimezone(self.user_tz)
+      r = row[1]
+      o, h, l, c, v = float(r["Open"]), float(r["High"]), float(r["Low"]), float(r["Close"]), float(r["Volume"])
+      atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
+      age_min = (current_utc_time - dt_utc).total_seconds() / 60.0
+
+      self.candles_5m.candles if hasattr(self, 'candles') else None
+      self.candles_5m.append({
+          "id": idx + 1,
+          "time": dt_user.strftime("%H:%M"),
+          "date": dt_user.date(),
+          "color": "Green" if c >= o else "Red",
+          "open": o, "high": h, "low": l, "close": c,
+          "atr": atr,
+          "is_within_1hr": age_min <= 60.0
+      })
+
+    today_5m = [c for c in self.candles_5m if c["date"] == latest_date]
+    if not today_5m:
+      today_5m = self.candles_5m
 
     first_buy = None
     first_sell = None
 
-    # Scan forward chronologically to lock the FIRST valid entry of the day
-    for c in today_candles:
+    for c in today_5m:
       atr = c["atr"]
       dec = get_decimals(c["close"])
 
-      # BUY Entry: Green candle closes inside Demand Zone
+      # BUY Entry: 5M Green candle close inside Demand Zone
       if not first_buy and c["color"] == "Green" and self.demand_box[0] <= c["close"] <= self.demand_box[1]:
         sl = round(self.demand_box[0] - (1.5 * atr), dec)
-        tp1 = round(c["close"] + (1.2 * atr), dec)
-        tp2 = round(c["close"] + (2.5 * atr), dec)
-        tp3 = round(c["close"] + (4.0 * atr), dec)
-
         first_buy = {
             "Asset": self.symbol,
             "Date": str(c["date"]),
             "Time": c["time"],
             "Candle #": c["id"],
             "Type": "BUY 🟢",
-            "Setup": "Demand Zone Green Close",
+            "Setup": "5M Demand Zone Green Close",
             "Entry Price": round(c["close"], dec),
             "Stop Loss (SL)": sl,
-            "TP 1": tp1,
-            "TP 2": tp2,
-            "TP 3": tp3,
+            "TP 1": round(c["close"] + (1.2 * atr), dec),
+            "TP 2": round(c["close"] + (2.5 * atr), dec),
+            "TP 3": round(c["close"] + (4.0 * atr), dec),
             "Is_Within_1hr": c["is_within_1hr"],
         }
 
-      # SELL Entry: Red candle closes inside Supply Zone
+      # SELL Entry: 5M Red candle close inside Supply Zone
       if not first_sell and c["color"] == "Red" and self.supply_box[0] <= c["close"] <= self.supply_box[1]:
         sl = round(self.supply_box[1] + (1.5 * atr), dec)
-        tp1 = round(c["close"] - (1.2 * atr), dec)
-        tp2 = round(c["close"] - (2.5 * atr), dec)
-        tp3 = round(c["close"] - (4.0 * atr), dec)
-
         first_sell = {
             "Asset": self.symbol,
             "Date": str(c["date"]),
             "Time": c["time"],
             "Candle #": c["id"],
             "Type": "SELL 🔴",
-            "Setup": "Supply Zone Red Close",
+            "Setup": "5M Supply Zone Red Close",
             "Entry Price": round(c["close"], dec),
             "Stop Loss (SL)": sl,
-            "TP 1": tp1,
-            "TP 2": tp2,
-            "TP 3": tp3,
+            "TP 1": round(c["close"] - (1.2 * atr), dec),
+            "TP 2": round(c["close"] - (2.5 * atr), dec),
+            "TP 3": round(c["close"] - (4.0 * atr), dec),
             "Is_Within_1hr": c["is_within_1hr"],
         }
 
@@ -283,7 +272,7 @@ class TWTAnchorZoneEngine:
 
 
 # ---------------------------------------------------------
-# MASTER MULTI-ASSET SCANNER
+# MASTER SCANNER
 # ---------------------------------------------------------
 st.markdown("---")
 st.subheader("🔥 TWT Master Live Signal Dashboard (20+ Assets)")
@@ -293,16 +282,15 @@ asset_engines = {}
 
 
 def scan_asset(sym):
-  df = fetch_multi_asset_ohlcv(sym, selected_tf, limit=100)
-  if df is not None and not df.empty:
-    engine = TWTAnchorZoneEngine(df, sym, active_tz)
+  df_4h, df_5m = fetch_data(sym)
+  if df_4h is not None and df_5m is not None:
+    engine = TWTMultiTFEngine(df_4h, df_5m, sym, active_tz)
     engine.calculate_and_scan()
-    recent_sigs = engine.signals
-    return sym, engine, recent_sigs
+    return sym, engine, engine.signals
   return sym, None, []
 
 
-with st.spinner("⚡ Parallel scanning 20+ assets with 4H Anchor Zones..."):
+with st.spinner("⚡ Scanning 20+ assets (4H Zones + 5M Entries)..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
@@ -313,22 +301,20 @@ with st.spinner("⚡ Parallel scanning 20+ assets with 4H Anchor Zones..."):
         master_signals.extend(sigs)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} locked valid setup(s) across 20+ assets!")
-  df_display = pd.DataFrame(master_signals).drop(
-      columns=["Is_Within_1hr"], errors="ignore"
-  )
+  st.success(f"✅ Found {len(master_signals)} active setup(s) across assets!")
+  df_display = pd.DataFrame(master_signals).drop(columns=["Is_Within_1hr"], errors="ignore")
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active valid signals in the last 1 hour matching zone close rules.")
+  st.info("ℹ️ No active 5M zone-close signals in the last 1 hour.")
 
 # ---------------------------------------------------------
-# MANUAL ASSET INSPECTOR & CHART VIEWER
+# MANUAL ASSET INSPECTOR & CHART VIEWER (5M Chart)
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("📊 Individual Asset Inspector & Chart")
+st.subheader("📊 Individual Asset Inspector (5M Chart with 4H Zones)")
 
 selected_symbol = st.selectbox(
-    "🔍 Select Asset to Load Anchor Zone Chart",
+    "🔍 Select Asset to Load Chart",
     options=ASSET_LIST,
     index=0,
 )
@@ -336,12 +322,12 @@ selected_symbol = st.selectbox(
 if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
-  df = fetch_multi_asset_ohlcv(selected_symbol, selected_tf, limit=100)
-  bot = TWTAnchorZoneEngine(df, selected_symbol, active_tz)
+  df_4h, df_5m = fetch_data(selected_symbol)
+  bot = TWTMultiTFEngine(df_4h, df_5m, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
-if bot.df is not None and not bot.df.empty:
-  curr_p = bot.candles[-1]["close"] if bot.candles else 0.0
+if bot.candles_5m:
+  curr_p = bot.candles_5m[-1]["close"]
 
   col1, col2, col3 = st.columns(3)
   with col1:
@@ -353,14 +339,12 @@ if bot.df is not None and not bot.df.empty:
 
   if bot.history:
     st.markdown(f"### 📋 Locked Entries Feed for {selected_symbol}")
-    df_history = pd.DataFrame(bot.history).drop(
-        columns=["Is_Within_1hr"], errors="ignore"
-    )
+    df_history = pd.DataFrame(bot.history).drop(columns=["Is_Within_1hr"], errors="ignore")
     st.dataframe(df_history, width="stretch")
 
-  # --- CLEAN CANDLESTICK CHART RENDERING ---
+  # --- PLOT 5M CANDLESTICK CHART ---
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
-  for c in bot.candles:
+  for c in bot.candles_5m:
     col = "#26a69a" if c["close"] >= c["open"] else "#ef5350"
     lower_val = min(c["open"], c["close"])
     body_height = abs(c["close"] - c["open"])
@@ -370,17 +354,17 @@ if bot.df is not None and not bot.df.empty:
     ax.bar(c["id"], body_height, bottom=lower_val, color=col, width=0.6, edgecolor=col)
     ax.vlines(c["id"], c["low"], c["high"], color=col, linewidth=1.2)
 
-  # Plot Demand and Supply Zones (Fixed & Non-shifting)
+  # Plot 4H Anchor Zones on 5M Chart
   if bot.demand_box:
     d_low, d_high = bot.demand_box
-    ax.axhspan(d_low, d_high, color="#26a69a", alpha=0.25, label="Demand Zone (01:30 Anchor Low)")
+    ax.axhspan(d_low, d_high, color="#26a69a", alpha=0.25, label="Demand Zone (4H Anchor Low)")
 
   if bot.supply_box:
     s_low, s_high = bot.supply_box
-    ax.axhspan(s_low, s_high, color="#ef5350", alpha=0.25, label="Supply Zone (01:30 Anchor High)")
+    ax.axhspan(s_low, s_high, color="#ef5350", alpha=0.25, label="Supply Zone (4H Anchor High)")
 
-  lows = [c["low"] for c in bot.candles]
-  highs = [c["high"] for c in bot.candles]
+  lows = [c["low"] for c in bot.candles_5m]
+  highs = [c["high"] for c in bot.candles_5m]
   if lows and highs:
     margin = (max(highs) - min(lows)) * 0.09
     if margin == 0:
@@ -403,7 +387,7 @@ if bot.df is not None and not bot.df.empty:
     )
 
   ax.set_title(
-      f"{selected_symbol} {selected_tf} — 4H Anchor Zone Visualizer",
+      f"{selected_symbol} 5m Chart — 4H Anchor Zones & Entries",
       color="white",
       fontsize=14,
   )
@@ -419,4 +403,4 @@ if bot.df is not None and not bot.df.empty:
 
   st.pyplot(fig)
 else:
-  st.error("Market data fetch failed. Please check your internet connection.")
+  st.error("Market data fetch failed or empty.")
