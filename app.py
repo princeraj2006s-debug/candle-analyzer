@@ -12,7 +12,7 @@ from streamlit_autorefresh import st_autorefresh
 # STREAMLIT PAGE CONFIGURATION
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="TWT Dual 4H Zone & 5M Entry Bot",
+    page_title="TWT Crystal Clean & Strict Dual Zone Bot",
     page_icon="⚡",
     layout="wide",
 )
@@ -30,7 +30,7 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 # Safe Auto-refresh every 30 seconds
 count = st_autorefresh(interval=30000, key="twt_multi_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA — Dual 4H Zone (01:30 & 05:30) Engine")
+st.title("⚡ TRADE WITH TUCKYAA — Crystal Clear & Strict Precision Engine")
 
 # ---------------------------------------------------------
 # SIDEBAR CONFIGURATION
@@ -50,17 +50,16 @@ selected_tz_name = st.sidebar.selectbox(
 )
 active_tz = ZoneInfo(selected_tz_name)
 
-# Fixed Scan Timeframe for Entries
 selected_tf = "5m"
 st.sidebar.text("⏱️ Entry Timeframe : 5m (Fixed)")
 st.sidebar.text("📊 Zone Timeframe  : 4h (01:30 & 05:30)")
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Dual Anchor Rules")
-st.sidebar.text("Zone 1 : 01:30 AM 4H High/Low (Post 01:30)")
-st.sidebar.text("Zone 2 : 05:30 AM 4H High/Low (Post 05:30)")
-st.sidebar.text("BUY    : 5M Green Close in Demand Zone")
-st.sidebar.text("SELL   : 5M Red Close in Supply Zone")
+st.sidebar.markdown("#### Strict Confluence Rules")
+st.sidebar.text("Demand Zone : 4H Low (Clear & Outlined)")
+st.sidebar.text("Supply Zone : 4H High (Clear & Outlined)")
+st.sidebar.text("BUY  : Strict Zone Bounce + EMA50 Up")
+st.sidebar.text("SELL : Strict Zone Rejection + EMA50 Down")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -111,9 +110,7 @@ def fetch_data(symbol):
       exchange = ex_class({"enableRateLimit": True, "timeout": 15000})
       exchange.load_markets()
       if sym in exchange.markets:
-        # Fetch 4H data for Zones
         ohlcv_4h = exchange.fetch_ohlcv(sym, timeframe="4h", limit=50)
-        # Fetch 5M data for Entries
         ohlcv_5m = exchange.fetch_ohlcv(sym, timeframe="5m", limit=300)
         if ohlcv_4h and ohlcv_5m:
           df_4h = pd.DataFrame(ohlcv_4h, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
@@ -130,9 +127,9 @@ def fetch_data(symbol):
 
 
 # ---------------------------------------------------------
-# DUAL ANCHOR MULTI-TIMEFRAME ENGINE
+# STRICT DUAL ANCHOR ENGINE
 # ---------------------------------------------------------
-class TWTDualAnchorEngine:
+class TWTCrystalStrictEngine:
 
   def __init__(self, df_4h, df_5m, symbol, user_tz):
     self.df_4h = df_4h
@@ -142,10 +139,8 @@ class TWTDualAnchorEngine:
     self.candles_5m = []
     self.history = []
     self.signals = []
-    # Anchor 1 (01:30 AM)
     self.demand_box_1 = None
     self.supply_box_1 = None
-    # Anchor 2 (05:30 AM)
     self.demand_box_2 = None
     self.supply_box_2 = None
 
@@ -153,7 +148,7 @@ class TWTDualAnchorEngine:
     high_val = anchor_candle["high"]
     low_val = anchor_candle["low"]
     rng = high_val - low_val
-    zone_thickness = (rng * 0.3) if rng > 0 else (high_val * 0.002)
+    zone_thickness = (rng * 0.25) if rng > 0 else (high_val * 0.002)
 
     supply_box = (high_val - zone_thickness, high_val)
     demand_box = (low_val, low_val + zone_thickness)
@@ -193,7 +188,7 @@ class TWTDualAnchorEngine:
     anchor_dt_1 = anchor_1["dt_user"]
     self.demand_box_1, self.supply_box_1 = self._build_zones(anchor_1)
 
-    # Anchor 2: ~05:30 AM (Only if 05:30 candle has formed)
+    # Anchor 2: ~05:30 AM
     anchor_2_candidates = [c for c in today_4h if c["time_obj"] >= time(5, 0)]
     anchor_2 = None
     anchor_dt_2 = None
@@ -205,7 +200,7 @@ class TWTDualAnchorEngine:
       anchor_dt_2 = anchor_2["dt_user"]
       self.demand_box_2, self.supply_box_2 = self._build_zones(anchor_2)
 
-    # 2. Process 5M Candles for Entries
+    # 2. Process 5M Candles & Indicators
     self.df_5m["TR"] = np.maximum(
         self.df_5m["High"] - self.df_5m["Low"],
         np.maximum(
@@ -214,6 +209,7 @@ class TWTDualAnchorEngine:
         ),
     )
     self.df_5m["ATR"] = self.df_5m["TR"].rolling(14).mean()
+    self.df_5m["EMA50"] = self.df_5m["Close"].ewm(span=50, adjust=False).mean()
 
     for idx, row in enumerate(self.df_5m.iterrows()):
       dt_utc = row[0]
@@ -221,6 +217,7 @@ class TWTDualAnchorEngine:
       r = row[1]
       o, h, l, c, v = float(r["Open"]), float(r["High"]), float(r["Low"]), float(r["Close"]), float(r["Volume"])
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
+      ema50 = float(r["EMA50"]) if not pd.isna(r["EMA50"]) else c
       age_min = (current_utc_time - dt_utc).total_seconds() / 60.0
 
       self.candles_5m.append({
@@ -230,7 +227,7 @@ class TWTDualAnchorEngine:
           "dt_user": dt_user,
           "color": "Green" if c >= o else "Red",
           "open": o, "high": h, "low": l, "close": c,
-          "atr": atr,
+          "atr": atr, "ema50": ema50,
           "is_within_1hr": age_min <= 60.0
       })
 
@@ -238,36 +235,38 @@ class TWTDualAnchorEngine:
     if not today_5m:
       today_5m = self.candles_5m
 
-    # Track 1 Buy & 1 Sell per Anchor Zone
     buy_1, sell_1 = None, None
     buy_2, sell_2 = None, None
 
     for c in today_5m:
       atr = c["atr"]
+      ema = c["ema50"]
       dec = get_decimals(c["close"])
+      body_size = abs(c["close"] - c["open"])
 
-      # --- ZONE 1 SCAN (Post 01:30 AM) ---
+      # --- ZONE 1 SCAN (Post 01:30 AM with Strict Confluence) ---
       if c["dt_user"] > anchor_dt_1 and self.demand_box_1 and self.supply_box_1:
-        if not buy_1 and c["color"] == "Green" and self.demand_box_1[0] <= c["close"] <= self.demand_box_1[1]:
+        # BUY: Green close in Demand 1 + Above EMA50 + Decent Body
+        if not buy_1 and c["color"] == "Green" and self.demand_box_1[0] <= c["close"] <= self.demand_box_1[1] and c["close"] > ema and body_size >= (0.3 * atr):
           sl = round(self.demand_box_1[0] - (1.5 * atr), dec)
-          buy_1 = self._format_signal(c, "BUY 🟢", "01:30 Zone Demand Close", sl, atr, dec, is_buy=True)
+          buy_1 = self._format_signal(c, "BUY 🟢", "Strict 01:30 Demand Bounce", sl, atr, dec, is_buy=True)
 
-        if not sell_1 and c["color"] == "Red" and self.supply_box_1[0] <= c["close"] <= self.supply_box_1[1]:
+        # SELL: Red close in Supply 1 + Below EMA50 + Decent Body
+        if not sell_1 and c["color"] == "Red" and self.supply_box_1[0] <= c["close"] <= self.supply_box_1[1] and c["close"] < ema and body_size >= (0.3 * atr):
           sl = round(self.supply_box_1[1] + (1.5 * atr), dec)
-          sell_1 = self._format_signal(c, "SELL 🔴", "01:30 Zone Supply Close", sl, atr, dec, is_buy=False)
+          sell_1 = self._format_signal(c, "SELL 🔴", "Strict 01:30 Supply Rejection", sl, atr, dec, is_buy=False)
 
-      # --- ZONE 2 SCAN (Post 05:30 AM) ---
+      # --- ZONE 2 SCAN (Post 05:30 AM with Strict Confluence) ---
       if anchor_dt_2 and c["dt_user"] > anchor_dt_2 and self.demand_box_2 and self.supply_box_2:
-        if not buy_2 and c["color"] == "Green" and self.demand_box_2[0] <= c["close"] <= self.demand_box_2[1]:
+        if not buy_2 and c["color"] == "Green" and self.demand_box_2[0] <= c["close"] <= self.demand_box_2[1] and c["close"] > ema and body_size >= (0.3 * atr):
           sl = round(self.demand_box_2[0] - (1.5 * atr), dec)
-          buy_2 = self._format_signal(c, "BUY 🟢", "05:30 Zone Demand Close", sl, atr, dec, is_buy=True)
+          buy_2 = self._format_signal(c, "BUY 🟢", "Strict 05:30 Demand Bounce", sl, atr, dec, is_buy=True)
 
-        if not sell_2 and c["color"] == "Red" and self.supply_box_2[0] <= c["close"] <= self.supply_box_2[1]:
+        if not sell_2 and c["color"] == "Red" and self.supply_box_2[0] <= c["close"] <= self.supply_box_2[1] and c["close"] < ema and body_size >= (0.3 * atr):
           sl = round(self.supply_box_2[1] + (1.5 * atr), dec)
-          sell_2 = self._format_signal(c, "SELL 🔴", "05:30 Zone Supply Close", sl, atr, dec, is_buy=False)
+          sell_2 = self._format_signal(c, "SELL 🔴", "Strict 05:30 Supply Rejection", sl, atr, dec, is_buy=False)
 
     collected = [sig for sig in [buy_1, sell_1, buy_2, sell_2] if sig is not None]
-    # Sort chronologically by Candle #
     collected.sort(key=lambda x: x["Candle #"])
 
     self.history = collected
@@ -304,13 +303,13 @@ asset_engines = {}
 def scan_asset(sym):
   df_4h, df_5m = fetch_data(sym)
   if df_4h is not None and df_5m is not None:
-    engine = TWTDualAnchorEngine(df_4h, df_5m, sym, active_tz)
+    engine = TWTCrystalStrictEngine(df_4h, df_5m, sym, active_tz)
     engine.calculate_and_scan()
     return sym, engine, engine.signals
   return sym, None, []
 
 
-with st.spinner("⚡ Scanning 20+ assets (01:30 & 05:30 4H Zones + 5M Entries)..."):
+with st.spinner("⚡ Scanning 20+ assets with Crystal Clear Strict Rules..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
@@ -321,17 +320,17 @@ with st.spinner("⚡ Scanning 20+ assets (01:30 & 05:30 4H Zones + 5M Entries)..
         master_signals.extend(sigs)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} active setup(s) across assets!")
+  st.success(f"✅ Found {len(master_signals)} high-confluence setup(s) across assets!")
   df_display = pd.DataFrame(master_signals).drop(columns=["Is_Within_1hr"], errors="ignore")
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active 5M zone-close signals in the last 1 hour.")
+  st.info("ℹ️ No active perfect setups meeting strict filters in the last 1 hour. False entries avoided.")
 
 # ---------------------------------------------------------
-# MANUAL ASSET INSPECTOR & CHART VIEWER (5M Chart)
+# MANUAL ASSET INSPECTOR & CHART VIEWER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("📊 Individual Asset Inspector (5M Chart with Dual 4H Zones)")
+st.subheader("📊 Individual Asset Inspector (Clean Visualizer)")
 
 selected_symbol = st.selectbox(
     "🔍 Select Asset to Load Chart",
@@ -343,7 +342,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_4h, df_5m = fetch_data(selected_symbol)
-  bot = TWTDualAnchorEngine(df_4h, df_5m, selected_symbol, active_tz)
+  bot = TWTCrystalStrictEngine(df_4h, df_5m, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.candles_5m:
@@ -353,7 +352,7 @@ if bot.candles_5m:
   with col1:
     st.metric(label=f"Current {selected_symbol} Price", value=f"{curr_p:.2f}")
   with col2:
-    st.metric(label="Locked Signals Today", value=len(bot.history))
+    st.metric(label="Locked Perfect Signals", value=len(bot.history))
   with col3:
     st.metric(label="Timezone", value=selected_tz_name)
 
@@ -362,7 +361,7 @@ if bot.candles_5m:
     df_history = pd.DataFrame(bot.history).drop(columns=["Is_Within_1hr"], errors="ignore")
     st.dataframe(df_history, width="stretch")
 
-  # --- PLOT 5M CANDLESTICK CHART ---
+  # --- PLOT CLEAN CANDLESTICK CHART ---
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
   for c in bot.candles_5m:
     col = "#26a69a" if c["close"] >= c["open"] else "#ef5350"
@@ -374,17 +373,16 @@ if bot.candles_5m:
     ax.bar(c["id"], body_height, bottom=lower_val, color=col, width=0.6, edgecolor=col)
     ax.vlines(c["id"], c["low"], c["high"], color=col, linewidth=1.2)
 
-  # Plot 01:30 AM Anchor Zones
+  # Plot Clear Zones with distinct borders & adjusted alpha for zero-confusion
   if bot.demand_box_1:
-    ax.axhspan(bot.demand_box_1[0], bot.demand_box_1[1], color="#26a69a", alpha=0.22, label="Demand 1 (01:30 Low)")
+    ax.axhspan(bot.demand_box_1[0], bot.demand_box_1[1], color="#00897b", alpha=0.35, label="Demand 1 (01:30 Low)")
   if bot.supply_box_1:
-    ax.axhspan(bot.supply_box_1[0], bot.supply_box_1[1], color="#ef5350", alpha=0.22, label="Supply 1 (01:30 High)")
+    ax.axhspan(bot.supply_box_1[0], bot.supply_box_1[1], color="#e53935", alpha=0.35, label="Supply 1 (01:30 High)")
 
-  # Plot 05:30 AM Anchor Zones
   if bot.demand_box_2:
-    ax.axhspan(bot.demand_box_2[0], bot.demand_box_2[1], color="#00e676", alpha=0.22, label="Demand 2 (05:30 Low)")
+    ax.axhspan(bot.demand_box_2[0], bot.demand_box_2[1], color="#26a69a", alpha=0.20, label="Demand 2 (05:30 Low)")
   if bot.supply_box_2:
-    ax.axhspan(bot.supply_box_2[0], bot.supply_box_2[1], color="#ff9100", alpha=0.22, label="Supply 2 (05:30 High)")
+    ax.axhspan(bot.supply_box_2[0], bot.supply_box_2[1], color="#ff7043", alpha=0.20, label="Supply 2 (05:30 High)")
 
   lows = [c["low"] for c in bot.candles_5m]
   highs = [c["high"] for c in bot.candles_5m]
@@ -412,7 +410,7 @@ if bot.candles_5m:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m Chart — Dual 4H Anchor Zones (01:30 & 05:30)",
+      f"{selected_symbol} 5m Chart — Crystal Clear Strict Zones",
       color="white",
       fontsize=14,
   )
