@@ -56,10 +56,10 @@ st.sidebar.text("📊 Confluence : 01:30 & 05:30 4H + Prev Day 1D")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Master Confluence Rules")
-st.sidebar.text("Zones : 01:30 & 05:30 4H High/Low")
-st.sidebar.text("Levels: Previous Day High & Low")
-st.sidebar.text("BUY  : Strict Zone/Low Rejection + EMA50")
-st.sidebar.text("SELL : Strict Zone/High Rejection + EMA50")
+st.sidebar.text("Demand Zones : 01:30 & 05:30 Lows + Prev Day Low")
+st.sidebar.text("Supply Zones : 01:30 & 05:30 Highs + Prev Day High")
+st.sidebar.text("BUY  : Strict Demand Zone Bounce + EMA50")
+st.sidebar.text("SELL : Strict Supply Zone Rejection + EMA50")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -264,7 +264,16 @@ class TWTUltimateEngine:
       low_val = c["low"]
       close_val = c["close"]
 
-      # --- A. PREVIOUS DAY HIGH / LOW STRATEGY ---
+      # Helper check for whether price is inside ANY Demand Zone (01:30, 05:30, or near Prev Day Low)
+      in_demand_zone_1 = self.demand_box_1 and (self.demand_box_1[0] <= close_val <= self.demand_box_1[1])
+      in_demand_zone_2 = self.demand_box_2 and (self.demand_box_2[0] <= close_val <= self.demand_box_2[1])
+      near_prev_low = low_val <= self.prev_low
+
+      in_supply_zone_1 = self.supply_box_1 and (self.supply_box_1[0] <= close_val <= self.supply_box_1[1])
+      in_supply_zone_2 = self.supply_box_2 and (self.supply_box_2[0] <= close_val <= self.supply_box_2[1])
+      near_prev_high = high_val >= self.prev_high
+
+      # --- A. PREVIOUS DAY HIGH / LOW REJECTION STRATEGY ---
       if high_val > self.prev_high:
         broke_above_pdh = True
       if not first_sell and broke_above_pdh and close_val < self.prev_high and c["color"] == "Red" and close_val < ema:
@@ -287,7 +296,7 @@ class TWTUltimateEngine:
 
       if low_val < self.prev_low:
         broke_below_pdl = True
-      if not first_buy and broke_below_pdl and close_val >= self.prev_low and c["color"] == "Green" and close_val > ema:
+      if not first_buy and (broke_below_pdl or near_prev_low) and close_val >= self.prev_low and c["color"] == "Green" and close_val > ema:
         sl = round(self.prev_low - (1.5 * atr), dec)
         first_buy = {
             "Asset": self.symbol,
@@ -295,7 +304,7 @@ class TWTUltimateEngine:
             "Time": c["time"],
             "Candle #": c["id"],
             "Type": "BUY 🟢",
-            "Setup": "Prev Day Low Rejection",
+            "Setup": "Prev Day Low Bounce",
             "Entry Price": round(close_val, dec),
             "Stop Loss (SL)": sl,
             "TP 1": round(close_val + (1.2 * atr), dec),
@@ -307,7 +316,7 @@ class TWTUltimateEngine:
 
       # --- B. 4H ANCHOR ZONE 1 (01:30 AM) ---
       if c["dt_user"] > anchor_dt_1 and self.demand_box_1 and self.supply_box_1:
-        if not first_buy and c["color"] == "Green" and self.demand_box_1[0] <= close_val <= self.demand_box_1[1] and close_val > ema:
+        if not first_buy and c["color"] == "Green" and in_demand_zone_1 and close_val > ema:
           sl = round(self.demand_box_1[0] - (1.5 * atr), dec)
           first_buy = {
               "Asset": self.symbol,
@@ -324,7 +333,7 @@ class TWTUltimateEngine:
               "Is_Within_1hr": c["is_within_1hr"],
           }
 
-        if not first_sell and c["color"] == "Red" and self.supply_box_1[0] <= close_val <= self.supply_box_1[1] and close_val < ema:
+        if not first_sell and c["color"] == "Red" and in_supply_zone_1 and close_val < ema:
           sl = round(self.supply_box_1[1] + (1.5 * atr), dec)
           first_sell = {
               "Asset": self.symbol,
@@ -343,7 +352,7 @@ class TWTUltimateEngine:
 
       # --- C. 4H ANCHOR ZONE 2 (05:30 AM) ---
       if anchor_dt_2 and c["dt_user"] > anchor_dt_2 and self.demand_box_2 and self.supply_box_2:
-        if not first_buy and c["color"] == "Green" and self.demand_box_2[0] <= close_val <= self.demand_box_2[1] and close_val > ema:
+        if not first_buy and c["color"] == "Green" and in_demand_zone_2 and close_val > ema:
           sl = round(self.demand_box_2[0] - (1.5 * atr), dec)
           first_buy = {
               "Asset": self.symbol,
@@ -360,7 +369,7 @@ class TWTUltimateEngine:
               "Is_Within_1hr": c["is_within_1hr"],
           }
 
-        if not first_sell and c["color"] == "Red" and self.supply_box_2[0] <= close_val <= self.supply_box_2[1] and close_val < ema:
+        if not first_sell and c["color"] == "Red" and in_supply_zone_2 and close_val < ema:
           sl = round(self.supply_box_2[1] + (1.5 * atr), dec)
           first_sell = {
               "Asset": self.symbol,
