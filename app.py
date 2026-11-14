@@ -55,9 +55,9 @@ st.sidebar.text("⏱️ Entry Timeframe : 5m (Fixed)")
 st.sidebar.text("📊 Confluence : 01:30 & 05:30 4H + Prev Day 1D")
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Pullback Entry Rules")
-st.sidebar.text("BUY  : Dip Below Green Line ➔ Pullback Red ➔ Medium Green Entry")
-st.sidebar.text("SELL : Spike Above Red Line ➔ Rejection Down")
+st.sidebar.markdown("#### Active Trading Rules")
+st.sidebar.text("BUY  : Dip Below Prev Low ➔ Pullback ➔ Green Entry")
+st.sidebar.text("SELL : Spike Above Prev High ➔ Rejection Down")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -130,9 +130,9 @@ def fetch_data(symbol):
 
 
 # ---------------------------------------------------------
-# ULTIMATE PULLBACK BOUNCE ENGINE
+# ULTIMATE FIXED PULLBACK ENGINE
 # ---------------------------------------------------------
-class TWTPullbackBounceEngine:
+class TWTPullbackEngine:
 
   def __init__(self, df_1d, df_4h, df_5m, symbol, user_tz):
     self.df_1d = df_1d
@@ -173,7 +173,7 @@ class TWTPullbackBounceEngine:
     self.prev_high = float(prev_candle["High"])
     self.prev_low = float(prev_candle["Low"])
 
-    # 2. 4H Anchor Zones (01:30 & 05:30)
+    # 2. 4H Anchor Zones
     candles_4h = []
     for row in self.df_4h.iterrows():
       dt_utc = row[0]
@@ -249,34 +249,27 @@ class TWTPullbackBounceEngine:
     first_buy = None
     first_sell = None
     
-    # State tracking for BUY (Pullback after dip below green line)
     dipped_below_pdl = False
     saw_pullback_red = False
-
-    # State tracking for SELL (Spike above red line)
     spiked_above_pdh = False
 
     for c in today_5m:
       atr = c["atr"]
-      ema = c["ema50"]
       dec = get_decimals(c["close"])
       high_val = c["high"]
       low_val = c["low"]
       close_val = c["close"]
-      body_size = abs(close_val - c["open"])
 
-      # --- BUY SETUP WITH PULLBACK LOGIC ---
-      # Step 1: Price dips below Previous Day Low (Green Line)
+      # --- BUY SETUP (Prev Low Dip ➔ Pullback Red ➔ Green Entry) ---
       if low_val < self.prev_low:
         dipped_below_pdl = True
-        saw_pullback_red = False  # Reset pullback state on new dip
+        saw_pullback_red = False
 
-      # Step 2: After dipping, price sees a Red Candle (Pullback)
       if dipped_below_pdl and c["color"] == "Red":
         saw_pullback_red = True
 
-      # Step 3: After the red pullback candle, a medium-size Green Candle appears
-      if not first_buy and dipped_below_pdl and saw_pullback_red and c["color"] == "Green" and body_size >= (0.3 * atr):
+      # Trigger Buy after dip + pullback red + green candle close near or above prev low
+      if not first_buy and dipped_below_pdl and saw_pullback_red and c["color"] == "Green":
         sl = round(self.prev_low - (1.5 * atr), dec)
         first_buy = {
             "Asset": self.symbol,
@@ -292,14 +285,14 @@ class TWTPullbackBounceEngine:
             "TP 3": round(close_val + (4.0 * atr), dec),
             "Is_Within_1hr": c["is_within_1hr"],
         }
-        dipped_below_pdl = False  # Reset once triggered
+        dipped_below_pdl = False
         saw_pullback_red = False
 
-      # --- SELL SETUP (Prev Day High Rejection) ---
+      # --- SELL SETUP (Prev High Spike Rejection) ---
       if high_val > self.prev_high:
         spiked_above_pdh = True
 
-      if not first_sell and spiked_above_pdh and close_val <= self.prev_high and c["color"] == "Red":
+      if not first_sell and spiked_above_pdh and c["color"] == "Red":
         sl = round(self.prev_high + (1.5 * atr), dec)
         first_sell = {
             "Asset": self.symbol,
@@ -307,7 +300,7 @@ class TWTPullbackBounceEngine:
             "Time": c["time"],
             "Candle #": c["id"],
             "Type": "SELL 🔴",
-            "Setup": "Prev Day High Spike Rejection",
+            "Setup": "Prev High Spike Rejection",
             "Entry Price": round(close_val, dec),
             "Stop Loss (SL)": sl,
             "TP 1": round(close_val - (1.2 * atr), dec),
@@ -337,13 +330,13 @@ asset_engines = {}
 def scan_asset(sym):
   df_1d, df_4h, df_5m = fetch_data(sym)
   if df_1d is not None and df_4h is not None and df_5m is not None:
-    engine = TWTPullbackBounceEngine(df_1d, df_4h, df_5m, sym, active_tz)
+    engine = TWTPullbackEngine(df_1d, df_4h, df_5m, sym, active_tz)
     engine.calculate_and_scan()
     return sym, engine, engine.signals
   return sym, None, []
 
 
-with st.spinner("⚡ Scanning 20+ assets with Pullback Bounce Engine..."):
+with st.spinner("⚡ Scanning 20+ assets with Pullback Engine..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
@@ -354,11 +347,11 @@ with st.spinner("⚡ Scanning 20+ assets with Pullback Bounce Engine..."):
         master_signals.extend(sigs)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} pullback setup(s) across assets!")
+  st.success(f"✅ Found {len(master_signals)} active setup(s) across assets!")
   df_display = pd.DataFrame(master_signals).drop(columns=["Is_Within_1hr"], errors="ignore")
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active pullback setups right now. Waiting for exact pattern confirmation.")
+  st.info("ℹ️ Scanning complete. Bot is actively monitoring price action for exact pullback triggers.")
 
 # ---------------------------------------------------------
 # MANUAL ASSET INSPECTOR & CHART VIEWER
@@ -376,7 +369,7 @@ if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
   df_1d, df_4h, df_5m = fetch_data(selected_symbol)
-  bot = TWTPullbackBounceEngine(df_1d, df_4h, df_5m, selected_symbol, active_tz)
+  bot = TWTPullbackEngine(df_1d, df_4h, df_5m, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
 if bot.candles_5m:
@@ -386,7 +379,7 @@ if bot.candles_5m:
   with col1:
     st.metric(label=f"Current {selected_symbol} Price", value=f"{curr_p:.2f}")
   with col2:
-    st.metric(label="Locked Pullback Signals", value=len(bot.history))
+    st.metric(label="Locked Signals", value=len(bot.history))
   with col3:
     st.metric(label="Timezone", value=selected_tz_name)
 
@@ -448,7 +441,7 @@ if bot.candles_5m:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m Chart — Pullback Bounce Strategy",
+      f"{selected_symbol} 5m Chart — Pullback Strategy Visualizer",
       color="white",
       fontsize=14,
   )
