@@ -259,12 +259,12 @@ ledger_start_date = st.sidebar.text_input(
 
 selected_tf = "5m"
 st.sidebar.text("⏱️ Entry Timeframe : 5m (Fixed)")
-st.sidebar.text("📊 Priority : 21:30 Mid -> Fallback 01:30 Mid")
+st.sidebar.text("📊 Priority : Post-21:30 Session Entries")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Master Confluence Rules")
 st.sidebar.text("Primary  : 21:30 4H Mid Point Cross")
-st.sidebar.text("Fallback : 01:30 4H Mid Point Cross")
+st.sidebar.text("Session  : Only Entries >= 21:30 Start")
 st.sidebar.text("SELL     : Red Candle Crosses Below Mid")
 st.sidebar.text("BUY      : Green Candle Crosses Above Mid")
 st.sidebar.text("Strength : Locked Until Next 21:30 4H")
@@ -517,7 +517,7 @@ def fetch_data(symbol):
 
 
 # ---------------------------------------------------------
-# MULTI-CONFLUENCE MID-CROSS ENGINE (21:30 LOCKED STRENGTH)
+# MULTI-CONFLUENCE MID-CROSS ENGINE (POST-21:30 ENTRIES)
 # ---------------------------------------------------------
 class TWTUltimateEngine:
 
@@ -564,6 +564,7 @@ class TWTUltimateEngine:
     self.anchor_2130_candle = None
     self.anchor_2130_start = None
     self.anchor_0130_start = None
+    self.session_2130_active = False
 
   def _build_zones(self, anchor_candle):
     high_val = anchor_candle["high"]
@@ -576,17 +577,34 @@ class TWTUltimateEngine:
     sup_mid = (sup_box[0] + sup_box[1]) / 2.0
     return dem_box, sup_box, dem_mid, sup_mid
 
-  def _get_latest_2130_anchor(self, candles_4h):
-    candidates_2130 = [
+  def _get_2130_session_anchor(self, candles_4h, now_user):
+    """Returns the 21:30 4H anchor candle for the current 21:30 cycle if now_user >= 21:30."""
+    anchor_2130_today = datetime.combine(now_user.date(), time(21, 30), tzinfo=now_user.tzinfo)
+    if now_user >= anchor_2130_today:
+      target_dt = anchor_2130_today
+    else:
+      target_dt = anchor_2130_today - timedelta(days=1)
+
+    matching = [
         c for c in candles_4h
-        if abs(
-            (datetime.combine(c["date"], c["time_obj"]) - datetime.combine(c["date"], time(21, 30))).total_seconds()
-        ) <= 3600
+        if abs((c["dt_user"] - target_dt).total_seconds()) <= 5400
     ]
-    if candidates_2130:
-      latest_2130 = max(candidates_2130, key=lambda x: x["dt_user"])
-      return latest_2130, latest_2130["dt_user"]
-    return None, None
+    if matching:
+      best = min(matching, key=lambda x: abs((x["dt_user"] - target_dt).total_seconds()))
+      return best, target_dt, (now_user >= anchor_2130_today)
+
+    if now_user >= anchor_2130_today:
+      # Fallback if exchange 4h timestamp slightly differs around 21:30
+      synthetic = {
+          "date": now_user.date(),
+          "time_obj": time(21, 30),
+          "dt_user": target_dt,
+          "high": float(self.df_4h["High"].iloc[-1]),
+          "low": float(self.df_4h["Low"].iloc[-1]),
+      }
+      return synthetic, target_dt, True
+
+    return None, None, False
 
   def _is_choppy(self, c):
     if not self.chop_filter:
@@ -653,7 +671,7 @@ class TWTUltimateEngine:
 
     self.diy_checklist = [
         {
-            "Rule (DIY Builder)": "1. Leading Trigger (21:30 / 01:30 Mid Cross)",
+            "Rule (DIY Builder)": "1. Leading Trigger (Post-21:30 Mid Cross)",
             "BUY Side": "ACTIVE ✅" if has_buy else "WAITING ⏳",
             "SELL Side": "ACTIVE ✅" if has_sell else "WAITING ⏳",
         },
@@ -683,7 +701,8 @@ class TWTUltimateEngine:
     if start_dt is None or not candles:
       return None, None
 
-    sub = [c for c in candles if c["dt_user"] > start_dt]
+    # Only scan candles AT OR AFTER start_dt (21:30 onwards)
+    sub = [c for c in candles if c["dt_user"] >= start_dt]
     if not sub:
       return None, None
 
@@ -824,8 +843,9 @@ class TWTUltimateEngine:
       )
       self.demand_box_2, self.supply_box_2, _, _ = self._build_zones(anchor_2)
 
-    anchor_3, anchor_dt_3 = self._get_latest_2130_anchor(candles_4h)
-    if anchor_3:
+    anchor_3, anchor_dt_3, is_post_2130_today = self._get_2130_session_anchor(candles_4h, now_user)
+    self.session_2130_active = is_post_2130_today
+    if anchor_3 and anchor_dt_3:
       self.anchor_2130_candle = anchor_3
       self.anchor_2130_start = anchor_dt_3
       self.demand_box_3, self.supply_box_3, self.demand_3_mid, self.supply_3_mid = self._build_zones(anchor_3)
@@ -870,24 +890,22 @@ class TWTUltimateEngine:
           "is_within_1hr": age_min <= 60.0
       })
 
-    buy_2130, sell_2130 = self._scan_mid_cross(
-        self.candles_5m,
-        self.anchor_2130_start,
-        self.supply_3_mid,
-        self.demand_3_mid,
-        "21:30",
-    )
-
-    buy_0130, sell_0130 = self._scan_mid_cross(
-        self.candles_5m,
-        self.anchor_0130_start,
-        self.supply_1_mid,
-        self.demand_1_mid,
-        "01:30",
-    )
-
-    final_buy = buy_2130 if buy_2130 is not None else buy_0130
-    final_sell = sell_2130 if sell_2130 is not None else sell_0130
+    if self.anchor_2130_start is not None:
+      final_buy, final_sell = self._scan_mid_cross(
+          self.candles_5m,
+          self.anchor_2130_start,
+          self.supply_3_mid,
+          self.demand_3_mid,
+          "21:30+",
+      )
+    else:
+      final_buy, final_sell = self._scan_mid_cross(
+          self.candles_5m,
+          self.anchor_0130_start,
+          self.supply_1_mid,
+          self.demand_1_mid,
+          "01:30",
+      )
 
     collected = [sig for sig in [final_buy, final_sell] if sig is not None]
     collected.sort(key=lambda x: x["Candle #"])
@@ -1031,15 +1049,16 @@ if bot.candles_5m:
 
   if bot.anchor_2130_candle:
     st.caption(
-        f"🕒 21:30 4H Candle ({bot.anchor_2130_start.strftime('%Y-%m-%d %H:%M')}) — "
-        f"Supply 3 Mid: {bot.supply_3_mid:.4f} | Demand 3 Mid: {bot.demand_3_mid:.4f} "
-        f"(Fallback -> 01:30 Supply Mid: {bot.supply_1_mid:.4f} | Demand Mid: {bot.demand_1_mid:.4f})"
+        f"🕒 21:30 4H Session Start ({bot.anchor_2130_start.strftime('%Y-%m-%d %H:%M')}) — "
+        f"Supply 3 Mid: {bot.supply_3_mid:.4f} | Demand 3 Mid: {bot.demand_3_mid:.4f}"
     )
 
   if bot.history:
     st.markdown(f"### 📋 Locked Entries Feed for {selected_symbol}")
     df_history = pd.DataFrame(bot.history).drop(columns=["Is_Within_1hr", "Signal_DT"], errors="ignore")
     st.dataframe(df_history, width="stretch")
+  else:
+    st.info(f"ℹ️ 21:30 ke baad ({bot.anchor_2130_start.strftime('%H:%M') if bot.anchor_2130_start else '21:30'}) abhi tak koi naya BUY/SELL mid-cross entry nahi bana hai.")
 
   # --- PLOT CHART WITH ALL LEVELS + ZERO-LAG LINE ---
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
