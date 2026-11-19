@@ -266,8 +266,8 @@ st.sidebar.markdown("#### Master Confluence Rules")
 st.sidebar.text("4H Candle: Starts 13:30 PM, Closes 17:30 PM")
 st.sidebar.text("High/Low : Marked After 17:30 PM Close")
 st.sidebar.text("Entry    : Only After 17:30 PM")
-st.sidebar.text("BUY      : Green Candle Crosses Above High")
-st.sidebar.text("SELL     : Red Candle Crosses Below Low")
+st.sidebar.text("SELL     : At / Near 4H High (Seller Strong)")
+st.sidebar.text("BUY      : At / Near 4H Low (Buyer Strong)")
 st.sidebar.text("Zero-Lag : ZLEMA + ATR Band Trend")
 st.sidebar.text("A-Grade  : HTF + Wick + Zero-Lag")
 
@@ -518,6 +518,7 @@ def fetch_data(symbol):
 
 # ---------------------------------------------------------
 # 13:30 PM 4H CANDLE (CLOSES AT 17:30 PM) ENGINE
+# HIGH -> SELL | LOW -> BUY | STRICT STRENGTH GATE
 # ---------------------------------------------------------
 class TWTUltimateEngine:
 
@@ -555,6 +556,18 @@ class TWTUltimateEngine:
     self.candle_4h_1330_low = None
     self.candle_4h_1330_closed = False
 
+  def _is_buyer_dominant_and_strong(self):
+    """True only if Buyer is genuinely stronger than Seller and >= 52%."""
+    b_pct = float(self.strength_info.get("buyer_pct", 50.0))
+    s_pct = float(self.strength_info.get("seller_pct", 50.0))
+    return (b_pct > s_pct) and (b_pct >= 52.0)
+
+  def _is_seller_dominant_and_strong(self):
+    """True only if Seller is genuinely stronger than Buyer and >= 52%."""
+    b_pct = float(self.strength_info.get("buyer_pct", 50.0))
+    s_pct = float(self.strength_info.get("seller_pct", 50.0))
+    return (s_pct > b_pct) and (s_pct >= 52.0)
+
   def _is_choppy(self, c):
     if not self.chop_filter:
       return False
@@ -588,12 +601,12 @@ class TWTUltimateEngine:
       htf_ok = bool(locked_info.get("htf_buy_aligned", False))
       zl_5m_ok = c.get("zl_trend") == "BULL"
       zl_htf_ok = bool(locked_info.get("zl_buy_aligned", False))
-      str_ok = float(locked_info.get("buyer_pct", 50.0)) >= 52.0
+      str_ok = self._is_buyer_dominant_and_strong()
     else:
       htf_ok = bool(locked_info.get("htf_sell_aligned", False))
       zl_5m_ok = c.get("zl_trend") == "BEAR"
       zl_htf_ok = bool(locked_info.get("zl_sell_aligned", False))
-      str_ok = float(locked_info.get("seller_pct", 50.0)) >= 52.0
+      str_ok = self._is_seller_dominant_and_strong()
 
     wick_ok = self._check_candle_wick_rejection(c, side)
     conf_score = sum([htf_ok, wick_ok, zl_5m_ok or zl_htf_ok, str_ok])
@@ -617,6 +630,8 @@ class TWTUltimateEngine:
     zl_htf_sell = bool(ref_info.get("zl_sell_aligned", False))
     htf_buy = bool(ref_info.get("htf_buy_aligned", False))
     htf_sell = bool(ref_info.get("htf_sell_aligned", False))
+    buyer_strong = self._is_buyer_dominant_and_strong()
+    seller_strong = self._is_seller_dominant_and_strong()
 
     self.diy_checklist = [
         {
@@ -625,27 +640,32 @@ class TWTUltimateEngine:
             "SELL Side": "READY ✅" if self.candle_4h_1330_closed else "WAITING 17:30 ⏳",
         },
         {
-            "Rule (DIY Builder)": "2. Post-17:30 PM Breakout Entry",
+            "Rule (DIY Builder)": "2. Strength Gate (Buyer/Seller Strong)",
+            "BUY Side": "STRONG ✅" if buyer_strong else "WEAK / BLOCKED ❌",
+            "SELL Side": "STRONG ✅" if seller_strong else "WEAK / BLOCKED ❌",
+        },
+        {
+            "Rule (DIY Builder)": "3. Post-17:30 Entry (High=SELL | Low=BUY)",
             "BUY Side": "ACTIVE ✅" if has_buy else "WAITING ⏳",
             "SELL Side": "ACTIVE ✅" if has_sell else "WAITING ⏳",
         },
         {
-            "Rule (DIY Builder)": "3. Zero-Lag Trend (ZLEMA + ATR Band)",
+            "Rule (DIY Builder)": "4. Zero-Lag Trend (ZLEMA + ATR Band)",
             "BUY Side": "BULLISH ✅" if last_zl == "BULL" else "BEARISH ⏳",
             "SELL Side": "BEARISH ✅" if last_zl == "BEAR" else "BULLISH ⏳",
         },
         {
-            "Rule (DIY Builder)": "4. Zero-Lag MTF (4H + 1D Trend)",
+            "Rule (DIY Builder)": "5. Zero-Lag MTF (4H + 1D Trend)",
             "BUY Side": "ALIGNED ✅" if zl_htf_buy else "NOT ALIGNED ⏳",
             "SELL Side": "ALIGNED ✅" if zl_htf_sell else "NOT ALIGNED ⏳",
         },
         {
-            "Rule (DIY Builder)": "5. HTF Candle Strength (4H + 1D)",
+            "Rule (DIY Builder)": "6. HTF Candle Strength (4H + 1D)",
             "BUY Side": "STRONG ✅" if htf_buy else "MIXED ⏳",
             "SELL Side": "STRONG ✅" if htf_sell else "MIXED ⏳",
         },
         {
-            "Rule (DIY Builder)": "6. Chop / Sideways Filter",
+            "Rule (DIY Builder)": "7. Chop / Sideways Filter",
             "BUY Side": "CLEAR ✅" if self.chop_filter else "OFF ⚪",
             "SELL Side": "CLEAR ✅" if self.chop_filter else "OFF ⚪",
         },
@@ -654,7 +674,6 @@ class TWTUltimateEngine:
   def _resolve_1330_to_1730_4h_window(self, now_user):
     """
     13:30 PM 4H candle starts at 13:30 and completes/closes at 17:30 (4 hours later).
-    Returns (start_1330, close_1730, is_closed) for the latest completed 13:30-17:30 cycle.
     """
     today_1330 = datetime.combine(now_user.date(), time(13, 30), tzinfo=now_user.tzinfo)
     today_1730 = datetime.combine(now_user.date(), time(17, 30), tzinfo=now_user.tzinfo)
@@ -670,9 +689,10 @@ class TWTUltimateEngine:
   def _mark_1330_4h_high_low(self, start_1330, close_1730):
     """Marks exact High and Low of the 13:30 PM 4H candle once closed at 17:30 PM."""
     if self.df_4h is not None and not self.df_4h.empty:
+      now_u = datetime.now(timezone.utc).astimezone(self.user_tz)
       for dt_utc, r in self.df_4h.iterrows():
         dt_u = dt_utc.astimezone(self.user_tz)
-        if abs((dt_u - start_1330).total_seconds()) <= 5400 and (dt_u + timedelta(hours=4)) <= datetime.now(timezone.utc).astimezone(self.user_tz):
+        if abs((dt_u - start_1330).total_seconds()) <= 5400 and (dt_u + timedelta(hours=4)) <= now_u:
           return float(r["High"]), float(r["Low"])
 
     highs = []
@@ -688,7 +708,10 @@ class TWTUltimateEngine:
 
   def _scan_post_1730_signals(self, candles, after_1730, h_4h, l_4h):
     """
-    Strictly only scans candles AT OR AFTER 17:30 PM (after 13:30 PM 4H candle closes at 17:30 PM).
+    Strictly:
+    - Only candles AT OR AFTER 17:30 PM
+    - SELL at / near 4H High (only if Seller is stronger than Buyer and >= 52%)
+    - BUY at / near 4H Low (only if Buyer is stronger than Seller and >= 52%)
     """
     if after_1730 is None or h_4h is None or l_4h is None or not candles:
       return None, None
@@ -697,9 +720,11 @@ class TWTUltimateEngine:
     if not sub:
       return None, None
 
+    buy_allowed = self._is_buyer_dominant_and_strong()
+    sell_allowed = self._is_seller_dominant_and_strong()
+
     buy_sig = None
     sell_sig = None
-    prev_c = None
 
     b_lock = float(self.strength_info.get("buyer_pct", 50.0))
     s_lock = float(self.strength_info.get("seller_pct", 50.0))
@@ -713,47 +738,17 @@ class TWTUltimateEngine:
       is_green = c["color"] == "Green"
       is_red = c["color"] == "Red"
       choppy = self._is_choppy(c)
-      prev_close = prev_c["close"] if prev_c is not None else close_val
 
-      # BUY: Green candle breaks/crosses above 13:30-17:30 4H High after 17:30 PM
-      green_break_high = (
-          is_green
-          and (close_val > h_4h)
-          and (prev_close <= h_4h or high_val >= h_4h)
+      # SELL at 4H High: price reaches/touches 4H High, red rejection, Seller strong
+      high_sell_cond = (
+          sell_allowed
+          and (high_val >= h_4h)
+          and is_red
           and (not choppy)
       )
-      if not buy_sig and green_break_high:
-        grade, conf_note = self._grade_signal(c, "BUY")
-        sl = round(min(h_4h, low_val) - (1.5 * atr), dec)
-        buy_sig = {
-            "Asset": self.symbol,
-            "Date": str(c["date"]),
-            "Time": c["time"],
-            "Candle #": c["id"],
-            "Type": "BUY 🟢",
-            "Grade": grade,
-            "Locked Buyer %": f"{b_lock}%",
-            "Locked Seller %": f"{s_lock}%",
-            "Setup": f"13:30-17:30 4H High Break BUY ({conf_note})",
-            "Entry Price": round(close_val, dec),
-            "Stop Loss (SL)": sl,
-            "TP 1": round(close_val + (1.2 * atr), dec),
-            "TP 2": round(close_val + (2.5 * atr), dec),
-            "TP 3": round(close_val + (4.0 * atr), dec),
-            "Is_Within_1hr": c["is_within_1hr"],
-            "Signal_DT": c["dt_user"].isoformat(),
-        }
-
-      # SELL: Red candle breaks/crosses below 13:30-17:30 4H Low after 17:30 PM
-      red_break_low = (
-          is_red
-          and (close_val < l_4h)
-          and (prev_close >= l_4h or low_val <= l_4h)
-          and (not choppy)
-      )
-      if not sell_sig and red_break_low:
+      if not sell_sig and high_sell_cond:
         grade, conf_note = self._grade_signal(c, "SELL")
-        sl = round(max(l_4h, high_val) + (1.5 * atr), dec)
+        sl = round(max(h_4h, high_val) + (1.5 * atr), dec)
         sell_sig = {
             "Asset": self.symbol,
             "Date": str(c["date"]),
@@ -763,7 +758,7 @@ class TWTUltimateEngine:
             "Grade": grade,
             "Locked Buyer %": f"{b_lock}%",
             "Locked Seller %": f"{s_lock}%",
-            "Setup": f"13:30-17:30 4H Low Break SELL ({conf_note})",
+            "Setup": f"4H High SELL ({conf_note})",
             "Entry Price": round(close_val, dec),
             "Stop Loss (SL)": sl,
             "TP 1": round(close_val - (1.2 * atr), dec),
@@ -773,7 +768,34 @@ class TWTUltimateEngine:
             "Signal_DT": c["dt_user"].isoformat(),
         }
 
-      prev_c = c
+      # BUY at 4H Low: price reaches/touches 4H Low, green bounce, Buyer strong
+      low_buy_cond = (
+          buy_allowed
+          and (low_val <= l_4h)
+          and is_green
+          and (not choppy)
+      )
+      if not buy_sig and low_buy_cond:
+        grade, conf_note = self._grade_signal(c, "BUY")
+        sl = round(min(l_4h, low_val) - (1.5 * atr), dec)
+        buy_sig = {
+            "Asset": self.symbol,
+            "Date": str(c["date"]),
+            "Time": c["time"],
+            "Candle #": c["id"],
+            "Type": "BUY 🟢",
+            "Grade": grade,
+            "Locked Buyer %": f"{b_lock}%",
+            "Locked Seller %": f"{s_lock}%",
+            "Setup": f"4H Low BUY ({conf_note})",
+            "Entry Price": round(close_val, dec),
+            "Stop Loss (SL)": sl,
+            "TP 1": round(close_val + (1.2 * atr), dec),
+            "TP 2": round(close_val + (2.5 * atr), dec),
+            "TP 3": round(close_val + (4.0 * atr), dec),
+            "Is_Within_1hr": c["is_within_1hr"],
+            "Signal_DT": c["dt_user"].isoformat(),
+        }
 
     return buy_sig, sell_sig
 
@@ -877,7 +899,7 @@ def scan_asset(sym):
   return sym, df_1d, df_4h, df_5m, dfs_by_tf
 
 
-with st.spinner("⚡ Scanning 20+ assets (13:30-17:30 4H Candle + Zero-Lag MTF)..."):
+with st.spinner("⚡ Scanning 20+ assets (13:30-17:30 4H Candle + Strength Gate)..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
@@ -922,7 +944,7 @@ else:
 # MANUAL ASSET INSPECTOR & PER-ASSET LEDGER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("📊 Individual Asset Inspector (13:30-17:30 4H Candle + Zero-Lag MTF)")
+st.subheader("📊 Individual Asset Inspector (13:30-17:30 4H Candle + Strength Gate)")
 
 selected_symbol = st.selectbox(
     "🔍 Select Asset to Load Chart",
@@ -989,7 +1011,7 @@ if bot.candles_5m:
   if bot.candle_4h_1330_closed and bot.candle_4h_1330_high is not None and bot.candle_4h_1330_low is not None:
     st.caption(
         f"🕒 13:30 PM 4H Candle Closed at 17:30 PM ({bot.window_1730_close.strftime('%Y-%m-%d %H:%M')}) — "
-        f"4H High: {bot.candle_4h_1330_high:.4f} | 4H Low: {bot.candle_4h_1330_low:.4f}"
+        f"4H High (SELL): {bot.candle_4h_1330_high:.4f} | 4H Low (BUY): {bot.candle_4h_1330_low:.4f}"
     )
   elif bot.window_1330_start:
     st.info(f"⏳ Waiting for 13:30 PM 4H candle to close at 17:30 PM ({bot.window_1730_close.strftime('%Y-%m-%d %H:%M')})...")
@@ -999,7 +1021,7 @@ if bot.candles_5m:
     df_history = pd.DataFrame(bot.history).drop(columns=["Is_Within_1hr", "Signal_DT"], errors="ignore")
     st.dataframe(df_history, width="stretch")
   else:
-    st.info("ℹ️ 17:30 PM ke baad abhi tak koi BUY/SELL entry nahi aayi hai.")
+    st.info("ℹ️ 17:30 PM ke baad abhi tak koi valid BUY/SELL entry nahi aayi hai.")
 
   # --- PLOT CHART WITH 13:30-17:30 4H HIGH/LOW + ZERO-LAG LINE ---
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
@@ -1025,9 +1047,9 @@ if bot.candles_5m:
       ax.axvline(first_1730_id, color="#ffd54f", linestyle=":", linewidth=1.5, label=f"17:30 PM Close ({bot.window_1730_close.strftime('%m-%d %H:%M')})")
 
   if bot.candle_4h_1330_high is not None:
-    ax.axhline(bot.candle_4h_1330_high, color="#00e676", linestyle="-.", linewidth=1.6, label=f"13:30-17:30 4H High: {bot.candle_4h_1330_high:.2f}")
+    ax.axhline(bot.candle_4h_1330_high, color="#ff5252", linestyle="-.", linewidth=1.6, label=f"4H High (SELL): {bot.candle_4h_1330_high:.2f}")
   if bot.candle_4h_1330_low is not None:
-    ax.axhline(bot.candle_4h_1330_low, color="#ff5252", linestyle="-.", linewidth=1.6, label=f"13:30-17:30 4H Low: {bot.candle_4h_1330_low:.2f}")
+    ax.axhline(bot.candle_4h_1330_low, color="#00e676", linestyle="-.", linewidth=1.6, label=f"4H Low (BUY): {bot.candle_4h_1330_low:.2f}")
 
   if bot.prev_high is not None:
     ax.axhline(bot.prev_high, color="#ff9100", linestyle="--", linewidth=1.5, label=f"Prev Day High: {bot.prev_high}")
@@ -1059,7 +1081,7 @@ if bot.candles_5m:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m Chart — 13:30-17:30 4H Candle Strategy",
+      f"{selected_symbol} 5m Chart — 4H High=SELL | 4H Low=BUY (Strength Gated)",
       color="white",
       fontsize=14,
   )
