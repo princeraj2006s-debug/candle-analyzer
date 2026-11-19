@@ -232,6 +232,7 @@ st.sidebar.text("Primary  : 21:30 4H Mid Point Cross")
 st.sidebar.text("Fallback : 01:30 4H Mid Point Cross")
 st.sidebar.text("SELL     : Red Candle Crosses Below Mid")
 st.sidebar.text("BUY      : Green Candle Crosses Above Mid")
+st.sidebar.text("Strength : 5m, 15m, 1h, 4h, 1d Candle Power")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -266,8 +267,91 @@ def get_decimals(price):
     return 2
 
 
+def _df_from_ohlcv(ohlcv):
+  df = pd.DataFrame(ohlcv, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
+  df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+  return df.set_index("timestamp")
+
+
+def _candle_strength_score(df):
+  """Returns (buyer_score_0_to_100, seller_score_0_to_100, label) from latest candle."""
+  if df is None or df.empty:
+    return 50.0, 50.0, "Neutral ⚪"
+  last = df.iloc[-1]
+  o = float(last["Open"])
+  h = float(last["High"])
+  l = float(last["Low"])
+  c = float(last["Close"])
+  rng = max(h - l, 1e-9)
+  body_ratio = min(1.0, abs(c - o) / rng)
+
+  if c >= o:
+    # Green candle: buyer dominance + close position in range
+    close_pos = (c - l) / rng
+    buyer = round(min(100.0, 50.0 + (body_ratio * 35.0) + ((close_pos - 0.5) * 30.0)), 1)
+    seller = round(max(0.0, 100.0 - buyer), 1)
+    label = "Buyer Green 🟢"
+  else:
+    # Red candle: seller dominance + close position near low
+    close_pos = (c - l) / rng
+    seller = round(min(100.0, 50.0 + (body_ratio * 35.0) + ((0.5 - close_pos) * 30.0)), 1)
+    buyer = round(max(0.0, 100.0 - seller), 1)
+    label = "Seller Red 🔴"
+
+  return buyer, seller, label
+
+
+def compute_mtf_candle_strength(dfs_by_tf):
+  """Compute Buyer vs Seller candle strength across 5m, 15m, 1h, 4h, 1d."""
+  weights = {
+      "1d": 0.30,
+      "4h": 0.25,
+      "1h": 0.20,
+      "15m": 0.15,
+      "5m": 0.10,
+  }
+  rows = []
+  w_buyer = 0.0
+  w_seller = 0.0
+  tot_w = 0.0
+
+  for tf in ("5m", "15m", "1h", "4h", "1d"):
+    df = dfs_by_tf.get(tf)
+    b_val, s_val, c_label = _candle_strength_score(df)
+    w = weights[tf]
+    w_buyer += b_val * w
+    w_seller += s_val * w
+    tot_w += w
+    rows.append({
+        "Timeframe": tf,
+        "Candle": c_label,
+        "Buyer Strength": f"{b_val}%",
+        "Seller Strength": f"{s_val}%",
+        "Dominant": "BUYER 🟢" if b_val >= s_val else "SELLER 🔴",
+    })
+
+  avg_buyer = round(w_buyer / tot_w, 1) if tot_w > 0 else 50.0
+  avg_seller = round(w_seller / tot_w, 1) if tot_w > 0 else 50.0
+  diff = round(avg_buyer - avg_seller, 1)
+
+  if diff >= 8.0:
+    verdict = f"BUY Zyada Faydemand 🟢 (+{diff}% Buyer Edge)"
+  elif diff <= -8.0:
+    verdict = f"SELL Zyada Faydemand 🔴 (+{abs(diff)}% Seller Edge)"
+  else:
+    verdict = f"Balanced / Mixed ⚖️ (Buyer {avg_buyer}% vs Seller {avg_seller}%)"
+
+  return {
+      "buyer_pct": avg_buyer,
+      "seller_pct": avg_seller,
+      "diff": diff,
+      "verdict": verdict,
+      "rows": rows,
+  }
+
+
 # ---------------------------------------------------------
-# DATA FETCHING MODULE (1d + 4h + 5m)
+# DATA FETCHING MODULE (1d + 4h + 1h + 15m + 5m)
 # ---------------------------------------------------------
 @st.cache_data(ttl=30)
 def fetch_data(symbol):
@@ -284,23 +368,27 @@ def fetch_data(symbol):
       if sym in exchange.markets:
         ohlcv_1d = exchange.fetch_ohlcv(sym, timeframe="1d", limit=5)
         ohlcv_4h = exchange.fetch_ohlcv(sym, timeframe="4h", limit=50)
+        ohlcv_1h = exchange.fetch_ohlcv(sym, timeframe="1h", limit=10)
+        ohlcv_15m = exchange.fetch_ohlcv(sym, timeframe="15m", limit=10)
         ohlcv_5m = exchange.fetch_ohlcv(sym, timeframe="5m", limit=300)
         if ohlcv_1d and ohlcv_4h and ohlcv_5m:
-          df_1d = pd.DataFrame(ohlcv_1d, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
-          df_1d["timestamp"] = pd.to_datetime(df_1d["timestamp"], unit="ms", utc=True)
-          df_1d = df_1d.set_index("timestamp")
+          df_1d = _df_from_ohlcv(ohlcv_1d)
+          df_4h = _df_from_ohlcv(ohlcv_4h)
+          df_1h = _df_from_ohlcv(ohlcv_1h) if ohlcv_1h else None
+          df_15m = _df_from_ohlcv(ohlcv_15m) if ohlcv_15m else None
+          df_5m = _df_from_ohlcv(ohlcv_5m)
 
-          df_4h = pd.DataFrame(ohlcv_4h, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
-          df_4h["timestamp"] = pd.to_datetime(df_4h["timestamp"], unit="ms", utc=True)
-          df_4h = df_4h.set_index("timestamp")
-
-          df_5m = pd.DataFrame(ohlcv_5m, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
-          df_5m["timestamp"] = pd.to_datetime(df_5m["timestamp"], unit="ms", utc=True)
-          df_5m = df_5m.set_index("timestamp")
-          return df_1d, df_4h, df_5m
+          strength_info = compute_mtf_candle_strength({
+              "5m": df_5m,
+              "15m": df_15m,
+              "1h": df_1h,
+              "4h": df_4h,
+              "1d": df_1d,
+          })
+          return df_1d, df_4h, df_5m, strength_info
     except Exception:
       continue
-  return None, None, None
+  return None, None, None, {}
 
 
 # ---------------------------------------------------------
@@ -308,13 +396,14 @@ def fetch_data(symbol):
 # ---------------------------------------------------------
 class TWTUltimateEngine:
 
-  def __init__(self, df_1d, df_4h, df_5m, symbol, user_tz, chop_filter=True):
+  def __init__(self, df_1d, df_4h, df_5m, symbol, user_tz, chop_filter=True, strength_info=None):
     self.df_1d = df_1d
     self.df_4h = df_4h
     self.df_5m = df_5m
     self.symbol = symbol
     self.user_tz = user_tz
     self.chop_filter = chop_filter
+    self.strength_info = strength_info or {}
     self.candles_5m = []
     self.history = []
     self.signals = []
@@ -587,9 +676,17 @@ asset_engines = {}
 
 
 def scan_asset(sym):
-  df_1d, df_4h, df_5m = fetch_data(sym)
+  df_1d, df_4h, df_5m, strength_info = fetch_data(sym)
   if df_1d is not None and df_4h is not None and df_5m is not None:
-    engine = TWTUltimateEngine(df_1d, df_4h, df_5m, sym, active_tz, chop_filter=use_chop_filter)
+    engine = TWTUltimateEngine(
+        df_1d,
+        df_4h,
+        df_5m,
+        sym,
+        active_tz,
+        chop_filter=use_chop_filter,
+        strength_info=strength_info,
+    )
     engine.calculate_and_scan()
     return sym, engine, engine.signals
   return sym, None, []
@@ -621,7 +718,7 @@ else:
 # MANUAL ASSET INSPECTOR & PER-ASSET LEDGER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("📊 Individual Asset Inspector (All Zones & Prev Day Levels)")
+st.subheader("📊 Individual Asset Inspector (Candle Strength + All Zones)")
 
 selected_symbol = st.selectbox(
     "🔍 Select Asset to Load Chart",
@@ -632,9 +729,29 @@ selected_symbol = st.selectbox(
 if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
-  df_1d, df_4h, df_5m = fetch_data(selected_symbol)
-  bot = TWTUltimateEngine(df_1d, df_4h, df_5m, selected_symbol, active_tz, chop_filter=use_chop_filter)
+  df_1d, df_4h, df_5m, strength_info = fetch_data(selected_symbol)
+  bot = TWTUltimateEngine(
+      df_1d,
+      df_4h,
+      df_5m,
+      selected_symbol,
+      active_tz,
+      chop_filter=use_chop_filter,
+      strength_info=strength_info,
+  )
   bot.calculate_and_scan()
+
+if bot.strength_info and bot.strength_info.get("rows"):
+  st.markdown(f"#### 💪 {selected_symbol} Buyer vs Seller Candle Strength (5m, 15m, 1h, 4h, 1d)")
+  s_col1, s_col2, s_col3 = st.columns(3)
+  with s_col1:
+    st.metric("🟢 Buyer Strength (MTF)", f"{bot.strength_info['buyer_pct']}%")
+  with s_col2:
+    st.metric("🔴 Seller Strength (MTF)", f"{bot.strength_info['seller_pct']}%")
+  with s_col3:
+    st.metric("⚡ Zyada Faydemand Side", bot.strength_info["verdict"])
+
+  st.dataframe(pd.DataFrame(bot.strength_info["rows"]), width="stretch")
 
 st.markdown(f"### 📈 {selected_symbol} Performance Ledger (From {ledger_start_date})")
 summary_df = summarize_asset_ledger(ledger_records, selected_symbol, start_date_str=ledger_start_date)
