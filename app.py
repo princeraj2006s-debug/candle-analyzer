@@ -223,15 +223,15 @@ ledger_start_date = st.sidebar.text_input(
 )
 
 selected_tf = "5m"
-st.sidebar.text("⏱️ Entry Timeframe : 5m (After 21:30)")
-st.sidebar.text("📊 BUY Zone   : Demand Zone + AVG > 45%")
-st.sidebar.text("📉 SELL Zone  : Supply Zone + AVG > 45%")
+st.sidebar.text("⏱️ Entry Timeframe : 5m (Fixed)")
+st.sidebar.text("📊 Priority : 21:30 Mid -> Fallback 01:30 Mid")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Master Confluence Rules")
-st.sidebar.text("Session  : After 21:30 4H Anchor")
-st.sidebar.text("Zone AVG : MTF AVG > 45% Required")
-st.sidebar.text("Dual Side: Both BUY & SELL Active")
+st.sidebar.text("Primary  : 21:30 4H Mid Point Cross")
+st.sidebar.text("Fallback : 01:30 4H Mid Point Cross")
+st.sidebar.text("SELL     : Red Candle Crosses Below Mid")
+st.sidebar.text("BUY      : Green Candle Crosses Above Mid")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -266,61 +266,8 @@ def get_decimals(price):
     return 2
 
 
-def _df_from_ohlcv(ohlcv):
-  df = pd.DataFrame(ohlcv, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
-  df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
-  return df.set_index("timestamp")
-
-
-def _candle_is_green(df):
-  if df is None or df.empty:
-    return False
-  last = df.iloc[-1]
-  return float(last["Close"]) >= float(last["Open"])
-
-
-def _compute_adx_vol_stats(df, period=14):
-  """Compute ADX, Market Status (Trending/Ranging/No Trend), and Volatility %."""
-  if df is None or len(df) < period + 2:
-    return {"adx": 0.0, "status": "No Trend", "vol_pct": 0.0}
-
-  d = df.copy()
-  d["up_move"] = d["High"].diff()
-  d["down_move"] = -d["Low"].diff()
-  d["plus_dm"] = np.where((d["up_move"] > d["down_move"]) & (d["up_move"] > 0), d["up_move"], 0.0)
-  d["minus_dm"] = np.where((d["down_move"] > d["up_move"]) & (d["down_move"] > 0), d["down_move"], 0.0)
-
-  tr = np.maximum(
-      d["High"] - d["Low"],
-      np.maximum(
-          abs(d["High"] - d["Close"].shift(1)),
-          abs(d["Low"] - d["Close"].shift(1)),
-      ),
-  )
-  atr = tr.rolling(period).mean()
-  plus_di = 100.0 * (pd.Series(d["plus_dm"], index=d.index).rolling(period).mean() / atr.replace(0, np.nan))
-  minus_di = 100.0 * (pd.Series(d["minus_dm"], index=d.index).rolling(period).mean() / atr.replace(0, np.nan))
-  dx = (100.0 * abs(plus_di - minus_di) / (plus_di + minus_di).replace(0, np.nan)).fillna(0.0)
-  adx_series = dx.rolling(period).mean().fillna(0.0)
-
-  adx_val = round(float(adx_series.iloc[-1]), 1)
-  if adx_val >= 25.0:
-    status = "Trending"
-  elif adx_val >= 20.0:
-    status = "Ranging"
-  else:
-    status = "No Trend"
-
-  last_close = float(d["Close"].iloc[-1])
-  last_atr = float(atr.iloc[-1]) if not pd.isna(atr.iloc[-1]) else 0.0
-  atr_pct = (last_atr / last_close * 100.0) if last_close > 0 else 0.0
-  vol_pct = round(min(100.0, max(15.0, (atr_pct * 28.0) + (adx_val * 0.85))), 1)
-
-  return {"adx": adx_val, "status": status, "vol_pct": vol_pct}
-
-
 # ---------------------------------------------------------
-# DATA FETCHING MODULE (1d + 4h + 1h + 30m + 15m + 5m)
+# DATA FETCHING MODULE (1d + 4h + 5m)
 # ---------------------------------------------------------
 @st.cache_data(ttl=30)
 def fetch_data(symbol):
@@ -335,66 +282,39 @@ def fetch_data(symbol):
       exchange = ex_class({"enableRateLimit": True, "timeout": 15000})
       exchange.load_markets()
       if sym in exchange.markets:
-        ohlcv_1d = exchange.fetch_ohlcv(sym, timeframe="1d", limit=35)
+        ohlcv_1d = exchange.fetch_ohlcv(sym, timeframe="1d", limit=5)
         ohlcv_4h = exchange.fetch_ohlcv(sym, timeframe="4h", limit=50)
-        ohlcv_1h = exchange.fetch_ohlcv(sym, timeframe="1h", limit=35)
-        ohlcv_30m = exchange.fetch_ohlcv(sym, timeframe="30m", limit=35)
-        ohlcv_15m = exchange.fetch_ohlcv(sym, timeframe="15m", limit=35)
         ohlcv_5m = exchange.fetch_ohlcv(sym, timeframe="5m", limit=300)
         if ohlcv_1d and ohlcv_4h and ohlcv_5m:
-          dfs = {
-              "5m": _df_from_ohlcv(ohlcv_5m) if ohlcv_5m else None,
-              "15m": _df_from_ohlcv(ohlcv_15m) if ohlcv_15m else None,
-              "30m": _df_from_ohlcv(ohlcv_30m) if ohlcv_30m else None,
-              "1h": _df_from_ohlcv(ohlcv_1h) if ohlcv_1h else None,
-              "4h": _df_from_ohlcv(ohlcv_4h) if ohlcv_4h else None,
-              "1d": _df_from_ohlcv(ohlcv_1d) if ohlcv_1d else None,
-          }
-          mtf_green = {tf: _candle_is_green(df) for tf, df in dfs.items()}
-          mtf_stats = {tf: _compute_adx_vol_stats(df) for tf, df in dfs.items()}
-          avg_vol_pct = round(
-              float(np.mean([v["vol_pct"] for v in mtf_stats.values()])), 1
-          ) if mtf_stats else 0.0
-          avg_adx = round(
-              float(np.mean([v["adx"] for v in mtf_stats.values()])), 1
-          ) if mtf_stats else 0.0
-          mtf_summary = {
-              "stats": mtf_stats,
-              "avg_vol_pct": avg_vol_pct,
-              "avg_adx": avg_adx,
-          }
-          return dfs["1d"], dfs["4h"], dfs["5m"], mtf_green, mtf_summary
+          df_1d = pd.DataFrame(ohlcv_1d, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
+          df_1d["timestamp"] = pd.to_datetime(df_1d["timestamp"], unit="ms", utc=True)
+          df_1d = df_1d.set_index("timestamp")
+
+          df_4h = pd.DataFrame(ohlcv_4h, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
+          df_4h["timestamp"] = pd.to_datetime(df_4h["timestamp"], unit="ms", utc=True)
+          df_4h = df_4h.set_index("timestamp")
+
+          df_5m = pd.DataFrame(ohlcv_5m, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
+          df_5m["timestamp"] = pd.to_datetime(df_5m["timestamp"], unit="ms", utc=True)
+          df_5m = df_5m.set_index("timestamp")
+          return df_1d, df_4h, df_5m
     except Exception:
       continue
-  return None, None, None, {}, {}
+  return None, None, None
 
 
 # ---------------------------------------------------------
-# POST-21:30 DUAL-SIDE ZONE ENGINE (>45% AVG)
+# MULTI-CONFLUENCE MID-CROSS ENGINE (21:30 -> 01:30 FALLBACK)
 # ---------------------------------------------------------
 class TWTUltimateEngine:
 
-  def __init__(
-      self,
-      df_1d,
-      df_4h,
-      df_5m,
-      symbol,
-      user_tz,
-      chop_filter=True,
-      mtf_green=None,
-      mtf_summary=None,
-  ):
+  def __init__(self, df_1d, df_4h, df_5m, symbol, user_tz, chop_filter=True):
     self.df_1d = df_1d
     self.df_4h = df_4h
     self.df_5m = df_5m
     self.symbol = symbol
     self.user_tz = user_tz
     self.chop_filter = chop_filter
-    self.mtf_green = mtf_green or {}
-    self.mtf_summary = mtf_summary or {}
-    self.avg_vol_pct = float(self.mtf_summary.get("avg_vol_pct", 0.0))
-    self.avg_adx = float(self.mtf_summary.get("avg_adx", 0.0))
     self.candles_5m = []
     self.history = []
     self.signals = []
@@ -453,55 +373,19 @@ class TWTUltimateEngine:
     near_ema_chop = (atr > 0 and abs(close_val - ema) < (0.25 * atr))
     return low_atr or near_ema_chop
 
-  def _avg_above_45_ok(self):
-    return self.avg_vol_pct > 45.0
-
-  def _near_or_in_zone(self, low_val, high_val, close_val, box, mid, atr):
-    buffer = max(1.5 * atr, close_val * 0.0015)
-    in_or_near_box = False
-    if box is not None:
-      b_low, b_high = box[0], box[1]
-      in_or_near_box = (high_val >= (b_low - buffer)) and (low_val <= (b_high + buffer))
-    near_mid = (mid is not None) and (abs(close_val - mid) <= buffer)
-    return in_or_near_box or near_mid
-
-  def get_bias_label(self):
-    if not self._avg_above_45_ok():
-      return "LOW (<45%)"
-    if not self.candles_5m:
-      return "POST-21:30 READY ⚡"
-    last_c = self.candles_5m[-1]
-    near_dem = self._near_or_in_zone(
-        last_c["low"], last_c["high"], last_c["close"],
-        self.demand_box_3, self.demand_3_mid, last_c["atr"],
-    )
-    near_sup = self._near_or_in_zone(
-        last_c["low"], last_c["high"], last_c["close"],
-        self.supply_box_3, self.supply_3_mid, last_c["atr"],
-    )
-    if near_dem and near_sup:
-      return "BUY & SELL ZONE ⚡"
-    if near_dem:
-      return "DEMAND ZONE (BUY) 🟢"
-    if near_sup:
-      return "SUPPLY ZONE (SELL) 🔴"
-    return "POST-21:30 READY ⚡"
-
-  def _scan_post_2130_signals(self, candles, start_dt, sup_box, sup_mid, dem_box, dem_mid):
-    """Scan strictly after 21:30 anchor; emit SELL when Supply rules fulfill and BUY when Demand rules fulfill."""
+  def _scan_mid_cross(self, candles, start_dt, sup_mid, dem_mid, label):
+    """Scan candles after start_dt for immediate red cross below sup_mid (SELL)
+    and green cross above dem_mid (BUY).
+    """
     if start_dt is None or not candles:
       return None, None
 
-    # Strictly after 21:30 anchor candle
-    sub = [c for c in candles if c["dt_user"] > start_dt and c["dt_user"].time() >= time(21, 30) or (c["dt_user"] > start_dt and c["dt_user"].date() > start_dt.date())]
+    sub = [c for c in candles if c["dt_user"] > start_dt]
     if not sub:
       return None, None
 
-    if not self._avg_above_45_ok():
-      return None, None
-
-    latest_sell = None
-    latest_buy = None
+    buy_sig = None
+    sell_sig = None
     seen_above_sup = False
     seen_below_dem = False
     prev_c = None
@@ -512,76 +396,70 @@ class TWTUltimateEngine:
       high_val = c["high"]
       low_val = c["low"]
       close_val = c["close"]
+      is_green = c["color"] == "Green"
+      is_red = c["color"] == "Red"
       choppy = self._is_choppy(c)
       prev_close = prev_c["close"] if prev_c is not None else close_val
 
-      # SELL check: must be near/in Supply zone or mid, not choppy, and rejection/cross fulfilled
-      near_supply = self._near_or_in_zone(low_val, high_val, close_val, sup_box, sup_mid, atr)
-      if sup_mid is not None and (high_val >= sup_mid or prev_close >= sup_mid):
-        seen_above_sup = True
+      if sup_mid is not None:
+        if high_val >= sup_mid or prev_close >= sup_mid:
+          seen_above_sup = True
+        red_cross_down = (
+            is_red
+            and (close_val < sup_mid)
+            and (prev_close >= sup_mid or high_val >= sup_mid)
+            and seen_above_sup
+            and (not choppy)
+        )
+        if not sell_sig and red_cross_down:
+          sl = round(max(sup_mid, high_val) + (1.5 * atr), dec)
+          sell_sig = {
+              "Asset": self.symbol,
+              "Date": str(c["date"]),
+              "Time": c["time"],
+              "Candle #": c["id"],
+              "Type": "SELL 🔴",
+              "Setup": f"{label} Supply Mid Cross SELL",
+              "Entry Price": round(close_val, dec),
+              "Stop Loss (SL)": sl,
+              "TP 1": round(close_val - (1.2 * atr), dec),
+              "TP 2": round(close_val - (2.5 * atr), dec),
+              "TP 3": round(close_val - (4.0 * atr), dec),
+              "Is_Within_1hr": c["is_within_1hr"],
+              "Signal_DT": c["dt_user"].isoformat(),
+          }
 
-      sell_fulfilled = (
-          near_supply
-          and (not choppy)
-          and (
-              (sup_mid is not None and close_val < sup_mid and (prev_close >= sup_mid or high_val >= sup_mid or seen_above_sup))
-              or (sup_box is not None and high_val >= sup_box[0] and close_val < sup_box[1] and c["color"] == "Red")
-          )
-      )
-      if sell_fulfilled:
-        ref_high = max(sup_mid or high_val, high_val)
-        sl = round(ref_high + (1.5 * atr), dec)
-        latest_sell = {
-            "Asset": self.symbol,
-            "Date": str(c["date"]),
-            "Time": c["time"],
-            "Candle #": c["id"],
-            "Type": "SELL 🔴",
-            "Setup": f"21:30+ Supply SELL (AVG {self.avg_vol_pct}%)",
-            "Entry Price": round(close_val, dec),
-            "Stop Loss (SL)": sl,
-            "TP 1": round(close_val - (1.2 * atr), dec),
-            "TP 2": round(close_val - (2.5 * atr), dec),
-            "TP 3": round(close_val - (4.0 * atr), dec),
-            "Is_Within_1hr": c["is_within_1hr"],
-            "Signal_DT": c["dt_user"].isoformat(),
-        }
-
-      # BUY check: must be near/in Demand zone or mid, not choppy, and bounce/cross fulfilled
-      near_demand = self._near_or_in_zone(low_val, high_val, close_val, dem_box, dem_mid, atr)
-      if dem_mid is not None and (low_val <= dem_mid or prev_close <= dem_mid):
-        seen_below_dem = True
-
-      buy_fulfilled = (
-          near_demand
-          and (not choppy)
-          and (
-              (dem_mid is not None and close_val > dem_mid and (prev_close <= dem_mid or low_val <= dem_mid or seen_below_dem))
-              or (dem_box is not None and low_val <= dem_box[1] and close_val > dem_box[0] and c["color"] == "Green")
-          )
-      )
-      if buy_fulfilled:
-        ref_low = min(dem_mid or low_val, low_val)
-        sl = round(ref_low - (1.5 * atr), dec)
-        latest_buy = {
-            "Asset": self.symbol,
-            "Date": str(c["date"]),
-            "Time": c["time"],
-            "Candle #": c["id"],
-            "Type": "BUY 🟢",
-            "Setup": f"21:30+ Demand BUY (AVG {self.avg_vol_pct}%)",
-            "Entry Price": round(close_val, dec),
-            "Stop Loss (SL)": sl,
-            "TP 1": round(close_val + (1.2 * atr), dec),
-            "TP 2": round(close_val + (2.5 * atr), dec),
-            "TP 3": round(close_val + (4.0 * atr), dec),
-            "Is_Within_1hr": c["is_within_1hr"],
-            "Signal_DT": c["dt_user"].isoformat(),
-        }
+      if dem_mid is not None:
+        if low_val <= dem_mid or prev_close <= dem_mid:
+          seen_below_dem = True
+        green_cross_up = (
+            is_green
+            and (close_val > dem_mid)
+            and (prev_close <= dem_mid or low_val <= dem_mid)
+            and seen_below_dem
+            and (not choppy)
+        )
+        if not buy_sig and green_cross_up:
+          sl = round(min(dem_mid, low_val) - (1.5 * atr), dec)
+          buy_sig = {
+              "Asset": self.symbol,
+              "Date": str(c["date"]),
+              "Time": c["time"],
+              "Candle #": c["id"],
+              "Type": "BUY 🟢",
+              "Setup": f"{label} Demand Mid Cross BUY",
+              "Entry Price": round(close_val, dec),
+              "Stop Loss (SL)": sl,
+              "TP 1": round(close_val + (1.2 * atr), dec),
+              "TP 2": round(close_val + (2.5 * atr), dec),
+              "TP 3": round(close_val + (4.0 * atr), dec),
+              "Is_Within_1hr": c["is_within_1hr"],
+              "Signal_DT": c["dt_user"].isoformat(),
+          }
 
       prev_c = c
 
-    return latest_buy, latest_sell
+    return buy_sig, sell_sig
 
   def calculate_and_scan(self):
     if self.df_1d is None or self.df_1d.empty or self.df_4h is None or self.df_4h.empty or self.df_5m is None or self.df_5m.empty:
@@ -670,16 +548,28 @@ class TWTUltimateEngine:
           "is_within_1hr": age_min <= 60.0
       })
 
-    buy_sig, sell_sig = self._scan_post_2130_signals(
+    # 1. Check 21:30 anchor mid first
+    buy_2130, sell_2130 = self._scan_mid_cross(
         self.candles_5m,
         self.anchor_2130_start,
-        self.supply_box_3,
         self.supply_3_mid,
-        self.demand_box_3,
         self.demand_3_mid,
+        "21:30",
     )
 
-    collected = [sig for sig in [buy_sig, sell_sig] if sig is not None]
+    # 2. If 21:30 has no strong confirmation on a side, fallback to 01:30 anchor mid
+    buy_0130, sell_0130 = self._scan_mid_cross(
+        self.candles_5m,
+        self.anchor_0130_start,
+        self.supply_1_mid,
+        self.demand_1_mid,
+        "01:30",
+    )
+
+    final_buy = buy_2130 if buy_2130 is not None else buy_0130
+    final_sell = sell_2130 if sell_2130 is not None else sell_0130
+
+    collected = [sig for sig in [final_buy, final_sell] if sig is not None]
     collected.sort(key=lambda x: x["Candle #"])
 
     self.history = collected
@@ -697,24 +587,15 @@ asset_engines = {}
 
 
 def scan_asset(sym):
-  df_1d, df_4h, df_5m, mtf_green, mtf_summary = fetch_data(sym)
+  df_1d, df_4h, df_5m = fetch_data(sym)
   if df_1d is not None and df_4h is not None and df_5m is not None:
-    engine = TWTUltimateEngine(
-        df_1d,
-        df_4h,
-        df_5m,
-        sym,
-        active_tz,
-        chop_filter=use_chop_filter,
-        mtf_green=mtf_green,
-        mtf_summary=mtf_summary,
-    )
+    engine = TWTUltimateEngine(df_1d, df_4h, df_5m, sym, active_tz, chop_filter=use_chop_filter)
     engine.calculate_and_scan()
     return sym, engine, engine.signals
   return sym, None, []
 
 
-with st.spinner("⚡ Scanning 20+ assets (Post-21:30 Dual-Side + >45% AVG)..."):
+with st.spinner("⚡ Scanning 20+ assets (21:30 Mid -> 01:30 Mid Fallback)..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
@@ -730,17 +611,17 @@ for eng in asset_engines.values():
 save_ledger(ledger_records)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} active setup(s) after 21:30 with AVG > 45%!")
+  st.success(f"✅ Found {len(master_signals)} mid-cross confluence setup(s) across assets!")
   df_display = pd.DataFrame(master_signals).drop(columns=["Is_Within_1hr", "Signal_DT"], errors="ignore")
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active setups within 1hr after 21:30 meeting Zone + >45% AVG right now.")
+  st.info("ℹ️ No active mid-cross setups right now.")
 
 # ---------------------------------------------------------
 # MANUAL ASSET INSPECTOR & PER-ASSET LEDGER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("📊 Individual Asset Inspector (MTF ADX/Vol AVG + All Zones)")
+st.subheader("📊 Individual Asset Inspector (All Zones & Prev Day Levels)")
 
 selected_symbol = st.selectbox(
     "🔍 Select Asset to Load Chart",
@@ -751,40 +632,9 @@ selected_symbol = st.selectbox(
 if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
-  df_1d, df_4h, df_5m, mtf_green, mtf_summary = fetch_data(selected_symbol)
-  bot = TWTUltimateEngine(
-      df_1d,
-      df_4h,
-      df_5m,
-      selected_symbol,
-      active_tz,
-      chop_filter=use_chop_filter,
-      mtf_green=mtf_green,
-      mtf_summary=mtf_summary,
-  )
+  df_1d, df_4h, df_5m = fetch_data(selected_symbol)
+  bot = TWTUltimateEngine(df_1d, df_4h, df_5m, selected_symbol, active_tz, chop_filter=use_chop_filter)
   bot.calculate_and_scan()
-
-if bot.mtf_summary and bot.mtf_summary.get("stats"):
-  st.markdown(f"#### 🧭 {selected_symbol} Multi-Timeframe ADX & Volatility Table")
-  table_rows = []
-  for tf in ("5m", "15m", "30m", "1h", "4h", "1d"):
-    st_info = bot.mtf_summary["stats"].get(tf, {"adx": 0.0, "status": "No Trend", "vol_pct": 0.0})
-    is_g = bot.mtf_green.get(tf, False)
-    table_rows.append({
-        "TIMEFRAME": tf,
-        "CANDLE": "Green 🟢" if is_g else "Red 🔴",
-        "MARKET STATUS": st_info["status"],
-        "ADX": st_info["adx"],
-        "VOLATILITY": f"{st_info['vol_pct']}%",
-    })
-  table_rows.append({
-      "TIMEFRAME": "AVG",
-      "CANDLE": "-",
-      "MARKET STATUS": bot.get_bias_label(),
-      "ADX": bot.avg_adx,
-      "VOLATILITY": f"{bot.avg_vol_pct}%",
-  })
-  st.dataframe(pd.DataFrame(table_rows), width="stretch")
 
 st.markdown(f"### 📈 {selected_symbol} Performance Ledger (From {ledger_start_date})")
 summary_df = summarize_asset_ledger(ledger_records, selected_symbol, start_date_str=ledger_start_date)
@@ -793,20 +643,19 @@ st.dataframe(summary_df, width="stretch")
 if bot.candles_5m:
   curr_p = bot.candles_5m[-1]["close"]
 
-  col1, col2, col3, col4 = st.columns(4)
+  col1, col2, col3 = st.columns(3)
   with col1:
     st.metric(label=f"Current {selected_symbol} Price", value=f"{curr_p:.2f}")
   with col2:
-    st.metric(label="MTF AVG", value=f"{bot.avg_vol_pct}%")
-  with col3:
     st.metric(label="Locked Signals", value=len(bot.history))
-  with col4:
+  with col3:
     st.metric(label="Timezone", value=selected_tz_name)
 
   if bot.anchor_2130_candle:
     st.caption(
         f"🕒 21:30 4H Candle ({bot.anchor_2130_start.strftime('%Y-%m-%d %H:%M')}) — "
-        f"Supply 3 Mid: {bot.supply_3_mid:.4f} | Demand 3 Mid: {bot.demand_3_mid:.4f}"
+        f"Supply 3 Mid: {bot.supply_3_mid:.4f} | Demand 3 Mid: {bot.demand_3_mid:.4f} "
+        f"(Fallback -> 01:30 Supply Mid: {bot.supply_1_mid:.4f} | Demand Mid: {bot.demand_1_mid:.4f})"
     )
 
   if bot.history:
