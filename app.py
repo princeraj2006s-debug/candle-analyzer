@@ -234,7 +234,8 @@ st.sidebar.text("Fallback : 01:30 4H Mid Point Cross")
 st.sidebar.text("SELL     : Red Candle Crosses Below Mid")
 st.sidebar.text("BUY      : Green Candle Crosses Above Mid")
 st.sidebar.text("Strength : 5m, 15m, 1h, 4h, 1d Candle Power")
-st.sidebar.text("A-Grade  : 4H/1D Align + Wick/Close Rej")
+st.sidebar.text("Zero-Lag : ZLEMA + ATR Band Trend")
+st.sidebar.text("A-Grade  : HTF + Wick + Zero-Lag")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -275,6 +276,44 @@ def _df_from_ohlcv(ohlcv):
   return df.set_index("timestamp")
 
 
+def _compute_zero_lag_series(df, length=21, band_mult=1.2):
+  """Zero-Lag Trend (AlgoAlpha MTF style): lag-compensated EMA + ATR volatility band."""
+  if df is None or df.empty or len(df) < 5:
+    return pd.Series(dtype=float), pd.Series(dtype=float), pd.Series(dtype=str)
+
+  eff_len = max(3, min(length, len(df)))
+  lag = max(1, (eff_len - 1) // 2)
+  close_s = df["Close"].astype(float)
+  zlema_input = close_s + (close_s - close_s.shift(lag)).fillna(0.0)
+  zl_line = zlema_input.ewm(span=eff_len, adjust=False).mean()
+
+  tr = np.maximum(
+      df["High"] - df["Low"],
+      np.maximum(
+          abs(df["High"] - close_s.shift(1)),
+          abs(df["Low"] - close_s.shift(1)),
+      ),
+  )
+  atr = pd.Series(tr, index=df.index).rolling(min(14, len(df))).mean().bfill()
+  band = atr * band_mult
+  upper = zl_line + band
+  lower = zl_line - band
+
+  states = []
+  curr_trend = "BULL" if float(close_s.iloc[0]) >= float(zl_line.iloc[0]) else "BEAR"
+  for i in range(len(df)):
+    c_val = float(close_s.iloc[i])
+    u_val = float(upper.iloc[i])
+    l_val = float(lower.iloc[i])
+    if c_val > u_val:
+      curr_trend = "BULL"
+    elif c_val < l_val:
+      curr_trend = "BEAR"
+    states.append(curr_trend)
+
+  return zl_line, band, pd.Series(states, index=df.index)
+
+
 def _candle_strength_score(df):
   """Returns (buyer_score_0_to_100, seller_score_0_to_100, label) from latest candle."""
   if df is None or df.empty:
@@ -302,7 +341,7 @@ def _candle_strength_score(df):
 
 
 def compute_mtf_candle_strength(dfs_by_tf):
-  """Compute Buyer vs Seller candle strength across 5m, 15m, 1h, 4h, 1d."""
+  """Compute Buyer vs Seller candle strength + Zero-Lag MTF states across 5m, 15m, 1h, 4h, 1d."""
   weights = {
       "1d": 0.30,
       "4h": 0.25,
@@ -315,10 +354,15 @@ def compute_mtf_candle_strength(dfs_by_tf):
   w_seller = 0.0
   tot_w = 0.0
   tf_scores = {}
+  zl_mtf = {}
 
   for tf in ("5m", "15m", "1h", "4h", "1d"):
     df = dfs_by_tf.get(tf)
     b_val, s_val, c_label = _candle_strength_score(df)
+    _, _, zl_series = _compute_zero_lag_series(df, length=21, band_mult=1.2)
+    zl_state = str(zl_series.iloc[-1]) if (zl_series is not None and not zl_series.empty) else ("BULL" if b_val >= s_val else "BEAR")
+    zl_mtf[tf] = zl_state
+
     tf_scores[tf] = {"buyer": b_val, "seller": s_val}
     w = weights[tf]
     w_buyer += b_val * w
@@ -327,6 +371,7 @@ def compute_mtf_candle_strength(dfs_by_tf):
     rows.append({
         "Timeframe": tf,
         "Candle": c_label,
+        "Zero-Lag Trend": "Bullish 🟢" if zl_state == "BULL" else "Bearish 🔴",
         "Buyer Strength": f"{b_val}%",
         "Seller Strength": f"{s_val}%",
         "Dominant": "BUYER 🟢" if b_val >= s_val else "SELLER 🔴",
@@ -344,6 +389,9 @@ def compute_mtf_candle_strength(dfs_by_tf):
   htf_buy_aligned = (h4_b >= h4_s) and (d1_b >= d1_s)
   htf_sell_aligned = (h4_s > h4_b) and (d1_s > d1_b)
 
+  zl_buy_aligned = (zl_mtf.get("4h") == "BULL") and (zl_mtf.get("1d") == "BULL")
+  zl_sell_aligned = (zl_mtf.get("4h") == "BEAR") and (zl_mtf.get("1d") == "BEAR")
+
   if diff >= 8.0:
     verdict = f"BUY Zyada Faydemand 🟢 (+{diff}% Buyer Edge)"
   elif diff <= -8.0:
@@ -359,6 +407,9 @@ def compute_mtf_candle_strength(dfs_by_tf):
       "rows": rows,
       "htf_buy_aligned": htf_buy_aligned,
       "htf_sell_aligned": htf_sell_aligned,
+      "zl_mtf": zl_mtf,
+      "zl_buy_aligned": zl_buy_aligned,
+      "zl_sell_aligned": zl_sell_aligned,
   }
 
 
@@ -378,10 +429,10 @@ def fetch_data(symbol):
       exchange = ex_class({"enableRateLimit": True, "timeout": 15000})
       exchange.load_markets()
       if sym in exchange.markets:
-        ohlcv_1d = exchange.fetch_ohlcv(sym, timeframe="1d", limit=5)
+        ohlcv_1d = exchange.fetch_ohlcv(sym, timeframe="1d", limit=35)
         ohlcv_4h = exchange.fetch_ohlcv(sym, timeframe="4h", limit=50)
-        ohlcv_1h = exchange.fetch_ohlcv(sym, timeframe="1h", limit=10)
-        ohlcv_15m = exchange.fetch_ohlcv(sym, timeframe="15m", limit=10)
+        ohlcv_1h = exchange.fetch_ohlcv(sym, timeframe="1h", limit=35)
+        ohlcv_15m = exchange.fetch_ohlcv(sym, timeframe="15m", limit=35)
         ohlcv_5m = exchange.fetch_ohlcv(sym, timeframe="5m", limit=300)
         if ohlcv_1d and ohlcv_4h and ohlcv_5m:
           df_1d = _df_from_ohlcv(ohlcv_1d)
@@ -404,7 +455,7 @@ def fetch_data(symbol):
 
 
 # ---------------------------------------------------------
-# MULTI-CONFLUENCE MID-CROSS ENGINE (21:30 -> 01:30 FALLBACK)
+# MULTI-CONFLUENCE MID-CROSS ENGINE (ZERO-LAG + DIY BUILDER)
 # ---------------------------------------------------------
 class TWTUltimateEngine:
 
@@ -419,6 +470,7 @@ class TWTUltimateEngine:
     self.candles_5m = []
     self.history = []
     self.signals = []
+    self.diy_checklist = []
 
     # Levels & Zones
     self.prev_high = None
@@ -475,7 +527,6 @@ class TWTUltimateEngine:
     return low_atr or near_ema_chop
 
   def _check_candle_wick_rejection(self, c, side):
-    """Check upper wick rejection on SELL or lower wick rejection on BUY."""
     o = c["open"]
     h = c["high"]
     l = c["low"]
@@ -492,24 +543,68 @@ class TWTUltimateEngine:
       return (cl > o) and ((lower_wick / rng) >= 0.15)
 
   def _grade_signal(self, c, side):
-    """Return ('A-GRADE 🔥', detail_str) if 4H/1D aligns + wick/close rejects, else ('NORMAL ⚡', detail_str)."""
     if side == "BUY":
       htf_ok = bool(self.strength_info.get("htf_buy_aligned", False))
+      zl_5m_ok = c.get("zl_trend") == "BULL"
+      zl_htf_ok = bool(self.strength_info.get("zl_buy_aligned", False))
+      str_ok = float(self.strength_info.get("buyer_pct", 50.0)) >= 52.0
     else:
       htf_ok = bool(self.strength_info.get("htf_sell_aligned", False))
+      zl_5m_ok = c.get("zl_trend") == "BEAR"
+      zl_htf_ok = bool(self.strength_info.get("zl_sell_aligned", False))
+      str_ok = float(self.strength_info.get("seller_pct", 50.0)) >= 52.0
 
     wick_ok = self._check_candle_wick_rejection(c, side)
-    if htf_ok and wick_ok:
-      return "A-GRADE 🔥", "4H/1D Align + Wick/Close Rej"
-    parts = []
-    parts.append("4H/1D OK" if htf_ok else "4H/1D Mixed")
-    parts.append("Wick/Close OK" if wick_ok else "Wick/Close Light")
+    conf_score = sum([htf_ok, wick_ok, zl_5m_ok or zl_htf_ok, str_ok])
+
+    if conf_score >= 3 and (htf_ok or (zl_5m_ok and wick_ok)):
+      return "A-GRADE 🔥", f"Score {conf_score}/4 | ZL+HTF+Wick"
+    parts = [
+        f"Score {conf_score}/4",
+        "ZL OK" if (zl_5m_ok or zl_htf_ok) else "ZL Mix",
+        "4H/1D OK" if htf_ok else "4H/1D Mix",
+        "Wick OK" if wick_ok else "Wick Lt",
+    ]
     return "NORMAL ⚡", " | ".join(parts)
 
+  def _build_diy_checklist(self):
+    has_buy = any("BUY" in s["Type"] for s in self.history)
+    has_sell = any("SELL" in s["Type"] for s in self.history)
+    last_zl = self.candles_5m[-1]["zl_trend"] if self.candles_5m else "BULL"
+    zl_htf_buy = bool(self.strength_info.get("zl_buy_aligned", False))
+    zl_htf_sell = bool(self.strength_info.get("zl_sell_aligned", False))
+    htf_buy = bool(self.strength_info.get("htf_buy_aligned", False))
+    htf_sell = bool(self.strength_info.get("htf_sell_aligned", False))
+
+    self.diy_checklist = [
+        {
+            "Rule (DIY Builder)": "1. Leading Trigger (21:30 / 01:30 Mid Cross)",
+            "BUY Side": "ACTIVE ✅" if has_buy else "WAITING ⏳",
+            "SELL Side": "ACTIVE ✅" if has_sell else "WAITING ⏳",
+        },
+        {
+            "Rule (DIY Builder)": "2. Zero-Lag Trend (5m ZLEMA + ATR Band)",
+            "BUY Side": "BULLISH ✅" if last_zl == "BULL" else "BEARISH ⏳",
+            "SELL Side": "BEARISH ✅" if last_zl == "BEAR" else "BULLISH ⏳",
+        },
+        {
+            "Rule (DIY Builder)": "3. Zero-Lag MTF (4H + 1D Trend)",
+            "BUY Side": "ALIGNED ✅" if zl_htf_buy else "NOT ALIGNED ⏳",
+            "SELL Side": "ALIGNED ✅" if zl_htf_sell else "NOT ALIGNED ⏳",
+        },
+        {
+            "Rule (DIY Builder)": "4. HTF Candle Strength (4H + 1D)",
+            "BUY Side": "STRONG ✅" if htf_buy else "MIXED ⏳",
+            "SELL Side": "STRONG ✅" if htf_sell else "MIXED ⏳",
+        },
+        {
+            "Rule (DIY Builder)": "5. Chop / Sideways Filter",
+            "BUY Side": "CLEAR ✅" if self.chop_filter else "OFF ⚪",
+            "SELL Side": "CLEAR ✅" if self.chop_filter else "OFF ⚪",
+        },
+    ]
+
   def _scan_mid_cross(self, candles, start_dt, sup_mid, dem_mid, label):
-    """Scan candles after start_dt for immediate red cross below sup_mid (SELL)
-    and green cross above dem_mid (BUY).
-    """
     if start_dt is None or not candles:
       return None, None
 
@@ -664,6 +759,8 @@ class TWTUltimateEngine:
     self.df_5m["ATR_SMA"] = self.df_5m["ATR"].rolling(20).mean()
     self.df_5m["EMA50"] = self.df_5m["Close"].ewm(span=50, adjust=False).mean()
 
+    zl_line, zl_band, zl_trend_s = _compute_zero_lag_series(self.df_5m, length=21, band_mult=1.2)
+
     for idx, row in enumerate(self.df_5m.iterrows()):
       dt_utc = row[0]
       dt_user = dt_utc.astimezone(self.user_tz)
@@ -672,6 +769,9 @@ class TWTUltimateEngine:
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
       atr_sma = float(r["ATR_SMA"]) if not pd.isna(r["ATR_SMA"]) else atr
       ema50 = float(r["EMA50"]) if not pd.isna(r["EMA50"]) else c
+      zl_val = float(zl_line.iloc[idx]) if not zl_line.empty and not pd.isna(zl_line.iloc[idx]) else c
+      zl_b = float(zl_band.iloc[idx]) if not zl_band.empty and not pd.isna(zl_band.iloc[idx]) else (atr * 1.2)
+      zl_tr = str(zl_trend_s.iloc[idx]) if not zl_trend_s.empty else ("BULL" if c >= o else "BEAR")
       age_min = (current_utc_time - dt_utc).total_seconds() / 60.0
 
       self.candles_5m.append({
@@ -682,10 +782,11 @@ class TWTUltimateEngine:
           "color": "Green" if c >= o else "Red",
           "open": o, "high": h, "low": l, "close": c,
           "atr": atr, "atr_sma": atr_sma, "ema50": ema50,
+          "zl_line": zl_val, "zl_upper": zl_val + zl_b, "zl_lower": zl_val - zl_b,
+          "zl_trend": zl_tr,
           "is_within_1hr": age_min <= 60.0
       })
 
-    # 1. Check 21:30 anchor mid first
     buy_2130, sell_2130 = self._scan_mid_cross(
         self.candles_5m,
         self.anchor_2130_start,
@@ -694,7 +795,6 @@ class TWTUltimateEngine:
         "21:30",
     )
 
-    # 2. If 21:30 has no strong confirmation on a side, fallback to 01:30 anchor mid
     buy_0130, sell_0130 = self._scan_mid_cross(
         self.candles_5m,
         self.anchor_0130_start,
@@ -711,6 +811,7 @@ class TWTUltimateEngine:
 
     self.history = collected
     self.signals = [s for s in collected if s.get("Is_Within_1hr", False)]
+    self._build_diy_checklist()
 
 
 # ---------------------------------------------------------
@@ -740,7 +841,7 @@ def scan_asset(sym):
   return sym, None, []
 
 
-with st.spinner("⚡ Scanning 20+ assets (21:30 Mid -> 01:30 Mid Fallback)..."):
+with st.spinner("⚡ Scanning 20+ assets (Zero-Lag MTF + DIY Builder)..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
@@ -766,7 +867,7 @@ else:
 # MANUAL ASSET INSPECTOR & PER-ASSET LEDGER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("📊 Individual Asset Inspector (Candle Strength + All Zones)")
+st.subheader("📊 Individual Asset Inspector (Zero-Lag MTF + DIY Builder)")
 
 selected_symbol = st.selectbox(
     "🔍 Select Asset to Load Chart",
@@ -790,7 +891,7 @@ else:
   bot.calculate_and_scan()
 
 if bot.strength_info and bot.strength_info.get("rows"):
-  st.markdown(f"#### 💪 {selected_symbol} Buyer vs Seller Candle Strength (5m, 15m, 1h, 4h, 1d)")
+  st.markdown(f"#### 💪 {selected_symbol} Buyer vs Seller Strength + Zero-Lag MTF (5m, 15m, 1h, 4h, 1d)")
   s_col1, s_col2, s_col3 = st.columns(3)
   with s_col1:
     st.metric("🟢 Buyer Strength (MTF)", f"{bot.strength_info['buyer_pct']}%")
@@ -800,6 +901,10 @@ if bot.strength_info and bot.strength_info.get("rows"):
     st.metric("⚡ Zyada Faydemand Side", bot.strength_info["verdict"])
 
   st.dataframe(pd.DataFrame(bot.strength_info["rows"]), width="stretch")
+
+if bot.diy_checklist:
+  st.markdown(f"#### 🧩 {selected_symbol} DIY Custom Strategy Builder Status")
+  st.dataframe(pd.DataFrame(bot.diy_checklist), width="stretch")
 
 st.markdown(f"### 📈 {selected_symbol} Performance Ledger (From {ledger_start_date})")
 summary_df = summarize_asset_ledger(ledger_records, selected_symbol, start_date_str=ledger_start_date)
@@ -828,7 +933,7 @@ if bot.candles_5m:
     df_history = pd.DataFrame(bot.history).drop(columns=["Is_Within_1hr", "Signal_DT"], errors="ignore")
     st.dataframe(df_history, width="stretch")
 
-  # --- PLOT CHART WITH ALL LEVELS ---
+  # --- PLOT CHART WITH ALL LEVELS + ZERO-LAG LINE ---
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
   for c in bot.candles_5m:
     col = "#26a69a" if c["close"] >= c["open"] else "#ef5350"
@@ -839,6 +944,11 @@ if bot.candles_5m:
 
     ax.bar(c["id"], body_height, bottom=lower_val, color=col, width=0.6, edgecolor=col)
     ax.vlines(c["id"], c["low"], c["high"], color=col, linewidth=1.2)
+
+  c_ids = [c["id"] for c in bot.candles_5m]
+  zl_vals = [c["zl_line"] for c in bot.candles_5m]
+  if c_ids and zl_vals:
+    ax.plot(c_ids, zl_vals, color="#00e5ff", linewidth=1.6, label="Zero-Lag Trend Line (ZLEMA)")
 
   if bot.anchor_2130_start:
     c_2130_list = [c for c in bot.candles_5m if c["dt_user"] >= bot.anchor_2130_start]
