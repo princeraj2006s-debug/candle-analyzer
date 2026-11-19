@@ -75,6 +75,7 @@ def update_ledger_with_engine(records, engine):
           "Time": sig["Time"],
           "Direction": "BUY" if "BUY" in sig["Type"] else "SELL",
           "Type": sig["Type"],
+          "Grade": sig.get("Grade", "NORMAL ⚡"),
           "Setup": sig["Setup"],
           "Entry Price": float(sig["Entry Price"]),
           "Stop Loss (SL)": float(sig["Stop Loss (SL)"]),
@@ -233,6 +234,7 @@ st.sidebar.text("Fallback : 01:30 4H Mid Point Cross")
 st.sidebar.text("SELL     : Red Candle Crosses Below Mid")
 st.sidebar.text("BUY      : Green Candle Crosses Above Mid")
 st.sidebar.text("Strength : 5m, 15m, 1h, 4h, 1d Candle Power")
+st.sidebar.text("A-Grade  : 4H/1D Align + Wick/Close Rej")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -286,13 +288,11 @@ def _candle_strength_score(df):
   body_ratio = min(1.0, abs(c - o) / rng)
 
   if c >= o:
-    # Green candle: buyer dominance + close position in range
     close_pos = (c - l) / rng
     buyer = round(min(100.0, 50.0 + (body_ratio * 35.0) + ((close_pos - 0.5) * 30.0)), 1)
     seller = round(max(0.0, 100.0 - buyer), 1)
     label = "Buyer Green 🟢"
   else:
-    # Red candle: seller dominance + close position near low
     close_pos = (c - l) / rng
     seller = round(min(100.0, 50.0 + (body_ratio * 35.0) + ((0.5 - close_pos) * 30.0)), 1)
     buyer = round(max(0.0, 100.0 - seller), 1)
@@ -314,10 +314,12 @@ def compute_mtf_candle_strength(dfs_by_tf):
   w_buyer = 0.0
   w_seller = 0.0
   tot_w = 0.0
+  tf_scores = {}
 
   for tf in ("5m", "15m", "1h", "4h", "1d"):
     df = dfs_by_tf.get(tf)
     b_val, s_val, c_label = _candle_strength_score(df)
+    tf_scores[tf] = {"buyer": b_val, "seller": s_val}
     w = weights[tf]
     w_buyer += b_val * w
     w_seller += s_val * w
@@ -334,6 +336,14 @@ def compute_mtf_candle_strength(dfs_by_tf):
   avg_seller = round(w_seller / tot_w, 1) if tot_w > 0 else 50.0
   diff = round(avg_buyer - avg_seller, 1)
 
+  h4_b = tf_scores.get("4h", {}).get("buyer", 50.0)
+  h4_s = tf_scores.get("4h", {}).get("seller", 50.0)
+  d1_b = tf_scores.get("1d", {}).get("buyer", 50.0)
+  d1_s = tf_scores.get("1d", {}).get("seller", 50.0)
+
+  htf_buy_aligned = (h4_b >= h4_s) and (d1_b >= d1_s)
+  htf_sell_aligned = (h4_s > h4_b) and (d1_s > d1_b)
+
   if diff >= 8.0:
     verdict = f"BUY Zyada Faydemand 🟢 (+{diff}% Buyer Edge)"
   elif diff <= -8.0:
@@ -347,6 +357,8 @@ def compute_mtf_candle_strength(dfs_by_tf):
       "diff": diff,
       "verdict": verdict,
       "rows": rows,
+      "htf_buy_aligned": htf_buy_aligned,
+      "htf_sell_aligned": htf_sell_aligned,
   }
 
 
@@ -462,6 +474,38 @@ class TWTUltimateEngine:
     near_ema_chop = (atr > 0 and abs(close_val - ema) < (0.25 * atr))
     return low_atr or near_ema_chop
 
+  def _check_candle_wick_rejection(self, c, side):
+    """Check upper wick rejection on SELL or lower wick rejection on BUY."""
+    o = c["open"]
+    h = c["high"]
+    l = c["low"]
+    cl = c["close"]
+    rng = max(h - l, 1e-9)
+    body_top = max(o, cl)
+    body_bot = min(o, cl)
+
+    if side == "SELL":
+      upper_wick = max(0.0, h - body_top)
+      return (cl < o) and ((upper_wick / rng) >= 0.15)
+    else:
+      lower_wick = max(0.0, body_bot - l)
+      return (cl > o) and ((lower_wick / rng) >= 0.15)
+
+  def _grade_signal(self, c, side):
+    """Return ('A-GRADE 🔥', detail_str) if 4H/1D aligns + wick/close rejects, else ('NORMAL ⚡', detail_str)."""
+    if side == "BUY":
+      htf_ok = bool(self.strength_info.get("htf_buy_aligned", False))
+    else:
+      htf_ok = bool(self.strength_info.get("htf_sell_aligned", False))
+
+    wick_ok = self._check_candle_wick_rejection(c, side)
+    if htf_ok and wick_ok:
+      return "A-GRADE 🔥", "4H/1D Align + Wick/Close Rej"
+    parts = []
+    parts.append("4H/1D OK" if htf_ok else "4H/1D Mixed")
+    parts.append("Wick/Close OK" if wick_ok else "Wick/Close Light")
+    return "NORMAL ⚡", " | ".join(parts)
+
   def _scan_mid_cross(self, candles, start_dt, sup_mid, dem_mid, label):
     """Scan candles after start_dt for immediate red cross below sup_mid (SELL)
     and green cross above dem_mid (BUY).
@@ -501,6 +545,7 @@ class TWTUltimateEngine:
             and (not choppy)
         )
         if not sell_sig and red_cross_down:
+          grade, conf_note = self._grade_signal(c, "SELL")
           sl = round(max(sup_mid, high_val) + (1.5 * atr), dec)
           sell_sig = {
               "Asset": self.symbol,
@@ -508,7 +553,8 @@ class TWTUltimateEngine:
               "Time": c["time"],
               "Candle #": c["id"],
               "Type": "SELL 🔴",
-              "Setup": f"{label} Supply Mid Cross SELL",
+              "Grade": grade,
+              "Setup": f"{label} Supply Mid Cross SELL ({conf_note})",
               "Entry Price": round(close_val, dec),
               "Stop Loss (SL)": sl,
               "TP 1": round(close_val - (1.2 * atr), dec),
@@ -529,6 +575,7 @@ class TWTUltimateEngine:
             and (not choppy)
         )
         if not buy_sig and green_cross_up:
+          grade, conf_note = self._grade_signal(c, "BUY")
           sl = round(min(dem_mid, low_val) - (1.5 * atr), dec)
           buy_sig = {
               "Asset": self.symbol,
@@ -536,7 +583,8 @@ class TWTUltimateEngine:
               "Time": c["time"],
               "Candle #": c["id"],
               "Type": "BUY 🟢",
-              "Setup": f"{label} Demand Mid Cross BUY",
+              "Grade": grade,
+              "Setup": f"{label} Demand Mid Cross BUY ({conf_note})",
               "Entry Price": round(close_val, dec),
               "Stop Loss (SL)": sl,
               "TP 1": round(close_val + (1.2 * atr), dec),
@@ -837,7 +885,8 @@ if bot.candles_5m:
   for sig in bot.history:
     is_b = "BUY" in sig["Type"]
     bg_col = "#00e676" if is_b else "#ff5252"
-    txt = " BUY " if is_b else " SELL "
+    grade_prefix = "A+ " if "A-GRADE" in sig.get("Grade", "") else ""
+    txt = f" {grade_prefix}{'BUY' if is_b else 'SELL'} "
     ax.text(
         sig["Candle #"],
         sig["Entry Price"],
