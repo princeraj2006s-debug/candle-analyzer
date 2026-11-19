@@ -232,7 +232,7 @@ st.sidebar.text("Demand Zones : 01:30, 05:30 & 21:30 (till next 21:30) Lows + Pr
 st.sidebar.text("Supply Zones : 01:30, 05:30 & 21:30 (till next 21:30) Highs + Prev Day High")
 st.sidebar.text("Supply Mid   : 01:30 & 21:30 Supply Zone Mid Line")
 st.sidebar.text("BUY          : Demand Touch + Bounce + Swing Reclaim")
-st.sidebar.text("SELL         : Supply / Mid Retest + Rejection (Blocked in Demand)")
+st.sidebar.text("SELL         : Supply / Mid Retest + Rejection (Anti-Green Rally)")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -514,6 +514,7 @@ class TWTUltimateEngine:
     sup3_retested = False
 
     prev_c = None
+    recent_colors = []
 
     for c in scan_5m:
       atr = c["atr"]
@@ -524,14 +525,29 @@ class TWTUltimateEngine:
       is_green = c["color"] == "Green"
       is_red = c["color"] == "Red"
 
+      # Track last 3 candles color to detect active green rally / pullback trap
+      recent_colors.append(c["color"])
+      if len(recent_colors) > 3:
+        recent_colors.pop(0)
+
+      in_green_rally = len(recent_colors) >= 2 and all(col == "Green" for col in recent_colors[-2:])
+      prev_mid = ((prev_c["high"] + prev_c["low"]) / 2.0) if prev_c is not None else close_val
+      strong_bear_rejection = (
+          is_red
+          and (prev_c is not None)
+          and (close_val < prev_c["low"])
+          and (close_val < prev_mid)
+          and ((prev_c["high"] - close_val) >= (0.65 * atr))
+      )
+
       in_demand_guard = self._is_in_demand_or_pdl(low_val, close_val)
       choppy = self._is_choppy(c)
       buy_pullback_ok = (not choppy) and is_green and (prev_c is None or close_val > prev_c["high"])
       sell_retest_ok = (
           (not choppy)
           and (not in_demand_guard)
-          and is_red
-          and (prev_c is not None and close_val < prev_c["low"])
+          and (not in_green_rally)
+          and strong_bear_rejection
       )
 
       # --- A. PREVIOUS DAY HIGH / LOW STRATEGY ---
