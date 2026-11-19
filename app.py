@@ -178,6 +178,17 @@ class TWTUltimateEngine:
       )
     return None
 
+  def _touches_zone(self, low_val, high_val, zone_box, is_demand=True):
+    if not zone_box:
+      return False
+    z_low, z_high = zone_box
+    if is_demand:
+      # Price taps or dips into demand zone
+      return (low_val <= z_high) and (high_val >= z_low)
+    else:
+      # Price taps or pokes into supply zone
+      return (high_val >= z_low) and (low_val <= z_high)
+
   def calculate_and_scan(self):
     if self.df_1d is None or self.df_1d.empty or self.df_4h is None or self.df_4h.empty or self.df_5m is None or self.df_5m.empty:
       return
@@ -278,16 +289,18 @@ class TWTUltimateEngine:
           "is_within_1hr": age_min <= 60.0
       })
 
+    # Scan today's 5m candles (or recent 144 candles = 12h if today's count is small)
     today_5m = [c for c in self.candles_5m if c["date"] == latest_date]
-    if not today_5m:
-      today_5m = self.candles_5m
+    scan_candles = today_5m if len(today_5m) >= 12 else self.candles_5m[-144:]
+    if not scan_candles:
+      scan_candles = self.candles_5m
 
     first_buy = None
     first_sell = None
     broke_above_pdh = False
     broke_below_pdl = False
 
-    for c in today_5m:
+    for c in scan_candles:
       atr = c["atr"]
       ema = c["ema50"]
       dec = get_decimals(c["close"])
@@ -295,16 +308,14 @@ class TWTUltimateEngine:
       low_val = c["low"]
       close_val = c["close"]
 
-      # Helper check for whether price is inside ANY Demand/Supply Zone
-      in_demand_zone_1 = self.demand_box_1 and (self.demand_box_1[0] <= close_val <= self.demand_box_1[1])
-      in_demand_zone_2 = self.demand_box_2 and (self.demand_box_2[0] <= close_val <= self.demand_box_2[1])
-      in_demand_zone_3 = self.demand_box_3 and (self.demand_box_3[0] <= close_val <= self.demand_box_3[1])
+      touch_demand_1 = self._touches_zone(low_val, high_val, self.demand_box_1, is_demand=True)
+      touch_demand_2 = self._touches_zone(low_val, high_val, self.demand_box_2, is_demand=True)
+      touch_demand_3 = self._touches_zone(low_val, high_val, self.demand_box_3, is_demand=True)
       near_prev_low = low_val <= self.prev_low
 
-      in_supply_zone_1 = self.supply_box_1 and (self.supply_box_1[0] <= close_val <= self.supply_box_1[1])
-      in_supply_zone_2 = self.supply_box_2 and (self.supply_box_2[0] <= close_val <= self.supply_box_2[1])
-      in_supply_zone_3 = self.supply_box_3 and (self.supply_box_3[0] <= close_val <= self.supply_box_3[1])
-      near_prev_high = high_val >= self.prev_high
+      touch_supply_1 = self._touches_zone(low_val, high_val, self.supply_box_1, is_demand=False)
+      touch_supply_2 = self._touches_zone(low_val, high_val, self.supply_box_2, is_demand=False)
+      touch_supply_3 = self._touches_zone(low_val, high_val, self.supply_box_3, is_demand=False)
 
       # --- A. PREVIOUS DAY HIGH / LOW REJECTION STRATEGY ---
       if high_val > self.prev_high:
@@ -348,8 +359,8 @@ class TWTUltimateEngine:
         broke_below_pdl = False
 
       # --- B. 4H ANCHOR ZONE 1 (01:30 AM) ---
-      if c["dt_user"] > anchor_dt_1 and self.demand_box_1 and self.supply_box_1:
-        if not first_buy and c["color"] == "Green" and in_demand_zone_1 and close_val > ema:
+      if anchor_dt_1 and c["dt_user"] >= anchor_dt_1 and self.demand_box_1 and self.supply_box_1:
+        if not first_buy and c["color"] == "Green" and touch_demand_1 and close_val > ema:
           sl = round(self.demand_box_1[0] - (1.5 * atr), dec)
           first_buy = {
               "Asset": self.symbol,
@@ -366,7 +377,7 @@ class TWTUltimateEngine:
               "Is_Within_1hr": c["is_within_1hr"],
           }
 
-        if not first_sell and c["color"] == "Red" and in_supply_zone_1 and close_val < ema:
+        if not first_sell and c["color"] == "Red" and touch_supply_1 and close_val < ema:
           sl = round(self.supply_box_1[1] + (1.5 * atr), dec)
           first_sell = {
               "Asset": self.symbol,
@@ -384,8 +395,8 @@ class TWTUltimateEngine:
           }
 
       # --- C. 4H ANCHOR ZONE 2 (05:30 AM) ---
-      if anchor_dt_2 and c["dt_user"] > anchor_dt_2 and self.demand_box_2 and self.supply_box_2:
-        if not first_buy and c["color"] == "Green" and in_demand_zone_2 and close_val > ema:
+      if anchor_dt_2 and c["dt_user"] >= anchor_dt_2 and self.demand_box_2 and self.supply_box_2:
+        if not first_buy and c["color"] == "Green" and touch_demand_2 and close_val > ema:
           sl = round(self.demand_box_2[0] - (1.5 * atr), dec)
           first_buy = {
               "Asset": self.symbol,
@@ -402,7 +413,7 @@ class TWTUltimateEngine:
               "Is_Within_1hr": c["is_within_1hr"],
           }
 
-        if not first_sell and c["color"] == "Red" and in_supply_zone_2 and close_val < ema:
+        if not first_sell and c["color"] == "Red" and touch_supply_2 and close_val < ema:
           sl = round(self.supply_box_2[1] + (1.5 * atr), dec)
           first_sell = {
               "Asset": self.symbol,
@@ -420,8 +431,8 @@ class TWTUltimateEngine:
           }
 
       # --- D. 4H ANCHOR ZONE 3 (21:30 PM Rolling) ---
-      if anchor_dt_3 and c["dt_user"] > anchor_dt_3 and self.demand_box_3 and self.supply_box_3:
-        if not first_buy and c["color"] == "Green" and in_demand_zone_3 and close_val > ema:
+      if anchor_dt_3 and self.demand_box_3 and self.supply_box_3:
+        if not first_buy and c["color"] == "Green" and touch_demand_3 and close_val > ema:
           sl = round(self.demand_box_3[0] - (1.5 * atr), dec)
           first_buy = {
               "Asset": self.symbol,
@@ -438,7 +449,7 @@ class TWTUltimateEngine:
               "Is_Within_1hr": c["is_within_1hr"],
           }
 
-        if not first_sell and c["color"] == "Red" and in_supply_zone_3 and close_val < ema:
+        if not first_sell and c["color"] == "Red" and touch_supply_3 and close_val < ema:
           sl = round(self.supply_box_3[1] + (1.5 * atr), dec)
           first_sell = {
               "Asset": self.symbol,
