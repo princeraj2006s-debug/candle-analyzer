@@ -38,7 +38,7 @@ LEDGER_FILE = Path("twt_signals_ledger.json")
 
 
 # ---------------------------------------------------------
-# PERSISTENT LEDGER HELPERS (JAN -> NOV -> ONWARDS)
+# PERSISTENT LEDGER HELPERS (PER-ASSET ISOLATED)
 # ---------------------------------------------------------
 def load_ledger():
   if LEDGER_FILE.exists():
@@ -154,11 +154,14 @@ def update_ledger_with_engine(records, engine):
 
 
 def _pct(num, den):
-  return f"{round((num / den) * 100.0, 1)}%" if den > 0 else "N/A"
+  return f"{round((num / den) * 100.0, 1)}%" if den > 0 else "0.0%"
 
 
-def summarize_ledger(records, start_date_str="2026-01-01"):
-  filtered = [r for r in records if str(r.get("Date", "")) >= start_date_str]
+def summarize_asset_ledger(records, symbol, start_date_str="2026-01-01"):
+  filtered = [
+      r for r in records
+      if r.get("Asset") == symbol and str(r.get("Date", "")) >= start_date_str
+  ]
 
   def stats_for(direction):
     sub = [r for r in filtered if r.get("Direction") == direction]
@@ -166,39 +169,25 @@ def summarize_ledger(records, start_date_str="2026-01-01"):
     tp1 = sum(1 for r in sub if r.get("TP1_Hit"))
     tp2 = sum(1 for r in sub if r.get("TP2_Hit"))
     tp3 = sum(1 for r in sub if r.get("TP3_Hit"))
-    sl = sum(1 for r in sub if r.get("SL_Hit"))
-    open_cnt = sum(1 for r in sub if not r.get("TP1_Hit") and not r.get("SL_Hit"))
     return {
         "Total Signals": total,
-        "TP1 Hit": tp1,
         "TP1 Win %": _pct(tp1, total),
-        "TP2 Hit": tp2,
         "TP2 Win %": _pct(tp2, total),
-        "TP3 Hit": tp3,
         "TP3 Win %": _pct(tp3, total),
-        "SL Hit": sl,
-        "Open": open_cnt,
     }
 
   buy_s = stats_for("BUY")
   sell_s = stats_for("SELL")
   tot_sig = buy_s["Total Signals"] + sell_s["Total Signals"]
-  tot_tp1 = buy_s["TP1 Hit"] + sell_s["TP1 Hit"]
-  tot_tp2 = buy_s["TP2 Hit"] + sell_s["TP2 Hit"]
-  tot_tp3 = buy_s["TP3 Hit"] + sell_s["TP3 Hit"]
-  tot_sl = buy_s["SL Hit"] + sell_s["SL Hit"]
-  tot_open = buy_s["Open"] + sell_s["Open"]
+  tot_tp1 = sum(1 for r in filtered if r.get("TP1_Hit"))
+  tot_tp2 = sum(1 for r in filtered if r.get("TP2_Hit"))
+  tot_tp3 = sum(1 for r in filtered if r.get("TP3_Hit"))
 
   combined = {
       "Total Signals": tot_sig,
-      "TP1 Hit": tot_tp1,
       "TP1 Win %": _pct(tot_tp1, tot_sig),
-      "TP2 Hit": tot_tp2,
       "TP2 Win %": _pct(tot_tp2, tot_sig),
-      "TP3 Hit": tot_tp3,
       "TP3 Win %": _pct(tot_tp3, tot_sig),
-      "SL Hit": tot_sl,
-      "Open": tot_open,
   }
   return pd.DataFrame([
       {"Side": "BUY 🟢", **buy_s},
@@ -865,21 +854,7 @@ else:
   st.info("ℹ️ No active perfect setups meeting strict rules. False entries avoided.")
 
 # ---------------------------------------------------------
-# PERSISTENT BUY / SELL TP1-TP3 & SL TRACKER
-# ---------------------------------------------------------
-st.markdown("---")
-st.subheader(f"📈 Persistent BUY vs SELL Performance Ledger (From {ledger_start_date})")
-summary_df = summarize_ledger(ledger_records, start_date_str=ledger_start_date)
-st.dataframe(summary_df, width="stretch")
-
-filtered_ledger = [r for r in ledger_records if str(r.get("Date", "")) >= ledger_start_date]
-if filtered_ledger:
-  with st.expander("🗂️ View Full Recorded Signal Log"):
-    log_df = pd.DataFrame(filtered_ledger).drop(columns=["id", "Signal_DT"], errors="ignore")
-    st.dataframe(log_df, width="stretch")
-
-# ---------------------------------------------------------
-# MANUAL ASSET INSPECTOR & CHART VIEWER
+# MANUAL ASSET INSPECTOR & PER-ASSET LEDGER
 # ---------------------------------------------------------
 st.markdown("---")
 st.subheader("📊 Individual Asset Inspector (All Zones & Prev Day Levels)")
@@ -896,6 +871,10 @@ else:
   df_1d, df_4h, df_5m = fetch_data(selected_symbol)
   bot = TWTUltimateEngine(df_1d, df_4h, df_5m, selected_symbol, active_tz, chop_filter=use_chop_filter)
   bot.calculate_and_scan()
+
+st.markdown(f"### 📈 {selected_symbol} Performance Ledger (From {ledger_start_date})")
+summary_df = summarize_asset_ledger(ledger_records, selected_symbol, start_date_str=ledger_start_date)
+st.dataframe(summary_df, width="stretch")
 
 if bot.candles_5m:
   curr_p = bot.candles_5m[-1]["close"]
