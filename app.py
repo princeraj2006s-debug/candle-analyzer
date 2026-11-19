@@ -52,12 +52,12 @@ active_tz = ZoneInfo(selected_tz_name)
 
 selected_tf = "5m"
 st.sidebar.text("⏱️ Entry Timeframe : 5m (Fixed)")
-st.sidebar.text("📊 Confluence : 01:30 & 05:30 4H + Prev Day 1D")
+st.sidebar.text("📊 Confluence : 01:30, 05:30 & 21:30 4H + Prev Day 1D")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Master Confluence Rules")
-st.sidebar.text("Demand Zones : 01:30 & 05:30 Lows + Prev Day Low")
-st.sidebar.text("Supply Zones : 01:30 & 05:30 Highs + Prev Day High")
+st.sidebar.text("Demand Zones : 01:30, 05:30 & 21:30 (till 02:30) Lows + Prev Day Low")
+st.sidebar.text("Supply Zones : 01:30, 05:30 & 21:30 (till 02:30) Highs + Prev Day High")
 st.sidebar.text("BUY  : Strict Demand Zone Bounce + EMA50")
 st.sidebar.text("SELL : Strict Supply Zone Rejection + EMA50")
 
@@ -145,7 +145,7 @@ class TWTUltimateEngine:
     self.candles_5m = []
     self.history = []
     self.signals = []
-    
+
     # Levels & Zones
     self.prev_high = None
     self.prev_low = None
@@ -153,6 +153,12 @@ class TWTUltimateEngine:
     self.supply_box_1 = None
     self.demand_box_2 = None
     self.supply_box_2 = None
+    self.demand_box_3 = None
+    self.supply_box_3 = None
+    self.anchor_2130_high = None
+    self.anchor_2130_low = None
+    self.anchor_2130_start = None
+    self.anchor_2130_expiry = None
 
   def _build_zones(self, anchor_candle):
     high_val = anchor_candle["high"]
@@ -161,22 +167,40 @@ class TWTUltimateEngine:
     zone_thickness = (rng * 0.25) if rng > 0 else (high_val * 0.002)
     return (low_val, low_val + zone_thickness), (high_val - zone_thickness, high_val)
 
+  def _get_active_2130_anchor(self, candles_4h, now_user):
+    # Find 21:30 4H candles (around 21:30 in user timezone)
+    candidates_2130 = [
+        c for c in candles_4h
+        if abs(
+            (datetime.combine(c["date"], c["time_obj"]) - datetime.combine(c["date"], time(21, 30))).total_seconds()
+        ) <= 3600
+    ]
+    for c in sorted(candidates_2130, key=lambda x: x["dt_user"], reverse=True):
+      start_dt = c["dt_user"]
+      next_day = c["date"] + timedelta(days=1)
+      expiry_dt = datetime.combine(next_day, time(2, 30), tzinfo=self.user_tz)
+      # Valid from 21:30 when formed until next day 02:30 AM
+      if start_dt <= now_user <= expiry_dt:
+        return c, start_dt, expiry_dt
+    return None, None, None
+
   def calculate_and_scan(self):
     if self.df_1d is None or self.df_1d.empty or self.df_4h is None or self.df_4h.empty or self.df_5m is None or self.df_5m.empty:
       return
 
     current_utc_time = datetime.now(timezone.utc)
+    now_user = current_utc_time.astimezone(self.user_tz)
 
     # 1. Previous Day High & Low
     if len(self.df_1d) >= 2:
       prev_candle = self.df_1d.iloc[-2]
     else:
       prev_candle = self.df_1d.iloc[-1]
-    
+
     self.prev_high = float(prev_candle["High"])
     self.prev_low = float(prev_candle["Low"])
 
-    # 2. 4H Anchor Zones (01:30 & 05:30)
+    # 2. 4H Anchor Zones (01:30, 05:30 & 21:30 valid till next day 02:30)
     candles_4h = []
     for row in self.df_4h.iterrows():
       dt_utc = row[0]
@@ -190,7 +214,7 @@ class TWTUltimateEngine:
           "low": float(r["Low"])
       })
 
-    latest_date = candles_4h[-1]["date"] if candles_4h else datetime.now().date()
+    latest_date = candles_4h[-1]["date"] if candles_4h else now_user.date()
     today_4h = [c for c in candles_4h if c["date"] == latest_date]
     if not today_4h:
       today_4h = candles_4h
@@ -215,6 +239,15 @@ class TWTUltimateEngine:
       )
       anchor_dt_2 = anchor_2["dt_user"]
       self.demand_box_2, self.supply_box_2 = self._build_zones(anchor_2)
+
+    # Anchor 3 (~21:30 PM 4H candle: valid only until 02:30 AM next day, then resets until next 21:30 PM)
+    anchor_3, anchor_dt_3, expiry_dt_3 = self._get_active_2130_anchor(candles_4h, now_user)
+    if anchor_3:
+      self.anchor_2130_high = anchor_3["high"]
+      self.anchor_2130_low = anchor_3["low"]
+      self.anchor_2130_start = anchor_dt_3
+      self.anchor_2130_expiry = expiry_dt_3
+      self.demand_box_3, self.supply_box_3 = self._build_zones(anchor_3)
 
     # 3. Process 5M Candles & Indicators
     self.df_5m["TR"] = np.maximum(
@@ -264,14 +297,22 @@ class TWTUltimateEngine:
       low_val = c["low"]
       close_val = c["close"]
 
-      # Helper check for whether price is inside ANY Demand Zone (01:30, 05:30, or near Prev Day Low)
       in_demand_zone_1 = self.demand_box_1 and (self.demand_box_1[0] <= close_val <= self.demand_box_1[1])
       in_demand_zone_2 = self.demand_box_2 and (self.demand_box_2[0] <= close_val <= self.demand_box_2[1])
       near_prev_low = low_val <= self.prev_low
 
       in_supply_zone_1 = self.supply_box_1 and (self.supply_box_1[0] <= close_val <= self.supply_box_1[1])
       in_supply_zone_2 = self.supply_box_2 and (self.supply_box_2[0] <= close_val <= self.supply_box_2[1])
-      near_prev_high = high_val >= self.prev_high
+
+      # 21:30 4H anchor active window: from anchor_dt_3 until next day 02:30 AM
+      in_2130_window = (
+          anchor_3 is not None
+          and anchor_dt_3 is not None
+          and expiry_dt_3 is not None
+          and (anchor_dt_3 <= c["dt_user"] <= expiry_dt_3)
+      )
+      in_demand_zone_3 = in_2130_window and self.demand_box_3 and (self.demand_box_3[0] <= close_val <= self.demand_box_3[1])
+      in_supply_zone_3 = in_2130_window and self.supply_box_3 and (self.supply_box_3[0] <= close_val <= self.supply_box_3[1])
 
       # --- A. PREVIOUS DAY HIGH / LOW REJECTION STRATEGY ---
       if high_val > self.prev_high:
@@ -386,6 +427,42 @@ class TWTUltimateEngine:
               "Is_Within_1hr": c["is_within_1hr"],
           }
 
+      # --- D. 4H ANCHOR ZONE 3 (21:30 PM, VALID UNTIL 02:30 AM NEXT DAY) ---
+      if in_2130_window and self.demand_box_3 and self.supply_box_3:
+        if not first_buy and c["color"] == "Green" and in_demand_zone_3 and close_val > ema:
+          sl = round(self.demand_box_3[0] - (1.5 * atr), dec)
+          first_buy = {
+              "Asset": self.symbol,
+              "Date": str(c["date"]),
+              "Time": c["time"],
+              "Candle #": c["id"],
+              "Type": "BUY 🟢",
+              "Setup": "21:30 Zone Demand Bounce",
+              "Entry Price": round(close_val, dec),
+              "Stop Loss (SL)": sl,
+              "TP 1": round(close_val + (1.2 * atr), dec),
+              "TP 2": round(close_val + (2.5 * atr), dec),
+              "TP 3": round(close_val + (4.0 * atr), dec),
+              "Is_Within_1hr": c["is_within_1hr"],
+          }
+
+        if not first_sell and c["color"] == "Red" and in_supply_zone_3 and close_val < ema:
+          sl = round(self.supply_box_3[1] + (1.5 * atr), dec)
+          first_sell = {
+              "Asset": self.symbol,
+              "Date": str(c["date"]),
+              "Time": c["time"],
+              "Candle #": c["id"],
+              "Type": "SELL 🔴",
+              "Setup": "21:30 Zone Supply Rejection",
+              "Entry Price": round(close_val, dec),
+              "Stop Loss (SL)": sl,
+              "TP 1": round(close_val - (1.2 * atr), dec),
+              "TP 2": round(close_val - (2.5 * atr), dec),
+              "TP 3": round(close_val - (4.0 * atr), dec),
+              "Is_Within_1hr": c["is_within_1hr"],
+          }
+
     collected = [sig for sig in [first_buy, first_sell] if sig is not None]
     collected.sort(key=lambda x: x["Candle #"])
 
@@ -487,6 +564,12 @@ if bot.candles_5m:
     ax.axhspan(bot.demand_box_2[0], bot.demand_box_2[1], color="#26a69a", alpha=0.18, label="Demand 2 (05:30)")
   if bot.supply_box_2:
     ax.axhspan(bot.supply_box_2[0], bot.supply_box_2[1], color="#ff7043", alpha=0.18, label="Supply 2 (05:30)")
+
+  # Plot 21:30 PM Zones (only while active up to next day 02:30 AM)
+  if bot.demand_box_3:
+    ax.axhspan(bot.demand_box_3[0], bot.demand_box_3[1], color="#29b6f6", alpha=0.20, label="Demand 3 (21:30 till 02:30)")
+  if bot.supply_box_3:
+    ax.axhspan(bot.supply_box_3[0], bot.supply_box_3[1], color="#ab47bc", alpha=0.20, label="Supply 3 (21:30 till 02:30)")
 
   # Plot Previous Day High & Low Lines
   if bot.prev_high is not None:
