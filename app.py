@@ -224,15 +224,15 @@ ledger_start_date = st.sidebar.text_input(
 
 selected_tf = "5m"
 st.sidebar.text("⏱️ Entry Timeframe : 5m (Pullback Allowed)")
-st.sidebar.text("📊 BUY Filter  : Demand Zone / Mid + AVG > 45%")
-st.sidebar.text("📉 SELL Filter : Supply Zone / Mid + AVG > 45%")
+st.sidebar.text("📊 BUY Filter  : 15m/30m/1h/4h/1d Green + AVG > 45%")
+st.sidebar.text("📉 SELL Filter : 15m/1h/4h/1d Red + AVG > 45%")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Master Confluence Rules")
 st.sidebar.text("Primary  : 21:30 4H Mid Point Cross")
 st.sidebar.text("Fallback : 01:30 4H Mid Point Cross")
 st.sidebar.text("Zone AVG : MTF AVG > 45% Required")
-st.sidebar.text("BUY / SELL: Demand / Supply Zone + AVG > 45%")
+st.sidebar.text("BUY / SELL: Candle Direction + Zone + AVG > 45%")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -371,7 +371,7 @@ def fetch_data(symbol):
 
 
 # ---------------------------------------------------------
-# MULTI-CONFLUENCE MID-CROSS ENGINE WITH >45% AVG FILTER
+# MULTI-CONFLUENCE MID-CROSS ENGINE WITH CANDLE + >45% AVG FILTER
 # ---------------------------------------------------------
 class TWTUltimateEngine:
 
@@ -455,8 +455,32 @@ class TWTUltimateEngine:
     return low_atr or near_ema_chop
 
   def _avg_above_45_ok(self):
-    # Require average > 45%
     return self.avg_vol_pct > 45.0
+
+  def _buy_mtf_ok(self):
+    # BUY: 15m, 30m, 1h, 4h, 1d all Green + AVG > 45% (5m red pullback allowed)
+    req_tfs = ("15m", "30m", "1h", "4h", "1d")
+    if not self.mtf_green:
+      return False
+    candles_ok = all(self.mtf_green.get(tf, False) is True for tf in req_tfs)
+    return candles_ok and self._avg_above_45_ok()
+
+  def _sell_mtf_ok(self):
+    # SELL: 15m, 1h, 4h, 1d Red + AVG > 45% (5m green pullback allowed)
+    req_tfs = ("15m", "1h", "4h", "1d")
+    if not self.mtf_green:
+      return False
+    candles_ok = all(self.mtf_green.get(tf, True) is False for tf in req_tfs)
+    return candles_ok and self._avg_above_45_ok()
+
+  def get_bias_label(self):
+    if not self._avg_above_45_ok():
+      return "LOW (<45%)"
+    if self._buy_mtf_ok():
+      return "BUY READY 🟢"
+    if self._sell_mtf_ok():
+      return "SELL READY 🔴"
+    return "WAIT ⏳"
 
   def _scan_mid_cross(self, candles, start_dt, sup_mid, dem_mid, label):
     if start_dt is None or not candles:
@@ -472,7 +496,8 @@ class TWTUltimateEngine:
     seen_below_dem = False
     prev_c = None
 
-    avg_ok = self._avg_above_45_ok()
+    buy_allowed = self._buy_mtf_ok()
+    sell_allowed = self._sell_mtf_ok()
 
     for c in sub:
       atr = c["atr"]
@@ -483,7 +508,6 @@ class TWTUltimateEngine:
       choppy = self._is_choppy(c)
       prev_close = prev_c["close"] if prev_c is not None else close_val
 
-      # SELL: Supply zone/mid cross when AVG > 45% (5m pullback allowed)
       if sup_mid is not None:
         if high_val >= sup_mid or prev_close >= sup_mid:
           seen_above_sup = True
@@ -492,7 +516,7 @@ class TWTUltimateEngine:
             and (prev_close >= sup_mid or high_val >= sup_mid)
             and seen_above_sup
             and (not choppy)
-            and avg_ok
+            and sell_allowed
         )
         if not sell_sig and sell_cross:
           sl = round(max(sup_mid, high_val) + (1.5 * atr), dec)
@@ -512,7 +536,6 @@ class TWTUltimateEngine:
               "Signal_DT": c["dt_user"].isoformat(),
           }
 
-      # BUY: Demand zone/mid cross when AVG > 45% (5m pullback allowed)
       if dem_mid is not None:
         if low_val <= dem_mid or prev_close <= dem_mid:
           seen_below_dem = True
@@ -521,7 +544,7 @@ class TWTUltimateEngine:
             and (prev_close <= dem_mid or low_val <= dem_mid)
             and seen_below_dem
             and (not choppy)
-            and avg_ok
+            and buy_allowed
         )
         if not buy_sig and buy_cross:
           sl = round(min(dem_mid, low_val) - (1.5 * atr), dec)
@@ -686,7 +709,7 @@ def scan_asset(sym):
   return sym, None, []
 
 
-with st.spinner("⚡ Scanning 20+ assets with >45% AVG Filter..."):
+with st.spinner("⚡ Scanning 20+ assets with Candle + >45% AVG Filter..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
@@ -702,11 +725,11 @@ for eng in asset_engines.values():
 save_ledger(ledger_records)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} setup(s) with AVG > 45% across assets!")
+  st.success(f"✅ Found {len(master_signals)} confluence setup(s) across assets!")
   df_display = pd.DataFrame(master_signals).drop(columns=["Is_Within_1hr", "Signal_DT"], errors="ignore")
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active setups meeting >45% AVG right now.")
+  st.info("ℹ️ No active setups meeting Candle Direction + >45% AVG right now.")
 
 # ---------------------------------------------------------
 # MANUAL ASSET INSPECTOR & PER-ASSET LEDGER
@@ -752,7 +775,7 @@ if bot.mtf_summary and bot.mtf_summary.get("stats"):
   table_rows.append({
       "TIMEFRAME": "AVG",
       "CANDLE": "-",
-      "MARKET STATUS": "PASS (>45%)" if bot.avg_vol_pct > 45.0 else "LOW (<45%)",
+      "MARKET STATUS": bot.get_bias_label(),
       "ADX": bot.avg_adx,
       "VOLATILITY": f"{bot.avg_vol_pct}%",
   })
