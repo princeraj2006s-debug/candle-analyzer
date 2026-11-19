@@ -1,5 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, time, timedelta, timezone
+import json
+from pathlib import Path
 from zoneinfo import ZoneInfo
 import ccxt
 import matplotlib.pyplot as plt
@@ -32,6 +34,179 @@ count = st_autorefresh(interval=30000, key="twt_multi_refresh")
 
 st.title("⚡ TRADE WITH TUCKYAA — Ultimate Multi-Confluence Engine")
 
+LEDGER_FILE = Path("twt_signals_ledger.json")
+
+
+# ---------------------------------------------------------
+# PERSISTENT LEDGER HELPERS (JAN -> NOV -> ONWARDS)
+# ---------------------------------------------------------
+def load_ledger():
+  if LEDGER_FILE.exists():
+    try:
+      data = json.loads(LEDGER_FILE.read_text(encoding="utf-8"))
+      if isinstance(data, list):
+        return data
+    except Exception:
+      pass
+  return []
+
+
+def save_ledger(records):
+  try:
+    LEDGER_FILE.write_text(json.dumps(records, indent=2), encoding="utf-8")
+  except Exception:
+    pass
+
+
+def update_ledger_with_engine(records, engine):
+  if not engine.candles_5m:
+    return records
+
+  by_id = {r["id"]: r for r in records}
+  changed = False
+
+  for sig in engine.history:
+    sig_id = f"{sig['Asset']}|{sig['Date']}|{sig['Time']}|{sig['Type']}|{sig['Entry Price']}"
+    if sig_id not in by_id:
+      by_id[sig_id] = {
+          "id": sig_id,
+          "Asset": sig["Asset"],
+          "Date": sig["Date"],
+          "Time": sig["Time"],
+          "Direction": "BUY" if "BUY" in sig["Type"] else "SELL",
+          "Type": sig["Type"],
+          "Setup": sig["Setup"],
+          "Entry Price": float(sig["Entry Price"]),
+          "Stop Loss (SL)": float(sig["Stop Loss (SL)"]),
+          "TP 1": float(sig["TP 1"]),
+          "TP 2": float(sig["TP 2"]),
+          "TP 3": float(sig["TP 3"]),
+          "Signal_DT": sig.get("Signal_DT", ""),
+          "TP1_Hit": False,
+          "TP2_Hit": False,
+          "TP3_Hit": False,
+          "SL_Hit": False,
+          "Status": "OPEN",
+      }
+      changed = True
+
+  for rec in by_id.values():
+    if rec["Asset"] != engine.symbol:
+      continue
+    sig_dt_str = rec.get("Signal_DT", "")
+    is_buy = rec["Direction"] == "BUY"
+    tp1, tp2, tp3, sl = rec["TP 1"], rec["TP 2"], rec["TP 3"], rec["Stop Loss (SL)"]
+
+    for c in engine.candles_5m:
+      c_iso = c["dt_user"].isoformat()
+      if sig_dt_str and c_iso <= sig_dt_str:
+        continue
+
+      if is_buy:
+        if c["low"] <= sl and not rec["TP1_Hit"]:
+          rec["SL_Hit"] = True
+          changed = True
+          break
+        if c["high"] >= tp1 and not rec["TP1_Hit"]:
+          rec["TP1_Hit"] = True
+          changed = True
+        if c["high"] >= tp2 and not rec["TP2_Hit"]:
+          rec["TP2_Hit"] = True
+          changed = True
+        if c["high"] >= tp3 and not rec["TP3_Hit"]:
+          rec["TP3_Hit"] = True
+          changed = True
+        if c["low"] <= sl:
+          rec["SL_Hit"] = True
+          changed = True
+          break
+      else:
+        if c["high"] >= sl and not rec["TP1_Hit"]:
+          rec["SL_Hit"] = True
+          changed = True
+          break
+        if c["low"] <= tp1 and not rec["TP1_Hit"]:
+          rec["TP1_Hit"] = True
+          changed = True
+        if c["low"] <= tp2 and not rec["TP2_Hit"]:
+          rec["TP2_Hit"] = True
+          changed = True
+        if c["low"] <= tp3 and not rec["TP3_Hit"]:
+          rec["TP3_Hit"] = True
+          changed = True
+        if c["high"] >= sl:
+          rec["SL_Hit"] = True
+          changed = True
+          break
+
+    if rec["TP3_Hit"]:
+      rec["Status"] = "TP3 HIT ✅"
+    elif rec["TP2_Hit"]:
+      rec["Status"] = "TP2 HIT ✅"
+    elif rec["TP1_Hit"]:
+      rec["Status"] = "TP1 HIT ✅"
+    elif rec["SL_Hit"]:
+      rec["Status"] = "SL HIT ❌"
+    else:
+      rec["Status"] = "OPEN ⏳"
+
+  return list(by_id.values()) if changed else records
+
+
+def _pct(num, den):
+  return f"{round((num / den) * 100.0, 1)}%" if den > 0 else "N/A"
+
+
+def summarize_ledger(records, start_date_str="2026-01-01"):
+  filtered = [r for r in records if str(r.get("Date", "")) >= start_date_str]
+
+  def stats_for(direction):
+    sub = [r for r in filtered if r.get("Direction") == direction]
+    total = len(sub)
+    tp1 = sum(1 for r in sub if r.get("TP1_Hit"))
+    tp2 = sum(1 for r in sub if r.get("TP2_Hit"))
+    tp3 = sum(1 for r in sub if r.get("TP3_Hit"))
+    sl = sum(1 for r in sub if r.get("SL_Hit"))
+    open_cnt = sum(1 for r in sub if not r.get("TP1_Hit") and not r.get("SL_Hit"))
+    return {
+        "Total Signals": total,
+        "TP1 Hit": tp1,
+        "TP1 Win %": _pct(tp1, total),
+        "TP2 Hit": tp2,
+        "TP2 Win %": _pct(tp2, total),
+        "TP3 Hit": tp3,
+        "TP3 Win %": _pct(tp3, total),
+        "SL Hit": sl,
+        "Open": open_cnt,
+    }
+
+  buy_s = stats_for("BUY")
+  sell_s = stats_for("SELL")
+  tot_sig = buy_s["Total Signals"] + sell_s["Total Signals"]
+  tot_tp1 = buy_s["TP1 Hit"] + sell_s["TP1 Hit"]
+  tot_tp2 = buy_s["TP2 Hit"] + sell_s["TP2 Hit"]
+  tot_tp3 = buy_s["TP3 Hit"] + sell_s["TP3 Hit"]
+  tot_sl = buy_s["SL Hit"] + sell_s["SL Hit"]
+  tot_open = buy_s["Open"] + sell_s["Open"]
+
+  combined = {
+      "Total Signals": tot_sig,
+      "TP1 Hit": tot_tp1,
+      "TP1 Win %": _pct(tot_tp1, tot_sig),
+      "TP2 Hit": tot_tp2,
+      "TP2 Win %": _pct(tot_tp2, tot_sig),
+      "TP3 Hit": tot_tp3,
+      "TP3 Win %": _pct(tot_tp3, tot_sig),
+      "SL Hit": tot_sl,
+      "Open": tot_open,
+  }
+  return pd.DataFrame([
+      {"Side": "BUY 🟢", **buy_s},
+      {"Side": "SELL 🔴", **sell_s},
+      {"Side": "TOTAL ⚡", **combined},
+  ])
+
+
 # ---------------------------------------------------------
 # SIDEBAR CONFIGURATION
 # ---------------------------------------------------------
@@ -52,6 +227,10 @@ active_tz = ZoneInfo(selected_tz_name)
 
 use_chop_filter = st.sidebar.checkbox(
     "🛡️ Enable Chop / Sideways Filter", value=True
+)
+
+ledger_start_date = st.sidebar.text_input(
+    "📅 Ledger Start Date (YYYY-MM-DD)", value="2026-01-01"
 )
 
 selected_tf = "5m"
@@ -151,7 +330,16 @@ class TWTUltimateEngine:
     self.candles_5m = []
     self.history = []
     self.signals = []
-    self.win_stats = {"wins": 0, "losses": 0, "open": 0, "win_rate": None}
+    self.win_stats = {
+        "total": 0,
+        "tp1": 0,
+        "tp2": 0,
+        "tp3": 0,
+        "sl": 0,
+        "tp1_rate": None,
+        "tp2_rate": None,
+        "tp3_rate": None,
+    }
 
     # Levels & Zones
     self.prev_high = None
@@ -217,50 +405,72 @@ class TWTUltimateEngine:
     return low_atr or near_ema_chop
 
   def _compute_win_rate(self, all_signals):
-    wins = 0
-    losses = 0
-    open_trades = 0
+    total = len(all_signals)
+    tp1_hits = 0
+    tp2_hits = 0
+    tp3_hits = 0
+    sl_hits = 0
     total_candles = len(self.candles_5m)
 
     for sig in all_signals:
       start_idx = sig["Candle #"]
       is_buy = "BUY" in sig["Type"]
       tp1 = sig["TP 1"]
+      tp2 = sig["TP 2"]
+      tp3 = sig["TP 3"]
       sl = sig["Stop Loss (SL)"]
-      outcome = "OPEN"
+
+      hit1 = False
+      hit2 = False
+      hit3 = False
+      hit_sl = False
 
       for fut in self.candles_5m[start_idx:total_candles]:
         if is_buy:
-          hit_tp = fut["high"] >= tp1
-          hit_sl = fut["low"] <= sl
+          if fut["low"] <= sl and not hit1:
+            hit_sl = True
+            break
+          if fut["high"] >= tp1:
+            hit1 = True
+          if fut["high"] >= tp2:
+            hit2 = True
+          if fut["high"] >= tp3:
+            hit3 = True
+          if fut["low"] <= sl:
+            hit_sl = True
+            break
         else:
-          hit_tp = fut["low"] <= tp1
-          hit_sl = fut["high"] >= sl
+          if fut["high"] >= sl and not hit1:
+            hit_sl = True
+            break
+          if fut["low"] <= tp1:
+            hit1 = True
+          if fut["low"] <= tp2:
+            hit2 = True
+          if fut["low"] <= tp3:
+            hit3 = True
+          if fut["high"] >= sl:
+            hit_sl = True
+            break
 
-        if hit_tp and hit_sl:
-          outcome = "LOSS"
-          break
-        elif hit_tp:
-          outcome = "WIN"
-          break
-        elif hit_sl:
-          outcome = "LOSS"
-          break
+      if hit1:
+        tp1_hits += 1
+      if hit2:
+        tp2_hits += 1
+      if hit3:
+        tp3_hits += 1
+      if hit_sl:
+        sl_hits += 1
 
-      if outcome == "WIN":
-        wins += 1
-      elif outcome == "LOSS":
-        losses += 1
-      else:
-        open_trades += 1
-
-    closed = wins + losses
-    win_rate = round((wins / closed) * 100.0, 1) if closed > 0 else None
     self.win_stats = {
-        "wins": wins,
-        "losses": losses,
-        "open": open_trades,
-        "win_rate": win_rate,
+        "total": total,
+        "tp1": tp1_hits,
+        "tp2": tp2_hits,
+        "tp3": tp3_hits,
+        "sl": sl_hits,
+        "tp1_rate": round((tp1_hits / total) * 100.0, 1) if total > 0 else None,
+        "tp2_rate": round((tp2_hits / total) * 100.0, 1) if total > 0 else None,
+        "tp3_rate": round((tp3_hits / total) * 100.0, 1) if total > 0 else None,
     }
 
   def calculate_and_scan(self):
@@ -270,7 +480,6 @@ class TWTUltimateEngine:
     current_utc_time = datetime.now(timezone.utc)
     now_user = current_utc_time.astimezone(self.user_tz)
 
-    # 1. Previous Day High & Low
     if len(self.df_1d) >= 2:
       prev_candle = self.df_1d.iloc[-2]
     else:
@@ -279,7 +488,6 @@ class TWTUltimateEngine:
     self.prev_high = float(prev_candle["High"])
     self.prev_low = float(prev_candle["Low"])
 
-    # 2. 4H Anchor Zones (01:30, 05:30 & rolling 21:30 active until next 21:30 forms)
     candles_4h = []
     for row in self.df_4h.iterrows():
       dt_utc = row[0]
@@ -298,7 +506,6 @@ class TWTUltimateEngine:
     if not today_4h:
       today_4h = candles_4h
 
-    # Anchor 1 (~01:30 AM)
     anchor_1 = min(
         today_4h,
         key=lambda x: abs(datetime.combine(latest_date, x["time_obj"]) - datetime.combine(latest_date, time(1, 30))),
@@ -307,7 +514,6 @@ class TWTUltimateEngine:
     anchor_dt_1 = anchor_1["dt_user"]
     self.demand_box_1, self.supply_box_1, self.demand_1_mid, self.supply_1_mid = self._build_zones(anchor_1)
 
-    # Anchor 2 (~05:30 AM)
     anchor_2_candidates = [c for c in today_4h if c["time_obj"] >= time(5, 0)]
     anchor_2 = None
     anchor_dt_2 = None
@@ -319,14 +525,12 @@ class TWTUltimateEngine:
       anchor_dt_2 = anchor_2["dt_user"]
       self.demand_box_2, self.supply_box_2, _, _ = self._build_zones(anchor_2)
 
-    # Anchor 3 (~21:30 PM 4H candle: remains active from its formation until next 21:30 4H candle forms)
     anchor_3, anchor_dt_3 = self._get_latest_2130_anchor(candles_4h)
     if anchor_3:
       self.anchor_2130_candle = anchor_3
       self.anchor_2130_start = anchor_dt_3
       self.demand_box_3, self.supply_box_3, self.demand_3_mid, self.supply_3_mid = self._build_zones(anchor_3)
 
-    # 3. Process 5M Candles & Indicators
     self.df_5m["TR"] = np.maximum(
         self.df_5m["High"] - self.df_5m["Low"],
         np.maximum(
@@ -397,7 +601,6 @@ class TWTUltimateEngine:
       buy_pullback_ok = (not choppy) and is_green and (prev_c is None or close_val > prev_c["high"])
       sell_pullback_ok = (not choppy) and is_red and (prev_c is None or close_val < prev_c["low"])
 
-      # --- A. PREVIOUS DAY HIGH / LOW STRATEGY ---
       if high_val >= self.prev_high:
         broke_above_pdh = True
       if broke_above_pdh and close_val < self.prev_high and sell_pullback_ok:
@@ -415,6 +618,7 @@ class TWTUltimateEngine:
             "TP 2": round(close_val - (2.5 * atr), dec),
             "TP 3": round(close_val - (4.0 * atr), dec),
             "Is_Within_1hr": c["is_within_1hr"],
+            "Signal_DT": c["dt_user"].isoformat(),
         }
         all_window_signals.append(sig)
         if not first_sell:
@@ -438,13 +642,13 @@ class TWTUltimateEngine:
             "TP 2": round(close_val + (2.5 * atr), dec),
             "TP 3": round(close_val + (4.0 * atr), dec),
             "Is_Within_1hr": c["is_within_1hr"],
+            "Signal_DT": c["dt_user"].isoformat(),
         }
         all_window_signals.append(sig)
         if not first_buy:
           first_buy = sig
         broke_below_pdl = False
 
-      # --- B. 4H ANCHOR ZONE 1 (01:30 AM + Supply Mid Point) ---
       if c["dt_user"] > anchor_dt_1 and self.demand_box_1 and self.supply_box_1:
         if self._touched_demand(self.demand_box_1, low_val, close_val):
           touched_dem1 = True
@@ -468,6 +672,7 @@ class TWTUltimateEngine:
               "TP 2": round(close_val + (2.5 * atr), dec),
               "TP 3": round(close_val + (4.0 * atr), dec),
               "Is_Within_1hr": c["is_within_1hr"],
+              "Signal_DT": c["dt_user"].isoformat(),
           }
           all_window_signals.append(sig)
           if not first_buy:
@@ -492,6 +697,7 @@ class TWTUltimateEngine:
               "TP 2": round(close_val - (2.5 * atr), dec),
               "TP 3": round(close_val - (4.0 * atr), dec),
               "Is_Within_1hr": c["is_within_1hr"],
+              "Signal_DT": c["dt_user"].isoformat(),
           }
           all_window_signals.append(sig)
           if not first_sell:
@@ -499,7 +705,6 @@ class TWTUltimateEngine:
           touched_sup1 = False
           went_above_sup1_mid = False
 
-      # --- C. 4H ANCHOR ZONE 2 (05:30 AM) ---
       if anchor_dt_2 and c["dt_user"] > anchor_dt_2 and self.demand_box_2 and self.supply_box_2:
         if self._touched_demand(self.demand_box_2, low_val, close_val):
           touched_dem2 = True
@@ -521,6 +726,7 @@ class TWTUltimateEngine:
               "TP 2": round(close_val + (2.5 * atr), dec),
               "TP 3": round(close_val + (4.0 * atr), dec),
               "Is_Within_1hr": c["is_within_1hr"],
+              "Signal_DT": c["dt_user"].isoformat(),
           }
           all_window_signals.append(sig)
           if not first_buy:
@@ -542,13 +748,13 @@ class TWTUltimateEngine:
               "TP 2": round(close_val - (2.5 * atr), dec),
               "TP 3": round(close_val - (4.0 * atr), dec),
               "Is_Within_1hr": c["is_within_1hr"],
+              "Signal_DT": c["dt_user"].isoformat(),
           }
           all_window_signals.append(sig)
           if not first_sell:
             first_sell = sig
           touched_sup2 = False
 
-      # --- D. 4H ANCHOR ZONE 3 (21:30 PM + Supply Mid Point, active until next 21:30 forms) ---
       in_2130_window = (anchor_3 is not None and anchor_dt_3 is not None and c["dt_user"] > anchor_dt_3)
       if in_2130_window and self.demand_box_3 and self.supply_box_3:
         if self._touched_demand(self.demand_box_3, low_val, close_val):
@@ -573,6 +779,7 @@ class TWTUltimateEngine:
               "TP 2": round(close_val + (2.5 * atr), dec),
               "TP 3": round(close_val + (4.0 * atr), dec),
               "Is_Within_1hr": c["is_within_1hr"],
+              "Signal_DT": c["dt_user"].isoformat(),
           }
           all_window_signals.append(sig)
           if not first_buy:
@@ -597,6 +804,7 @@ class TWTUltimateEngine:
               "TP 2": round(close_val - (2.5 * atr), dec),
               "TP 3": round(close_val - (4.0 * atr), dec),
               "Is_Within_1hr": c["is_within_1hr"],
+              "Signal_DT": c["dt_user"].isoformat(),
           }
           all_window_signals.append(sig)
           if not first_sell:
@@ -644,12 +852,31 @@ with st.spinner("⚡ Scanning 20+ assets with Ultimate Confluence Engine..."):
       if sigs:
         master_signals.extend(sigs)
 
+ledger_records = load_ledger()
+for eng in asset_engines.values():
+  ledger_records = update_ledger_with_engine(ledger_records, eng)
+save_ledger(ledger_records)
+
 if master_signals:
   st.success(f"✅ Found {len(master_signals)} perfect confluence setup(s) across assets!")
-  df_display = pd.DataFrame(master_signals).drop(columns=["Is_Within_1hr"], errors="ignore")
+  df_display = pd.DataFrame(master_signals).drop(columns=["Is_Within_1hr", "Signal_DT"], errors="ignore")
   st.dataframe(df_display, width="stretch")
 else:
   st.info("ℹ️ No active perfect setups meeting strict rules. False entries avoided.")
+
+# ---------------------------------------------------------
+# PERSISTENT BUY / SELL TP1-TP3 & SL TRACKER
+# ---------------------------------------------------------
+st.markdown("---")
+st.subheader(f"📈 Persistent BUY vs SELL Performance Ledger (From {ledger_start_date})")
+summary_df = summarize_ledger(ledger_records, start_date_str=ledger_start_date)
+st.dataframe(summary_df, width="stretch")
+
+filtered_ledger = [r for r in ledger_records if str(r.get("Date", "")) >= ledger_start_date]
+if filtered_ledger:
+  with st.expander("🗂️ View Full Recorded Signal Log"):
+    log_df = pd.DataFrame(filtered_ledger).drop(columns=["id", "Signal_DT"], errors="ignore")
+    st.dataframe(log_df, width="stretch")
 
 # ---------------------------------------------------------
 # MANUAL ASSET INSPECTOR & CHART VIEWER
@@ -673,16 +900,21 @@ else:
 if bot.candles_5m:
   curr_p = bot.candles_5m[-1]["close"]
 
-  col1, col2, col3, col4 = st.columns(4)
+  col1, col2, col3, col4, col5, col6 = st.columns(6)
   with col1:
     st.metric(label=f"Current {selected_symbol} Price", value=f"{curr_p:.2f}")
   with col2:
     st.metric(label="Locked Perfect Signals", value=len(bot.history))
   with col3:
-    wr = bot.win_stats.get("win_rate")
-    wr_text = f"{wr}% ({bot.win_stats['wins']}W/{bot.win_stats['losses']}L)" if wr is not None else "N/A"
-    st.metric(label="TP1 Win Rate (Window)", value=wr_text)
+    r1 = bot.win_stats.get("tp1_rate")
+    st.metric(label="TP1 Win %", value=f"{r1}% ({bot.win_stats['tp1']})" if r1 is not None else "N/A")
   with col4:
+    r2 = bot.win_stats.get("tp2_rate")
+    st.metric(label="TP2 Win %", value=f"{r2}% ({bot.win_stats['tp2']})" if r2 is not None else "N/A")
+  with col5:
+    r3 = bot.win_stats.get("tp3_rate")
+    st.metric(label="TP3 Win %", value=f"{r3}% ({bot.win_stats['tp3']})" if r3 is not None else "N/A")
+  with col6:
     st.metric(label="Timezone", value=selected_tz_name)
 
   if bot.anchor_2130_candle:
@@ -693,7 +925,7 @@ if bot.candles_5m:
 
   if bot.history:
     st.markdown(f"### 📋 Locked Entries Feed for {selected_symbol}")
-    df_history = pd.DataFrame(bot.history).drop(columns=["Is_Within_1hr"], errors="ignore")
+    df_history = pd.DataFrame(bot.history).drop(columns=["Is_Within_1hr", "Signal_DT"], errors="ignore")
     st.dataframe(df_history, width="stretch")
 
   # --- PLOT CHART WITH ALL LEVELS ---
@@ -714,7 +946,6 @@ if bot.candles_5m:
       first_2130_id = c_2130_list[0]["id"]
       ax.axvline(first_2130_id, color="#ffd54f", linestyle=":", linewidth=1.5, label=f"21:30 Candle Start ({bot.anchor_2130_start.strftime('%m-%d %H:%M')})")
 
-  # Plot 01:30 AM Zones + Supply Mid Point
   if bot.demand_box_1:
     ax.axhspan(bot.demand_box_1[0], bot.demand_box_1[1], color="#00897b", alpha=0.30, label="Demand 1 (01:30)")
   if bot.demand_1_mid is not None:
@@ -724,13 +955,11 @@ if bot.candles_5m:
   if bot.supply_1_mid is not None:
     ax.axhline(bot.supply_1_mid, color="#ef9a9a", linestyle="-.", linewidth=1.1, label=f"Supply 1 Mid: {bot.supply_1_mid:.2f}")
 
-  # Plot 05:30 AM Zones
   if bot.demand_box_2:
     ax.axhspan(bot.demand_box_2[0], bot.demand_box_2[1], color="#26a69a", alpha=0.18, label="Demand 2 (05:30)")
   if bot.supply_box_2:
     ax.axhspan(bot.supply_box_2[0], bot.supply_box_2[1], color="#ff7043", alpha=0.18, label="Supply 2 (05:30)")
 
-  # Plot 21:30 PM Zones + Supply Mid Point (active until next 21:30 forms)
   if bot.demand_box_3:
     ax.axhspan(bot.demand_box_3[0], bot.demand_box_3[1], color="#29b6f6", alpha=0.20, label="Demand 3 (21:30)")
   if bot.demand_3_mid is not None:
@@ -740,7 +969,6 @@ if bot.candles_5m:
   if bot.supply_3_mid is not None:
     ax.axhline(bot.supply_3_mid, color="#ce93d8", linestyle="-.", linewidth=1.1, label=f"Supply 3 Mid: {bot.supply_3_mid:.2f}")
 
-  # Plot Previous Day High & Low Lines
   if bot.prev_high is not None:
     ax.axhline(bot.prev_high, color="#ff9100", linestyle="--", linewidth=2, label=f"Prev Day High: {bot.prev_high}")
   if bot.prev_low is not None:
