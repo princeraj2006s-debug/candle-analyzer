@@ -59,8 +59,8 @@ st.sidebar.markdown("#### Master Confluence Rules")
 st.sidebar.text("Demand Zones : 01:30, 05:30 & 21:30 (till next 21:30) Lows + Prev Day Low")
 st.sidebar.text("Supply Zones : 01:30, 05:30 & 21:30 (till next 21:30) Highs + Prev Day High")
 st.sidebar.text("Supply Mid   : 01:30 & 21:30 Supply Zone Mid Line")
-st.sidebar.text("BUY          : Strict Demand Zone Bounce + EMA50")
-st.sidebar.text("SELL         : Supply Rejection / Above Supply Mid -> Below Mid + EMA50")
+st.sidebar.text("BUY          : Demand Zone Touch + Green Bounce + Pullback Reclaim")
+st.sidebar.text("SELL         : Supply / Supply Mid Pullback + Red Rejection Confirm")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -189,6 +189,18 @@ class TWTUltimateEngine:
       return latest_2130, latest_2130["dt_user"]
     return None, None
 
+  def _touched_demand(self, dem_box, low_val, close_val):
+    if not dem_box:
+      return False
+    # Touches or dips into demand zone and holds above bottom of demand
+    return (low_val <= dem_box[1]) and (close_val >= dem_box[0])
+
+  def _touched_supply(self, sup_box, high_val, close_val):
+    if not sup_box:
+      return False
+    # Touches or spikes into supply zone and holds below top of supply
+    return (high_val >= sup_box[0]) and (close_val <= sup_box[1])
+
   def calculate_and_scan(self):
     if self.df_1d is None or self.df_1d.empty or self.df_4h is None or self.df_4h.empty or self.df_5m is None or self.df_5m.empty:
       return
@@ -296,34 +308,36 @@ class TWTUltimateEngine:
     broke_above_pdh = False
     broke_below_pdl = False
 
-    # Track price going above SUPPLY zone mid points and then dropping back below (SELL only)
+    # Pullback state trackers
     went_above_sup1_mid = False
     went_above_sup3_mid = False
+    touched_dem1 = False
+    touched_dem2 = False
+    touched_dem3 = False
+    touched_sup1 = False
+    touched_sup2 = False
+    touched_sup3 = False
+
+    prev_c = None
 
     for c in scan_5m:
       atr = c["atr"]
-      ema = c["ema50"]
       dec = get_decimals(c["close"])
       high_val = c["high"]
       low_val = c["low"]
       close_val = c["close"]
+      is_green = c["color"] == "Green"
+      is_red = c["color"] == "Red"
 
-      in_demand_zone_1 = self.demand_box_1 and (self.demand_box_1[0] <= close_val <= self.demand_box_1[1])
-      in_demand_zone_2 = self.demand_box_2 and (self.demand_box_2[0] <= close_val <= self.demand_box_2[1])
-      near_prev_low = low_val <= self.prev_low
+      # Pullback/reclaim confirmations so signal doesn't fire right before a pullback
+      buy_pullback_ok = is_green and (prev_c is None or close_val > prev_c["high"] or close_val > c["open"])
+      sell_pullback_ok = is_red and (prev_c is None or close_val < prev_c["low"] or close_val < c["open"])
 
-      in_supply_zone_1 = self.supply_box_1 and (self.supply_box_1[0] <= close_val <= self.supply_box_1[1])
-      in_supply_zone_2 = self.supply_box_2 and (self.supply_box_2[0] <= close_val <= self.supply_box_2[1])
-
-      in_2130_window = (anchor_3 is not None and anchor_dt_3 is not None and c["dt_user"] >= anchor_dt_3)
-      in_demand_zone_3 = in_2130_window and self.demand_box_3 and (self.demand_box_3[0] <= close_val <= self.demand_box_3[1])
-      in_supply_zone_3 = in_2130_window and self.supply_box_3 and (self.supply_box_3[0] <= close_val <= self.supply_box_3[1])
-
-      # --- A. PREVIOUS DAY HIGH / LOW REJECTION STRATEGY ---
-      if high_val > self.prev_high:
+      # --- A. PREVIOUS DAY HIGH / LOW STRATEGY ---
+      if high_val >= self.prev_high:
         broke_above_pdh = True
-      if not first_sell and broke_above_pdh and close_val < self.prev_high and c["color"] == "Red" and close_val < ema:
-        sl = round(self.prev_high + (1.5 * atr), dec)
+      if not first_sell and broke_above_pdh and close_val < self.prev_high and sell_pullback_ok:
+        sl = round(max(self.prev_high, high_val) + (1.5 * atr), dec)
         first_sell = {
             "Asset": self.symbol,
             "Date": str(c["date"]),
@@ -340,10 +354,10 @@ class TWTUltimateEngine:
         }
         broke_above_pdh = False
 
-      if low_val < self.prev_low:
+      if low_val <= self.prev_low:
         broke_below_pdl = True
-      if not first_buy and (broke_below_pdl or near_prev_low) and close_val >= self.prev_low and c["color"] == "Green" and close_val > ema:
-        sl = round(self.prev_low - (1.5 * atr), dec)
+      if not first_buy and broke_below_pdl and close_val > self.prev_low and buy_pullback_ok:
+        sl = round(min(self.prev_low, low_val) - (1.5 * atr), dec)
         first_buy = {
             "Asset": self.symbol,
             "Date": str(c["date"]),
@@ -362,11 +376,15 @@ class TWTUltimateEngine:
 
       # --- B. 4H ANCHOR ZONE 1 (01:30 AM + Supply Mid Point) ---
       if c["dt_user"] > anchor_dt_1 and self.demand_box_1 and self.supply_box_1:
+        if self._touched_demand(self.demand_box_1, low_val, close_val):
+          touched_dem1 = True
+        if self._touched_supply(self.supply_box_1, high_val, close_val):
+          touched_sup1 = True
         if self.supply_1_mid is not None and high_val >= self.supply_1_mid:
           went_above_sup1_mid = True
 
-        if not first_buy and c["color"] == "Green" and in_demand_zone_1 and close_val > ema:
-          sl = round(self.demand_box_1[0] - (1.5 * atr), dec)
+        if not first_buy and touched_dem1 and close_val >= self.demand_box_1[0] and buy_pullback_ok:
+          sl = round(min(self.demand_box_1[0], low_val) - (1.5 * atr), dec)
           first_buy = {
               "Asset": self.symbol,
               "Date": str(c["date"]),
@@ -381,9 +399,10 @@ class TWTUltimateEngine:
               "TP 3": round(close_val + (4.0 * atr), dec),
               "Is_Within_1hr": c["is_within_1hr"],
           }
+          touched_dem1 = False
 
         sup1_mid_sell_trigger = (self.supply_1_mid is not None and went_above_sup1_mid and close_val < self.supply_1_mid)
-        if not first_sell and c["color"] == "Red" and (in_supply_zone_1 or sup1_mid_sell_trigger) and close_val < ema:
+        if not first_sell and (touched_sup1 or sup1_mid_sell_trigger) and sell_pullback_ok:
           ref_level = self.supply_1_mid if (sup1_mid_sell_trigger and self.supply_1_mid) else self.supply_box_1[1]
           sl = round(max(ref_level, high_val) + (1.5 * atr), dec)
           setup_name = "01:30 Supply Mid Rejection SELL" if sup1_mid_sell_trigger else "01:30 Zone Supply Rejection"
@@ -401,12 +420,18 @@ class TWTUltimateEngine:
               "TP 3": round(close_val - (4.0 * atr), dec),
               "Is_Within_1hr": c["is_within_1hr"],
           }
+          touched_sup1 = False
           went_above_sup1_mid = False
 
       # --- C. 4H ANCHOR ZONE 2 (05:30 AM) ---
       if anchor_dt_2 and c["dt_user"] > anchor_dt_2 and self.demand_box_2 and self.supply_box_2:
-        if not first_buy and c["color"] == "Green" and in_demand_zone_2 and close_val > ema:
-          sl = round(self.demand_box_2[0] - (1.5 * atr), dec)
+        if self._touched_demand(self.demand_box_2, low_val, close_val):
+          touched_dem2 = True
+        if self._touched_supply(self.supply_box_2, high_val, close_val):
+          touched_sup2 = True
+
+        if not first_buy and touched_dem2 and close_val >= self.demand_box_2[0] and buy_pullback_ok:
+          sl = round(min(self.demand_box_2[0], low_val) - (1.5 * atr), dec)
           first_buy = {
               "Asset": self.symbol,
               "Date": str(c["date"]),
@@ -421,9 +446,10 @@ class TWTUltimateEngine:
               "TP 3": round(close_val + (4.0 * atr), dec),
               "Is_Within_1hr": c["is_within_1hr"],
           }
+          touched_dem2 = False
 
-        if not first_sell and c["color"] == "Red" and in_supply_zone_2 and close_val < ema:
-          sl = round(self.supply_box_2[1] + (1.5 * atr), dec)
+        if not first_sell and touched_sup2 and close_val <= self.supply_box_2[1] and sell_pullback_ok:
+          sl = round(max(self.supply_box_2[1], high_val) + (1.5 * atr), dec)
           first_sell = {
               "Asset": self.symbol,
               "Date": str(c["date"]),
@@ -438,14 +464,20 @@ class TWTUltimateEngine:
               "TP 3": round(close_val - (4.0 * atr), dec),
               "Is_Within_1hr": c["is_within_1hr"],
           }
+          touched_sup2 = False
 
       # --- D. 4H ANCHOR ZONE 3 (21:30 PM + Supply Mid Point, active until next 21:30 forms) ---
+      in_2130_window = (anchor_3 is not None and anchor_dt_3 is not None and c["dt_user"] > anchor_dt_3)
       if in_2130_window and self.demand_box_3 and self.supply_box_3:
+        if self._touched_demand(self.demand_box_3, low_val, close_val):
+          touched_dem3 = True
+        if self._touched_supply(self.supply_box_3, high_val, close_val):
+          touched_sup3 = True
         if self.supply_3_mid is not None and high_val >= self.supply_3_mid:
           went_above_sup3_mid = True
 
-        if not first_buy and c["color"] == "Green" and in_demand_zone_3 and close_val > ema:
-          sl = round(self.demand_box_3[0] - (1.5 * atr), dec)
+        if not first_buy and touched_dem3 and close_val >= self.demand_box_3[0] and buy_pullback_ok:
+          sl = round(min(self.demand_box_3[0], low_val) - (1.5 * atr), dec)
           first_buy = {
               "Asset": self.symbol,
               "Date": str(c["date"]),
@@ -460,9 +492,10 @@ class TWTUltimateEngine:
               "TP 3": round(close_val + (4.0 * atr), dec),
               "Is_Within_1hr": c["is_within_1hr"],
           }
+          touched_dem3 = False
 
         sup3_mid_sell_trigger = (self.supply_3_mid is not None and went_above_sup3_mid and close_val < self.supply_3_mid)
-        if not first_sell and c["color"] == "Red" and (in_supply_zone_3 or sup3_mid_sell_trigger) and close_val < ema:
+        if not first_sell and (touched_sup3 or sup3_mid_sell_trigger) and sell_pullback_ok:
           ref_level = self.supply_3_mid if (sup3_mid_sell_trigger and self.supply_3_mid) else self.supply_box_3[1]
           sl = round(max(ref_level, high_val) + (1.5 * atr), dec)
           setup_name = "21:30 Supply Mid Rejection SELL" if sup3_mid_sell_trigger else "21:30 Zone Supply Rejection"
@@ -480,7 +513,10 @@ class TWTUltimateEngine:
               "TP 3": round(close_val - (4.0 * atr), dec),
               "Is_Within_1hr": c["is_within_1hr"],
           }
+          touched_sup3 = False
           went_above_sup3_mid = False
+
+      prev_c = c
 
     collected = [sig for sig in [first_buy, first_sell] if sig is not None]
     collected.sort(key=lambda x: x["Candle #"])
