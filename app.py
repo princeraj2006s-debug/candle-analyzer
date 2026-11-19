@@ -224,15 +224,13 @@ ledger_start_date = st.sidebar.text_input(
 
 selected_tf = "5m"
 st.sidebar.text("⏱️ Entry Timeframe : 5m (Fixed)")
-st.sidebar.text("📊 Confluence : 01:30, 05:30 & 21:30 4H + Prev Day 1D")
+st.sidebar.text("📊 Strict 21:30 Mid Sequence Active")
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Master Confluence Rules")
-st.sidebar.text("Demand Zones : 01:30, 05:30 & 21:30 (till next 21:30) Lows + Prev Day Low")
-st.sidebar.text("Supply Zones : 01:30, 05:30 & 21:30 (till next 21:30) Highs + Prev Day High")
-st.sidebar.text("Mid Rules    : Touch Mid -> Opposite Sweep -> Cross & Touch/Close Side")
-st.sidebar.text("BUY          : Demand Mid/Zone Sweep + Green Re-Cross Touch")
-st.sidebar.text("SELL         : Supply Mid/Zone Sweep + Red Re-Cross Touch")
+st.sidebar.markdown("#### Strict 21:30 Mid Rules")
+st.sidebar.text("SELL : Green Cross Up -> Red Cross Down -> 4-5 Green -> Green Up -> Red Cross Down")
+st.sidebar.text("BUY  : Red Cross Down -> Green Cross Up -> 4-5 Red -> Red Down -> Green Cross Up")
+st.sidebar.text("Filter : No Signal if strict sequence not met")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -305,7 +303,7 @@ def fetch_data(symbol):
 
 
 # ---------------------------------------------------------
-# ULTIMATE MULTI-CONFLUENCE ENGINE
+# STRICT 21:30 MID SEQUENCE ENGINE
 # ---------------------------------------------------------
 class TWTUltimateEngine:
 
@@ -362,16 +360,6 @@ class TWTUltimateEngine:
       return latest_2130, latest_2130["dt_user"]
     return None, None
 
-  def _touched_demand(self, dem_box, low_val, close_val):
-    if not dem_box:
-      return False
-    return (low_val <= dem_box[1]) and (close_val >= dem_box[0])
-
-  def _touched_supply(self, sup_box, high_val, close_val):
-    if not sup_box:
-      return False
-    return (high_val >= sup_box[0]) and (close_val <= sup_box[1])
-
   def _is_choppy(self, c):
     if not self.chop_filter:
       return False
@@ -421,18 +409,14 @@ class TWTUltimateEngine:
         key=lambda x: abs(datetime.combine(latest_date, x["time_obj"]) - datetime.combine(latest_date, time(1, 30))),
         default=today_4h[0]
     )
-    anchor_dt_1 = anchor_1["dt_user"]
     self.demand_box_1, self.supply_box_1, self.demand_1_mid, self.supply_1_mid = self._build_zones(anchor_1)
 
     anchor_2_candidates = [c for c in today_4h if c["time_obj"] >= time(5, 0)]
-    anchor_2 = None
-    anchor_dt_2 = None
     if anchor_2_candidates:
       anchor_2 = min(
           anchor_2_candidates,
           key=lambda x: abs(datetime.combine(latest_date, x["time_obj"]) - datetime.combine(latest_date, time(5, 30)))
       )
-      anchor_dt_2 = anchor_2["dt_user"]
       self.demand_box_2, self.supply_box_2, _, _ = self._build_zones(anchor_2)
 
     anchor_3, anchor_dt_3 = self._get_latest_2130_anchor(candles_4h)
@@ -473,40 +457,42 @@ class TWTUltimateEngine:
           "is_within_1hr": age_min <= 60.0
       })
 
-    scan_start_dt = datetime.combine(latest_date, time.min, tzinfo=self.user_tz)
-    if anchor_dt_3 and anchor_dt_3 < scan_start_dt:
-      scan_start_dt = anchor_dt_3
+    if anchor_3 is None or anchor_dt_3 is None or self.supply_3_mid is None or self.demand_3_mid is None:
+      self.history = []
+      self.signals = []
+      return
 
-    scan_5m = [c for c in self.candles_5m if c["dt_user"] >= scan_start_dt]
+    scan_5m = [c for c in self.candles_5m if c["dt_user"] > anchor_dt_3]
     if not scan_5m:
-      scan_5m = self.candles_5m
+      self.history = []
+      self.signals = []
+      return
+
+    sup3_mid = self.supply_3_mid
+    dem3_mid = self.demand_3_mid
+
+    # Strict SELL sequence state on 21:30 Supply 3 Mid:
+    # 0: waiting for green candle to cross above sup3_mid
+    # 1: green crossed up -> waiting for red candle to cross below sup3_mid
+    # 2: red crossed down -> counting 4-5 consecutive green candles (max_green_streak)
+    # 3: >= 4 green candles happened -> waiting for green candle to cross above sup3_mid again
+    # 4: green crossed up again -> waiting for red candle to cross below sup3_mid -> SELL entry
+    sell_stage = 0
+    sell_green_streak = 0
+    sell_max_green_streak = 0
+
+    # Strict BUY sequence state on 21:30 Demand 3 Mid:
+    # 0: waiting for red candle to cross below dem3_mid
+    # 1: red crossed down -> waiting for green candle to cross above dem3_mid
+    # 2: green crossed up -> counting 4-5 consecutive red candles (max_red_streak)
+    # 3: >= 4 red candles happened -> waiting for red candle to cross below dem3_mid again
+    # 4: red crossed down again -> waiting for green candle to cross above dem3_mid -> BUY entry
+    buy_stage = 0
+    buy_red_streak = 0
+    buy_max_red_streak = 0
 
     first_buy = None
     first_sell = None
-    broke_above_pdh = False
-    broke_below_pdl = False
-
-    # Supply Mid SELL state machine:
-    # Step 1: red candle touches mid -> Step 2: green candle pushes above mid -> Step 3: red candle crosses below & touches/closes on bottom side of mid
-    sup1_mid_touched = False
-    sup1_mid_swept_above = False
-    sup3_mid_touched = False
-    sup3_mid_swept_above = False
-
-    # Demand Mid BUY state machine:
-    # Step 1: green candle touches mid -> Step 2: red candle pushes below mid -> Step 3: green candle crosses above & touches/closes on top side of mid
-    dem1_mid_touched = False
-    dem1_mid_swept_below = False
-    dem3_mid_touched = False
-    dem3_mid_swept_below = False
-
-    touched_dem1 = False
-    touched_dem2 = False
-    touched_dem3 = False
-    touched_sup1 = False
-    touched_sup2 = False
-    touched_sup3 = False
-
     prev_c = None
 
     for c in scan_5m:
@@ -517,281 +503,97 @@ class TWTUltimateEngine:
       close_val = c["close"]
       is_green = c["color"] == "Green"
       is_red = c["color"] == "Red"
-
       choppy = self._is_choppy(c)
-      buy_pullback_ok = (not choppy) and is_green and (prev_c is None or close_val > prev_c["high"])
-      sell_pullback_ok = (not choppy) and is_red and (prev_c is None or close_val < prev_c["low"])
 
-      # --- A. PREVIOUS DAY HIGH / LOW STRATEGY ---
-      if high_val >= self.prev_high:
-        broke_above_pdh = True
-      if not first_sell and broke_above_pdh and close_val < self.prev_high and sell_pullback_ok:
-        sl = round(max(self.prev_high, high_val) + (1.5 * atr), dec)
-        first_sell = {
-            "Asset": self.symbol,
-            "Date": str(c["date"]),
-            "Time": c["time"],
-            "Candle #": c["id"],
-            "Type": "SELL 🔴",
-            "Setup": "Prev Day High Rejection",
-            "Entry Price": round(close_val, dec),
-            "Stop Loss (SL)": sl,
-            "TP 1": round(close_val - (1.2 * atr), dec),
-            "TP 2": round(close_val - (2.5 * atr), dec),
-            "TP 3": round(close_val - (4.0 * atr), dec),
-            "Is_Within_1hr": c["is_within_1hr"],
-            "Signal_DT": c["dt_user"].isoformat(),
-        }
-        broke_above_pdh = False
+      # Sensitive mid-cross detection (candle body/close crosses & stays close to mid within 0.65 * ATR)
+      prev_close = prev_c["close"] if prev_c is not None else close_val
+      green_cross_sup3 = is_green and (close_val > sup3_mid) and (prev_close <= sup3_mid or high_val >= sup3_mid) and (abs(close_val - sup3_mid) <= 0.85 * atr)
+      red_cross_sup3 = is_red and (close_val < sup3_mid) and (prev_close >= sup3_mid or low_val <= sup3_mid) and (abs(close_val - sup3_mid) <= 0.85 * atr)
 
-      if low_val <= self.prev_low:
-        broke_below_pdl = True
-      if not first_buy and broke_below_pdl and close_val > self.prev_low and buy_pullback_ok:
-        sl = round(min(self.prev_low, low_val) - (1.5 * atr), dec)
-        first_buy = {
-            "Asset": self.symbol,
-            "Date": str(c["date"]),
-            "Time": c["time"],
-            "Candle #": c["id"],
-            "Type": "BUY 🟢",
-            "Setup": "Prev Day Low Bounce",
-            "Entry Price": round(close_val, dec),
-            "Stop Loss (SL)": sl,
-            "TP 1": round(close_val + (1.2 * atr), dec),
-            "TP 2": round(close_val + (2.5 * atr), dec),
-            "TP 3": round(close_val + (4.0 * atr), dec),
-            "Is_Within_1hr": c["is_within_1hr"],
-            "Signal_DT": c["dt_user"].isoformat(),
-        }
-        broke_below_pdl = False
+      red_cross_dem3 = is_red and (close_val < dem3_mid) and (prev_close >= dem3_mid or low_val <= dem3_mid) and (abs(close_val - dem3_mid) <= 0.85 * atr)
+      green_cross_dem3 = is_green and (close_val > dem3_mid) and (prev_close <= dem3_mid or high_val >= dem3_mid) and (abs(close_val - dem3_mid) <= 0.85 * atr)
 
-      # --- B. 4H ANCHOR ZONE 1 (01:30 AM + Supply/Demand Mid Point) ---
-      if c["dt_user"] > anchor_dt_1 and self.demand_box_1 and self.supply_box_1:
-        if self._touched_demand(self.demand_box_1, low_val, close_val):
-          touched_dem1 = True
-        if self._touched_supply(self.supply_box_1, high_val, close_val):
-          touched_sup1 = True
+      # --- STRICT SELL SEQUENCE ---
+      if not first_sell:
+        if sell_stage == 0:
+          if green_cross_sup3:
+            sell_stage = 1
+        elif sell_stage == 1:
+          if red_cross_sup3:
+            sell_stage = 2
+            sell_green_streak = 0
+            sell_max_green_streak = 0
+        elif sell_stage == 2:
+          if is_green:
+            sell_green_streak += 1
+            if sell_green_streak > sell_max_green_streak:
+              sell_max_green_streak = sell_green_streak
+          else:
+            sell_green_streak = 0
+          if sell_max_green_streak >= 4 and green_cross_sup3:
+            sell_stage = 4
+        elif sell_stage == 4:
+          if red_cross_sup3 and (not choppy):
+            sl = round(max(sup3_mid, high_val) + (1.5 * atr), dec)
+            first_sell = {
+                "Asset": self.symbol,
+                "Date": str(c["date"]),
+                "Time": c["time"],
+                "Candle #": c["id"],
+                "Type": "SELL 🔴",
+                "Setup": "21:30 Mid Strict 4-5 Green Re-Cross SELL",
+                "Entry Price": round(close_val, dec),
+                "Stop Loss (SL)": sl,
+                "TP 1": round(close_val - (1.2 * atr), dec),
+                "TP 2": round(close_val - (2.5 * atr), dec),
+                "TP 3": round(close_val - (4.0 * atr), dec),
+                "Is_Within_1hr": c["is_within_1hr"],
+                "Signal_DT": c["dt_user"].isoformat(),
+            }
+            sell_stage = 0
+            sell_green_streak = 0
+            sell_max_green_streak = 0
 
-        # Supply 1 Mid SELL sequence: red touches mid -> green goes above mid -> red crosses & touches/closes bottom of mid
-        if self.supply_1_mid is not None:
-          mid1 = self.supply_1_mid
-          if is_red and low_val <= mid1 and close_val <= (mid1 * 1.001):
-            sup1_mid_touched = True
-            sup1_mid_swept_above = False
-          elif sup1_mid_touched and is_green and high_val > mid1:
-            sup1_mid_swept_above = True
-
-        # Demand 1 Mid BUY sequence: green touches mid -> red goes below mid -> green crosses & touches/closes top of mid
-        if self.demand_1_mid is not None:
-          dmid1 = self.demand_1_mid
-          if is_green and high_val >= dmid1 and close_val >= (dmid1 * 0.999):
-            dem1_mid_touched = True
-            dem1_mid_swept_below = False
-          elif dem1_mid_touched and is_red and low_val < dmid1:
-            dem1_mid_swept_below = True
-
-        dem1_mid_buy_trigger = (
-            self.demand_1_mid is not None
-            and dem1_mid_touched
-            and dem1_mid_swept_below
-            and is_green
-            and close_val > self.demand_1_mid
-            and high_val >= (self.demand_1_mid * 0.999)
-            and (not choppy)
-        )
-        if not first_buy and (dem1_mid_buy_trigger or (touched_dem1 and close_val >= self.demand_box_1[0] and buy_pullback_ok)):
-          ref_low = self.demand_1_mid if dem1_mid_buy_trigger else self.demand_box_1[0]
-          sl = round(min(ref_low, low_val) - (1.5 * atr), dec)
-          setup_name = "01:30 Demand Mid Sweep Re-Cross BUY" if dem1_mid_buy_trigger else "01:30 Zone Demand Bounce"
-          first_buy = {
-              "Asset": self.symbol,
-              "Date": str(c["date"]),
-              "Time": c["time"],
-              "Candle #": c["id"],
-              "Type": "BUY 🟢",
-              "Setup": setup_name,
-              "Entry Price": round(close_val, dec),
-              "Stop Loss (SL)": sl,
-              "TP 1": round(close_val + (1.2 * atr), dec),
-              "TP 2": round(close_val + (2.5 * atr), dec),
-              "TP 3": round(close_val + (4.0 * atr), dec),
-              "Is_Within_1hr": c["is_within_1hr"],
-              "Signal_DT": c["dt_user"].isoformat(),
-          }
-          touched_dem1 = False
-          if dem1_mid_buy_trigger:
-            dem1_mid_touched = False
-            dem1_mid_swept_below = False
-
-        sup1_mid_sell_trigger = (
-            self.supply_1_mid is not None
-            and sup1_mid_touched
-            and sup1_mid_swept_above
-            and is_red
-            and close_val < self.supply_1_mid
-            and low_val <= (self.supply_1_mid * 1.001)
-            and (not choppy)
-        )
-        if not first_sell and (sup1_mid_sell_trigger or (touched_sup1 and sell_pullback_ok)):
-          ref_level = self.supply_1_mid if sup1_mid_sell_trigger else self.supply_box_1[1]
-          sl = round(max(ref_level, high_val) + (1.5 * atr), dec)
-          setup_name = "01:30 Supply Mid Sweep Re-Cross SELL" if sup1_mid_sell_trigger else "01:30 Zone Supply Rejection"
-          first_sell = {
-              "Asset": self.symbol,
-              "Date": str(c["date"]),
-              "Time": c["time"],
-              "Candle #": c["id"],
-              "Type": "SELL 🔴",
-              "Setup": setup_name,
-              "Entry Price": round(close_val, dec),
-              "Stop Loss (SL)": sl,
-              "TP 1": round(close_val - (1.2 * atr), dec),
-              "TP 2": round(close_val - (2.5 * atr), dec),
-              "TP 3": round(close_val - (4.0 * atr), dec),
-              "Is_Within_1hr": c["is_within_1hr"],
-              "Signal_DT": c["dt_user"].isoformat(),
-          }
-          touched_sup1 = False
-          if sup1_mid_sell_trigger:
-            sup1_mid_touched = False
-            sup1_mid_swept_above = False
-
-      # --- C. 4H ANCHOR ZONE 2 (05:30 AM) ---
-      if anchor_dt_2 and c["dt_user"] > anchor_dt_2 and self.demand_box_2 and self.supply_box_2:
-        if self._touched_demand(self.demand_box_2, low_val, close_val):
-          touched_dem2 = True
-        if self._touched_supply(self.supply_box_2, high_val, close_val):
-          touched_sup2 = True
-
-        if not first_buy and touched_dem2 and close_val >= self.demand_box_2[0] and buy_pullback_ok:
-          sl = round(min(self.demand_box_2[0], low_val) - (1.5 * atr), dec)
-          first_buy = {
-              "Asset": self.symbol,
-              "Date": str(c["date"]),
-              "Time": c["time"],
-              "Candle #": c["id"],
-              "Type": "BUY 🟢",
-              "Setup": "05:30 Zone Demand Bounce",
-              "Entry Price": round(close_val, dec),
-              "Stop Loss (SL)": sl,
-              "TP 1": round(close_val + (1.2 * atr), dec),
-              "TP 2": round(close_val + (2.5 * atr), dec),
-              "TP 3": round(close_val + (4.0 * atr), dec),
-              "Is_Within_1hr": c["is_within_1hr"],
-              "Signal_DT": c["dt_user"].isoformat(),
-          }
-          touched_dem2 = False
-
-        if not first_sell and touched_sup2 and close_val <= self.supply_box_2[1] and sell_pullback_ok:
-          sl = round(max(self.supply_box_2[1], high_val) + (1.5 * atr), dec)
-          first_sell = {
-              "Asset": self.symbol,
-              "Date": str(c["date"]),
-              "Time": c["time"],
-              "Candle #": c["id"],
-              "Type": "SELL 🔴",
-              "Setup": "05:30 Zone Supply Rejection",
-              "Entry Price": round(close_val, dec),
-              "Stop Loss (SL)": sl,
-              "TP 1": round(close_val - (1.2 * atr), dec),
-              "TP 2": round(close_val - (2.5 * atr), dec),
-              "TP 3": round(close_val - (4.0 * atr), dec),
-              "Is_Within_1hr": c["is_within_1hr"],
-              "Signal_DT": c["dt_user"].isoformat(),
-          }
-          touched_sup2 = False
-
-      # --- D. 4H ANCHOR ZONE 3 (21:30 PM + Supply/Demand Mid Point) ---
-      in_2130_window = (anchor_3 is not None and anchor_dt_3 is not None and c["dt_user"] > anchor_dt_3)
-      if in_2130_window and self.demand_box_3 and self.supply_box_3:
-        if self._touched_demand(self.demand_box_3, low_val, close_val):
-          touched_dem3 = True
-        if self._touched_supply(self.supply_box_3, high_val, close_val):
-          touched_sup3 = True
-
-        # Supply 3 Mid SELL sequence: red touches mid -> green goes above mid -> red crosses & touches/closes bottom of mid
-        if self.supply_3_mid is not None:
-          mid3 = self.supply_3_mid
-          if is_red and low_val <= mid3 and close_val <= (mid3 * 1.001):
-            sup3_mid_touched = True
-            sup3_mid_swept_above = False
-          elif sup3_mid_touched and is_green and high_val > mid3:
-            sup3_mid_swept_above = True
-
-        # Demand 3 Mid BUY sequence: green touches mid -> red goes below mid -> green crosses & touches/closes top of mid
-        if self.demand_3_mid is not None:
-          dmid3 = self.demand_3_mid
-          if is_green and high_val >= dmid3 and close_val >= (dmid3 * 0.999):
-            dem3_mid_touched = True
-            dem3_mid_swept_below = False
-          elif dem3_mid_touched and is_red and low_val < dmid3:
-            dem3_mid_swept_below = True
-
-        dem3_mid_buy_trigger = (
-            self.demand_3_mid is not None
-            and dem3_mid_touched
-            and dem3_mid_swept_below
-            and is_green
-            and close_val > self.demand_3_mid
-            and high_val >= (self.demand_3_mid * 0.999)
-            and (not choppy)
-        )
-        if not first_buy and (dem3_mid_buy_trigger or (touched_dem3 and close_val >= self.demand_box_3[0] and buy_pullback_ok)):
-          ref_low = self.demand_3_mid if dem3_mid_buy_trigger else self.demand_box_3[0]
-          sl = round(min(ref_low, low_val) - (1.5 * atr), dec)
-          setup_name = "21:30 Demand Mid Sweep Re-Cross BUY" if dem3_mid_buy_trigger else "21:30 Zone Demand Bounce"
-          first_buy = {
-              "Asset": self.symbol,
-              "Date": str(c["date"]),
-              "Time": c["time"],
-              "Candle #": c["id"],
-              "Type": "BUY 🟢",
-              "Setup": setup_name,
-              "Entry Price": round(close_val, dec),
-              "Stop Loss (SL)": sl,
-              "TP 1": round(close_val + (1.2 * atr), dec),
-              "TP 2": round(close_val + (2.5 * atr), dec),
-              "TP 3": round(close_val + (4.0 * atr), dec),
-              "Is_Within_1hr": c["is_within_1hr"],
-              "Signal_DT": c["dt_user"].isoformat(),
-          }
-          touched_dem3 = False
-          if dem3_mid_buy_trigger:
-            dem3_mid_touched = False
-            dem3_mid_swept_below = False
-
-        sup3_mid_sell_trigger = (
-            self.supply_3_mid is not None
-            and sup3_mid_touched
-            and sup3_mid_swept_above
-            and is_red
-            and close_val < self.supply_3_mid
-            and low_val <= (self.supply_3_mid * 1.001)
-            and (not choppy)
-        )
-        if not first_sell and (sup3_mid_sell_trigger or (touched_sup3 and sell_pullback_ok)):
-          ref_level = self.supply_3_mid if sup3_mid_sell_trigger else self.supply_box_3[1]
-          sl = round(max(ref_level, high_val) + (1.5 * atr), dec)
-          setup_name = "21:30 Supply Mid Sweep Re-Cross SELL" if sup3_mid_sell_trigger else "21:30 Zone Supply Rejection"
-          first_sell = {
-              "Asset": self.symbol,
-              "Date": str(c["date"]),
-              "Time": c["time"],
-              "Candle #": c["id"],
-              "Type": "SELL 🔴",
-              "Setup": setup_name,
-              "Entry Price": round(close_val, dec),
-              "Stop Loss (SL)": sl,
-              "TP 1": round(close_val - (1.2 * atr), dec),
-              "TP 2": round(close_val - (2.5 * atr), dec),
-              "TP 3": round(close_val - (4.0 * atr), dec),
-              "Is_Within_1hr": c["is_within_1hr"],
-              "Signal_DT": c["dt_user"].isoformat(),
-          }
-          touched_sup3 = False
-          if sup3_mid_sell_trigger:
-            sup3_mid_touched = False
-            sup3_mid_swept_above = False
+      # --- STRICT BUY SEQUENCE ---
+      if not first_buy:
+        if buy_stage == 0:
+          if red_cross_dem3:
+            buy_stage = 1
+        elif buy_stage == 1:
+          if green_cross_dem3:
+            buy_stage = 2
+            buy_red_streak = 0
+            buy_max_red_streak = 0
+        elif buy_stage == 2:
+          if is_red:
+            buy_red_streak += 1
+            if buy_red_streak > buy_max_red_streak:
+              buy_max_red_streak = buy_red_streak
+          else:
+            buy_red_streak = 0
+          if buy_max_red_streak >= 4 and red_cross_dem3:
+            buy_stage = 4
+        elif buy_stage == 4:
+          if green_cross_dem3 and (not choppy):
+            sl = round(min(dem3_mid, low_val) - (1.5 * atr), dec)
+            first_buy = {
+                "Asset": self.symbol,
+                "Date": str(c["date"]),
+                "Time": c["time"],
+                "Candle #": c["id"],
+                "Type": "BUY 🟢",
+                "Setup": "21:30 Mid Strict 4-5 Red Re-Cross BUY",
+                "Entry Price": round(close_val, dec),
+                "Stop Loss (SL)": sl,
+                "TP 1": round(close_val + (1.2 * atr), dec),
+                "TP 2": round(close_val + (2.5 * atr), dec),
+                "TP 3": round(close_val + (4.0 * atr), dec),
+                "Is_Within_1hr": c["is_within_1hr"],
+                "Signal_DT": c["dt_user"].isoformat(),
+            }
+            buy_stage = 0
+            buy_red_streak = 0
+            buy_max_red_streak = 0
 
       prev_c = c
 
@@ -821,7 +623,7 @@ def scan_asset(sym):
   return sym, None, []
 
 
-with st.spinner("⚡ Scanning 20+ assets with Ultimate Confluence Engine..."):
+with st.spinner("⚡ Scanning 20+ assets with Strict 21:30 Mid Engine..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
@@ -837,11 +639,11 @@ for eng in asset_engines.values():
 save_ledger(ledger_records)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} perfect confluence setup(s) across assets!")
+  st.success(f"✅ Found {len(master_signals)} strict 21:30 mid confluence setup(s) across assets!")
   df_display = pd.DataFrame(master_signals).drop(columns=["Is_Within_1hr", "Signal_DT"], errors="ignore")
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active perfect setups meeting strict rules. False entries avoided.")
+  st.info("ℹ️ No active strict 21:30 mid setups met across assets. No signal emitted.")
 
 # ---------------------------------------------------------
 # MANUAL ASSET INSPECTOR & PER-ASSET LEDGER
@@ -873,20 +675,23 @@ if bot.candles_5m:
   with col1:
     st.metric(label=f"Current {selected_symbol} Price", value=f"{curr_p:.2f}")
   with col2:
-    st.metric(label="Locked Perfect Signals", value=len(bot.history))
+    st.metric(label="Locked Strict Signals", value=len(bot.history))
   with col3:
     st.metric(label="Timezone", value=selected_tz_name)
 
   if bot.anchor_2130_candle:
     st.caption(
         f"🕒 Active 21:30 4H Candle ({bot.anchor_2130_start.strftime('%Y-%m-%d %H:%M')}) — "
-        f"High: {bot.anchor_2130_candle['high']} | Low: {bot.anchor_2130_candle['low']} (Active till next 21:30 4H candle)"
+        f"High: {bot.anchor_2130_candle['high']} | Low: {bot.anchor_2130_candle['low']} | "
+        f"Supply 3 Mid: {bot.supply_3_mid:.4f} | Demand 3 Mid: {bot.demand_3_mid:.4f}"
     )
 
   if bot.history:
     st.markdown(f"### 📋 Locked Entries Feed for {selected_symbol}")
     df_history = pd.DataFrame(bot.history).drop(columns=["Is_Within_1hr", "Signal_DT"], errors="ignore")
     st.dataframe(df_history, width="stretch")
+  else:
+    st.caption("ℹ️ Strict 21:30 mid sequence not completed for this asset — no signal.")
 
   # --- PLOT CHART WITH ALL LEVELS ---
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
