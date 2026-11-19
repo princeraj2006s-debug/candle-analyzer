@@ -223,15 +223,16 @@ ledger_start_date = st.sidebar.text_input(
 )
 
 selected_tf = "5m"
-st.sidebar.text("⏱️ Entry Timeframe : 5m (Fixed)")
-st.sidebar.text("📊 Priority : 21:30 Mid -> Fallback 01:30 Mid")
+st.sidebar.text("⏱️ Entry Timeframe : 5m (Pullback Allowed)")
+st.sidebar.text("📊 BUY Filter  : 15m, 30m, 1h, 4h, 1d All Green")
+st.sidebar.text("📉 SELL Filter : 15m, 1h, 4h, 1d Red")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Master Confluence Rules")
 st.sidebar.text("Primary  : 21:30 4H Mid Point Cross")
 st.sidebar.text("Fallback : 01:30 4H Mid Point Cross")
-st.sidebar.text("SELL     : Red Candle Crosses Below Mid")
-st.sidebar.text("BUY      : Green Candle Crosses Above Mid")
+st.sidebar.text("BUY      : 15m/30m/1h/4h/1d Green (5m Red OK)")
+st.sidebar.text("SELL     : 15m/1h/4h/1d Red (5m Green OK)")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -266,8 +267,21 @@ def get_decimals(price):
     return 2
 
 
+def _df_from_ohlcv(ohlcv):
+  df = pd.DataFrame(ohlcv, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
+  df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+  return df.set_index("timestamp")
+
+
+def _candle_is_green(df):
+  if df is None or df.empty:
+    return False
+  last = df.iloc[-1]
+  return float(last["Close"]) >= float(last["Open"])
+
+
 # ---------------------------------------------------------
-# DATA FETCHING MODULE (1d + 4h + 5m)
+# DATA FETCHING MODULE (1d + 4h + 1h + 30m + 15m + 5m)
 # ---------------------------------------------------------
 @st.cache_data(ttl=30)
 def fetch_data(symbol):
@@ -284,37 +298,38 @@ def fetch_data(symbol):
       if sym in exchange.markets:
         ohlcv_1d = exchange.fetch_ohlcv(sym, timeframe="1d", limit=5)
         ohlcv_4h = exchange.fetch_ohlcv(sym, timeframe="4h", limit=50)
+        ohlcv_1h = exchange.fetch_ohlcv(sym, timeframe="1h", limit=10)
+        ohlcv_30m = exchange.fetch_ohlcv(sym, timeframe="30m", limit=10)
+        ohlcv_15m = exchange.fetch_ohlcv(sym, timeframe="15m", limit=10)
         ohlcv_5m = exchange.fetch_ohlcv(sym, timeframe="5m", limit=300)
         if ohlcv_1d and ohlcv_4h and ohlcv_5m:
-          df_1d = pd.DataFrame(ohlcv_1d, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
-          df_1d["timestamp"] = pd.to_datetime(df_1d["timestamp"], unit="ms", utc=True)
-          df_1d = df_1d.set_index("timestamp")
-
-          df_4h = pd.DataFrame(ohlcv_4h, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
-          df_4h["timestamp"] = pd.to_datetime(df_4h["timestamp"], unit="ms", utc=True)
-          df_4h = df_4h.set_index("timestamp")
-
-          df_5m = pd.DataFrame(ohlcv_5m, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
-          df_5m["timestamp"] = pd.to_datetime(df_5m["timestamp"], unit="ms", utc=True)
-          df_5m = df_5m.set_index("timestamp")
-          return df_1d, df_4h, df_5m
+          mtf_green = {
+              "5m": _candle_is_green(_df_from_ohlcv(ohlcv_5m)) if ohlcv_5m else False,
+              "15m": _candle_is_green(_df_from_ohlcv(ohlcv_15m)) if ohlcv_15m else False,
+              "30m": _candle_is_green(_df_from_ohlcv(ohlcv_30m)) if ohlcv_30m else False,
+              "1h": _candle_is_green(_df_from_ohlcv(ohlcv_1h)) if ohlcv_1h else False,
+              "4h": _candle_is_green(_df_from_ohlcv(ohlcv_4h)) if ohlcv_4h else False,
+              "1d": _candle_is_green(_df_from_ohlcv(ohlcv_1d)) if ohlcv_1d else False,
+          }
+          return _df_from_ohlcv(ohlcv_1d), _df_from_ohlcv(ohlcv_4h), _df_from_ohlcv(ohlcv_5m), mtf_green
     except Exception:
       continue
-  return None, None, None
+  return None, None, None, {}
 
 
 # ---------------------------------------------------------
-# MULTI-CONFLUENCE MID-CROSS ENGINE (21:30 -> 01:30 FALLBACK)
+# MULTI-CONFLUENCE MID-CROSS ENGINE WITH MTF CANDLE FILTER
 # ---------------------------------------------------------
 class TWTUltimateEngine:
 
-  def __init__(self, df_1d, df_4h, df_5m, symbol, user_tz, chop_filter=True):
+  def __init__(self, df_1d, df_4h, df_5m, symbol, user_tz, chop_filter=True, mtf_green=None):
     self.df_1d = df_1d
     self.df_4h = df_4h
     self.df_5m = df_5m
     self.symbol = symbol
     self.user_tz = user_tz
     self.chop_filter = chop_filter
+    self.mtf_green = mtf_green or {}
     self.candles_5m = []
     self.history = []
     self.signals = []
@@ -373,10 +388,23 @@ class TWTUltimateEngine:
     near_ema_chop = (atr > 0 and abs(close_val - ema) < (0.25 * atr))
     return low_atr or near_ema_chop
 
+  def _buy_mtf_ok(self):
+    # BUY allowed only when 15m, 30m, 1h, 4h, and 1d candles are ALL green.
+    # 5m red pullback does NOT block BUY.
+    req_tfs = ("15m", "30m", "1h", "4h", "1d")
+    if not self.mtf_green:
+      return False
+    return all(self.mtf_green.get(tf, False) is True for tf in req_tfs)
+
+  def _sell_mtf_ok(self):
+    # SELL requires 15m, 1h, 4h, and 1d candles to be red (not green).
+    # 5m green pullback does NOT block SELL.
+    req_tfs = ("15m", "1h", "4h", "1d")
+    if not self.mtf_green:
+      return False
+    return all(self.mtf_green.get(tf, True) is False for tf in req_tfs)
+
   def _scan_mid_cross(self, candles, start_dt, sup_mid, dem_mid, label):
-    """Scan candles after start_dt for immediate red cross below sup_mid (SELL)
-    and green cross above dem_mid (BUY).
-    """
     if start_dt is None or not candles:
       return None, None
 
@@ -390,6 +418,9 @@ class TWTUltimateEngine:
     seen_below_dem = False
     prev_c = None
 
+    buy_allowed = self._buy_mtf_ok()
+    sell_allowed = self._sell_mtf_ok()
+
     for c in sub:
       atr = c["atr"]
       dec = get_decimals(c["close"])
@@ -401,17 +432,18 @@ class TWTUltimateEngine:
       choppy = self._is_choppy(c)
       prev_close = prev_c["close"] if prev_c is not None else close_val
 
+      # SELL: 5m green pullback does NOT block signal; cross below sup_mid triggers SELL when 15m/1h/4h/1d are red
       if sup_mid is not None:
         if high_val >= sup_mid or prev_close >= sup_mid:
           seen_above_sup = True
-        red_cross_down = (
-            is_red
-            and (close_val < sup_mid)
+        sell_cross = (
+            (close_val < sup_mid)
             and (prev_close >= sup_mid or high_val >= sup_mid)
             and seen_above_sup
             and (not choppy)
+            and sell_allowed
         )
-        if not sell_sig and red_cross_down:
+        if not sell_sig and sell_cross:
           sl = round(max(sup_mid, high_val) + (1.5 * atr), dec)
           sell_sig = {
               "Asset": self.symbol,
@@ -429,17 +461,18 @@ class TWTUltimateEngine:
               "Signal_DT": c["dt_user"].isoformat(),
           }
 
+      # BUY: 5m red pullback does NOT block signal; cross above dem_mid triggers BUY when 15m/30m/1h/4h/1d are all green
       if dem_mid is not None:
         if low_val <= dem_mid or prev_close <= dem_mid:
           seen_below_dem = True
-        green_cross_up = (
-            is_green
-            and (close_val > dem_mid)
+        buy_cross = (
+            (close_val > dem_mid)
             and (prev_close <= dem_mid or low_val <= dem_mid)
             and seen_below_dem
             and (not choppy)
+            and buy_allowed
         )
-        if not buy_sig and green_cross_up:
+        if not buy_sig and buy_cross:
           sl = round(min(dem_mid, low_val) - (1.5 * atr), dec)
           buy_sig = {
               "Asset": self.symbol,
@@ -548,7 +581,6 @@ class TWTUltimateEngine:
           "is_within_1hr": age_min <= 60.0
       })
 
-    # 1. Check 21:30 anchor mid first
     buy_2130, sell_2130 = self._scan_mid_cross(
         self.candles_5m,
         self.anchor_2130_start,
@@ -557,7 +589,6 @@ class TWTUltimateEngine:
         "21:30",
     )
 
-    # 2. If 21:30 has no strong confirmation on a side, fallback to 01:30 anchor mid
     buy_0130, sell_0130 = self._scan_mid_cross(
         self.candles_5m,
         self.anchor_0130_start,
@@ -587,15 +618,17 @@ asset_engines = {}
 
 
 def scan_asset(sym):
-  df_1d, df_4h, df_5m = fetch_data(sym)
+  df_1d, df_4h, df_5m, mtf_green = fetch_data(sym)
   if df_1d is not None and df_4h is not None and df_5m is not None:
-    engine = TWTUltimateEngine(df_1d, df_4h, df_5m, sym, active_tz, chop_filter=use_chop_filter)
+    engine = TWTUltimateEngine(
+        df_1d, df_4h, df_5m, sym, active_tz, chop_filter=use_chop_filter, mtf_green=mtf_green
+    )
     engine.calculate_and_scan()
     return sym, engine, engine.signals
   return sym, None, []
 
 
-with st.spinner("⚡ Scanning 20+ assets (21:30 Mid -> 01:30 Mid Fallback)..."):
+with st.spinner("⚡ Scanning 20+ assets with MTF Candle Filter..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
@@ -611,17 +644,17 @@ for eng in asset_engines.values():
 save_ledger(ledger_records)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} mid-cross confluence setup(s) across assets!")
+  st.success(f"✅ Found {len(master_signals)} MTF-filtered confluence setup(s) across assets!")
   df_display = pd.DataFrame(master_signals).drop(columns=["Is_Within_1hr", "Signal_DT"], errors="ignore")
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active mid-cross setups right now.")
+  st.info("ℹ️ No active MTF-filtered setups right now.")
 
 # ---------------------------------------------------------
 # MANUAL ASSET INSPECTOR & PER-ASSET LEDGER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("📊 Individual Asset Inspector (All Zones & Prev Day Levels)")
+st.subheader("📊 Individual Asset Inspector (MTF Filter + All Zones)")
 
 selected_symbol = st.selectbox(
     "🔍 Select Asset to Load Chart",
@@ -632,9 +665,23 @@ selected_symbol = st.selectbox(
 if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
-  df_1d, df_4h, df_5m = fetch_data(selected_symbol)
-  bot = TWTUltimateEngine(df_1d, df_4h, df_5m, selected_symbol, active_tz, chop_filter=use_chop_filter)
+  df_1d, df_4h, df_5m, mtf_green = fetch_data(selected_symbol)
+  bot = TWTUltimateEngine(
+      df_1d, df_4h, df_5m, selected_symbol, active_tz, chop_filter=use_chop_filter, mtf_green=mtf_green
+  )
   bot.calculate_and_scan()
+
+if bot.mtf_green:
+  st.markdown(f"#### 🧭 {selected_symbol} Multi-Timeframe Candle Status")
+  mtf_rows = []
+  for tf in ("5m", "15m", "30m", "1h", "4h", "1d"):
+    is_g = bot.mtf_green.get(tf, False)
+    mtf_rows.append({
+        "Time Frame": tf,
+        "Candle": "Bullish (Green) 🟢" if is_g else "Bearish (Red) 🔴",
+        "Note": "Pullback Allowed" if tf == "5m" else "Strict Direction Filter",
+    })
+  st.dataframe(pd.DataFrame(mtf_rows), width="stretch")
 
 st.markdown(f"### 📈 {selected_symbol} Performance Ledger (From {ledger_start_date})")
 summary_df = summarize_asset_ledger(ledger_records, selected_symbol, start_date_str=ledger_start_date)
