@@ -35,6 +35,38 @@ count = st_autorefresh(interval=30000, key="twt_multi_refresh")
 st.title("⚡ TRADE WITH TUCKYAA — Ultimate Multi-Confluence Engine")
 
 LEDGER_FILE = Path("twt_signals_ledger.json")
+STRENGTH_LOCK_FILE = Path("twt_strength_locks.json")
+
+
+# ---------------------------------------------------------
+# 21:30 SESSION STRENGTH LOCK HELPERS
+# ---------------------------------------------------------
+def get_2130_session_key(now_user):
+  """Returns session key locking strength until the next 21:30 (9:30 PM) 4H candle window."""
+  anchor_2130_today = datetime.combine(now_user.date(), time(21, 30), tzinfo=now_user.tzinfo)
+  if now_user >= anchor_2130_today:
+    session_start = anchor_2130_today
+  else:
+    session_start = anchor_2130_today - timedelta(days=1)
+  return session_start.strftime("%Y-%m-%d_%H:%M")
+
+
+def load_strength_locks():
+  if STRENGTH_LOCK_FILE.exists():
+    try:
+      data = json.loads(STRENGTH_LOCK_FILE.read_text(encoding="utf-8"))
+      if isinstance(data, dict):
+        return data
+    except Exception:
+      pass
+  return {}
+
+
+def save_strength_locks(locks):
+  try:
+    STRENGTH_LOCK_FILE.write_text(json.dumps(locks, indent=2), encoding="utf-8")
+  except Exception:
+    pass
 
 
 # ---------------------------------------------------------
@@ -235,7 +267,7 @@ st.sidebar.text("Primary  : 21:30 4H Mid Point Cross")
 st.sidebar.text("Fallback : 01:30 4H Mid Point Cross")
 st.sidebar.text("SELL     : Red Candle Crosses Below Mid")
 st.sidebar.text("BUY      : Green Candle Crosses Above Mid")
-st.sidebar.text("Strength : Locked at Signal Candle Time")
+st.sidebar.text("Strength : Locked Until Next 21:30 4H")
 st.sidebar.text("Zero-Lag : ZLEMA + ATR Band Trend")
 st.sidebar.text("A-Grade  : HTF + Wick + Zero-Lag")
 
@@ -432,6 +464,23 @@ def compute_mtf_candle_strength(dfs_by_tf, dt_utc=None, use_closed_latest=True):
   }
 
 
+def get_or_lock_2130_strength(symbol, user_tz, dfs_by_tf, locks_dict):
+  """Calculate strength once per 21:30 4H cycle and lock until the next 21:30 candle."""
+  now_user = datetime.now(timezone.utc).astimezone(user_tz)
+  session_key = get_2130_session_key(now_user)
+  lock_key = f"{symbol}|{session_key}"
+
+  if lock_key in locks_dict and isinstance(locks_dict[lock_key], dict):
+    cached = dict(locks_dict[lock_key])
+    cached["session_key"] = session_key
+    return cached, False
+
+  computed = compute_mtf_candle_strength(dfs_by_tf, dt_utc=None, use_closed_latest=True)
+  computed["session_key"] = session_key
+  locks_dict[lock_key] = computed
+  return dict(computed), True
+
+
 # ---------------------------------------------------------
 # DATA FETCHING MODULE (1d + 4h + 1h + 15m + 5m)
 # ---------------------------------------------------------
@@ -461,15 +510,14 @@ def fetch_data(symbol):
               "4h": _df_from_ohlcv(ohlcv_4h),
               "1d": _df_from_ohlcv(ohlcv_1d),
           }
-          strength_info = compute_mtf_candle_strength(dfs_by_tf, dt_utc=None, use_closed_latest=True)
-          return dfs_by_tf["1d"], dfs_by_tf["4h"], dfs_by_tf["5m"], strength_info, dfs_by_tf
+          return dfs_by_tf["1d"], dfs_by_tf["4h"], dfs_by_tf["5m"], dfs_by_tf
     except Exception:
       continue
-  return None, None, None, {}, {}
+  return None, None, None, {}
 
 
 # ---------------------------------------------------------
-# MULTI-CONFLUENCE MID-CROSS ENGINE (LOCKED SIGNAL STRENGTH)
+# MULTI-CONFLUENCE MID-CROSS ENGINE (21:30 LOCKED STRENGTH)
 # ---------------------------------------------------------
 class TWTUltimateEngine:
 
@@ -567,24 +615,8 @@ class TWTUltimateEngine:
       lower_wick = max(0.0, body_bot - l)
       return (cl > o) and ((lower_wick / rng) >= 0.15)
 
-  def _locked_strength_for_candle(self, c):
-    """Lock MTF buyer/seller strength at the exact signal candle timestamp so it never flickers."""
-    if self.dfs_by_tf:
-      locked = compute_mtf_candle_strength(
-          self.dfs_by_tf, dt_utc=c["dt_utc"], use_closed_latest=False
-      )
-      return (
-          float(locked.get("buyer_pct", 50.0)),
-          float(locked.get("seller_pct", 50.0)),
-          locked,
-      )
-    return (
-        float(self.strength_info.get("buyer_pct", 50.0)),
-        float(self.strength_info.get("seller_pct", 50.0)),
-        self.strength_info,
-    )
-
-  def _grade_signal(self, c, side, locked_info):
+  def _grade_signal(self, c, side):
+    locked_info = self.strength_info
     if side == "BUY":
       htf_ok = bool(locked_info.get("htf_buy_aligned", False))
       zl_5m_ok = c.get("zl_trend") == "BULL"
@@ -612,7 +644,7 @@ class TWTUltimateEngine:
   def _build_diy_checklist(self):
     has_buy = any("BUY" in s["Type"] for s in self.history)
     has_sell = any("SELL" in s["Type"] for s in self.history)
-    ref_info = self.history[-1].get("_locked_info", self.strength_info) if self.history else self.strength_info
+    ref_info = self.strength_info
     last_zl = self.candles_5m[-2]["zl_trend"] if len(self.candles_5m) >= 2 else (self.candles_5m[-1]["zl_trend"] if self.candles_5m else "BULL")
     zl_htf_buy = bool(ref_info.get("zl_buy_aligned", False))
     zl_htf_sell = bool(ref_info.get("zl_sell_aligned", False))
@@ -661,6 +693,9 @@ class TWTUltimateEngine:
     seen_below_dem = False
     prev_c = None
 
+    b_lock = float(self.strength_info.get("buyer_pct", 50.0))
+    s_lock = float(self.strength_info.get("seller_pct", 50.0))
+
     for c in sub:
       atr = c["atr"]
       dec = get_decimals(c["close"])
@@ -683,8 +718,7 @@ class TWTUltimateEngine:
             and (not choppy)
         )
         if not sell_sig and red_cross_down:
-          b_lock, s_lock, locked_info = self._locked_strength_for_candle(c)
-          grade, conf_note = self._grade_signal(c, "SELL", locked_info)
+          grade, conf_note = self._grade_signal(c, "SELL")
           sl = round(max(sup_mid, high_val) + (1.5 * atr), dec)
           sell_sig = {
               "Asset": self.symbol,
@@ -703,7 +737,6 @@ class TWTUltimateEngine:
               "TP 3": round(close_val - (4.0 * atr), dec),
               "Is_Within_1hr": c["is_within_1hr"],
               "Signal_DT": c["dt_user"].isoformat(),
-              "_locked_info": locked_info,
           }
 
       if dem_mid is not None:
@@ -717,8 +750,7 @@ class TWTUltimateEngine:
             and (not choppy)
         )
         if not buy_sig and green_cross_up:
-          b_lock, s_lock, locked_info = self._locked_strength_for_candle(c)
-          grade, conf_note = self._grade_signal(c, "BUY", locked_info)
+          grade, conf_note = self._grade_signal(c, "BUY")
           sl = round(min(dem_mid, low_val) - (1.5 * atr), dec)
           buy_sig = {
               "Asset": self.symbol,
@@ -737,7 +769,6 @@ class TWTUltimateEngine:
               "TP 3": round(close_val + (4.0 * atr), dec),
               "Is_Within_1hr": c["is_within_1hr"],
               "Signal_DT": c["dt_user"].isoformat(),
-              "_locked_info": locked_info,
           }
 
       prev_c = c
@@ -867,42 +898,56 @@ class TWTUltimateEngine:
 
 
 # ---------------------------------------------------------
-# MASTER SCANNER
+# MASTER SCANNER (WITH 21:30 LOCKED STRENGTH)
 # ---------------------------------------------------------
 st.markdown("---")
 st.subheader("🔥 TWT Master Live Signal Dashboard (20+ Assets)")
 
+if "twt_strength_locks" not in st.session_state:
+  st.session_state.twt_strength_locks = load_strength_locks()
+
+strength_locks = st.session_state.twt_strength_locks
+locks_updated = False
+
 master_signals = []
 asset_engines = {}
+asset_fetched_dfs = {}
 
 
 def scan_asset(sym):
-  df_1d, df_4h, df_5m, strength_info, dfs_by_tf = fetch_data(sym)
-  if df_1d is not None and df_4h is not None and df_5m is not None:
-    engine = TWTUltimateEngine(
-        df_1d,
-        df_4h,
-        df_5m,
-        sym,
-        active_tz,
-        chop_filter=use_chop_filter,
-        strength_info=strength_info,
-        dfs_by_tf=dfs_by_tf,
-    )
-    engine.calculate_and_scan()
-    return sym, engine, engine.signals
-  return sym, None, []
+  df_1d, df_4h, df_5m, dfs_by_tf = fetch_data(sym)
+  return sym, df_1d, df_4h, df_5m, dfs_by_tf
 
 
 with st.spinner("⚡ Scanning 20+ assets (Zero-Lag MTF + DIY Builder)..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
-      sym, engine, sigs = future.result()
-      if engine:
+      sym, df_1d, df_4h, df_5m, dfs_by_tf = future.result()
+      if df_1d is not None and df_4h is not None and df_5m is not None:
+        asset_fetched_dfs[sym] = (df_1d, df_4h, df_5m, dfs_by_tf)
+        locked_strength, newly_computed = get_or_lock_2130_strength(
+            sym, active_tz, dfs_by_tf, strength_locks
+        )
+        if newly_computed:
+          locks_updated = True
+        engine = TWTUltimateEngine(
+            df_1d,
+            df_4h,
+            df_5m,
+            sym,
+            active_tz,
+            chop_filter=use_chop_filter,
+            strength_info=locked_strength,
+            dfs_by_tf=dfs_by_tf,
+        )
+        engine.calculate_and_scan()
         asset_engines[sym] = engine
-      if sigs:
-        master_signals.extend(sigs)
+        if engine.signals:
+          master_signals.extend(engine.signals)
+
+if locks_updated:
+  save_strength_locks(strength_locks)
 
 ledger_records = load_ledger()
 for eng in asset_engines.values():
@@ -911,7 +956,7 @@ save_ledger(ledger_records)
 
 if master_signals:
   st.success(f"✅ Found {len(master_signals)} mid-cross confluence setup(s) across assets!")
-  df_display = pd.DataFrame(master_signals).drop(columns=["Is_Within_1hr", "Signal_DT", "_locked_info"], errors="ignore")
+  df_display = pd.DataFrame(master_signals).drop(columns=["Is_Within_1hr", "Signal_DT"], errors="ignore")
   st.dataframe(df_display, width="stretch")
 else:
   st.info("ℹ️ No active mid-cross setups right now.")
@@ -931,7 +976,12 @@ selected_symbol = st.selectbox(
 if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
-  df_1d, df_4h, df_5m, strength_info, dfs_by_tf = fetch_data(selected_symbol)
+  df_1d, df_4h, df_5m, dfs_by_tf = fetch_data(selected_symbol)
+  locked_strength, newly_computed = get_or_lock_2130_strength(
+      selected_symbol, active_tz, dfs_by_tf, strength_locks
+  )
+  if newly_computed:
+    save_strength_locks(strength_locks)
   bot = TWTUltimateEngine(
       df_1d,
       df_4h,
@@ -939,17 +989,14 @@ else:
       selected_symbol,
       active_tz,
       chop_filter=use_chop_filter,
-      strength_info=strength_info,
+      strength_info=locked_strength,
       dfs_by_tf=dfs_by_tf,
   )
   bot.calculate_and_scan()
 
-# Display locked signal strength if a signal exists, else last-closed MTF strength
 display_strength = bot.strength_info
-display_title_tag = "(Last Closed Candle)"
-if bot.history and bot.history[-1].get("_locked_info"):
-  display_strength = bot.history[-1]["_locked_info"]
-  display_title_tag = f"(Locked @ {bot.history[-1]['Time']} Candle)"
+session_tag = display_strength.get("session_key", "") if display_strength else ""
+display_title_tag = f"(Locked Until Next 21:30 4H | Cycle: {session_tag})" if session_tag else "(Locked Until Next 21:30 4H)"
 
 if display_strength and display_strength.get("rows"):
   st.markdown(f"#### 💪 {selected_symbol} Buyer vs Seller Strength + Zero-Lag MTF {display_title_tag}")
@@ -991,7 +1038,7 @@ if bot.candles_5m:
 
   if bot.history:
     st.markdown(f"### 📋 Locked Entries Feed for {selected_symbol}")
-    df_history = pd.DataFrame(bot.history).drop(columns=["Is_Within_1hr", "Signal_DT", "_locked_info"], errors="ignore")
+    df_history = pd.DataFrame(bot.history).drop(columns=["Is_Within_1hr", "Signal_DT"], errors="ignore")
     st.dataframe(df_history, width="stretch")
 
   # --- PLOT CHART WITH ALL LEVELS + ZERO-LAG LINE ---
