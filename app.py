@@ -230,9 +230,9 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("#### Master Confluence Rules")
 st.sidebar.text("Demand Zones : 01:30, 05:30 & 21:30 (till next 21:30) Lows + Prev Day Low")
 st.sidebar.text("Supply Zones : 01:30, 05:30 & 21:30 (till next 21:30) Highs + Prev Day High")
-st.sidebar.text("Supply Mid   : 01:30 & 21:30 Supply Zone Mid Line")
-st.sidebar.text("BUY          : Demand Touch + Bounce + Swing Reclaim")
-st.sidebar.text("SELL         : Mid/Top Cross -> Return to Mid/Top -> Breakdown")
+st.sidebar.text("Mid Rules    : Touch Mid -> Opposite Sweep -> Cross & Touch/Close Side")
+st.sidebar.text("BUY          : Demand Mid/Zone Sweep + Green Re-Cross Touch")
+st.sidebar.text("SELL         : Supply Mid/Zone Sweep + Red Re-Cross Touch")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -372,14 +372,6 @@ class TWTUltimateEngine:
       return False
     return (high_val >= sup_box[0]) and (close_val <= sup_box[1])
 
-  def _is_in_demand_or_pdl(self, low_val, close_val):
-    if self.prev_low is not None and close_val <= (self.prev_low * 1.003):
-      return True
-    for box in (self.demand_box_1, self.demand_box_2, self.demand_box_3):
-      if box and close_val <= box[1] and low_val <= box[1]:
-        return True
-    return False
-
   def _is_choppy(self, c):
     if not self.chop_filter:
       return False
@@ -491,34 +483,31 @@ class TWTUltimateEngine:
 
     first_buy = None
     first_sell = None
-
-    # State for PDH: cross down -> return to top/PDH -> breakdown
-    pdh_crossed_down = False
-    pdh_returned_top = False
-
+    broke_above_pdh = False
     broke_below_pdl = False
 
-    # State for Zone 1 (01:30)
+    # Supply Mid SELL state machine:
+    # Step 1: red candle touches mid -> Step 2: green candle pushes above mid -> Step 3: red candle crosses below & touches/closes on bottom side of mid
+    sup1_mid_touched = False
+    sup1_mid_swept_above = False
+    sup3_mid_touched = False
+    sup3_mid_swept_above = False
+
+    # Demand Mid BUY state machine:
+    # Step 1: green candle touches mid -> Step 2: red candle pushes below mid -> Step 3: green candle crosses above & touches/closes on top side of mid
+    dem1_mid_touched = False
+    dem1_mid_swept_below = False
+    dem3_mid_touched = False
+    dem3_mid_swept_below = False
+
     touched_dem1 = False
-    sup1_crossed_down = False
-    sup1_returned_top = False
-    sup1_mid_crossed_down = False
-    sup1_mid_returned = False
-
-    # State for Zone 2 (05:30)
     touched_dem2 = False
-    sup2_crossed_down = False
-    sup2_returned_top = False
-
-    # State for Zone 3 (21:30)
     touched_dem3 = False
-    sup3_crossed_down = False
-    sup3_returned_top = False
-    sup3_mid_crossed_down = False
-    sup3_mid_returned = False
+    touched_sup1 = False
+    touched_sup2 = False
+    touched_sup3 = False
 
     prev_c = None
-    recent_colors = []
 
     for c in scan_5m:
       atr = c["atr"]
@@ -529,44 +518,14 @@ class TWTUltimateEngine:
       is_green = c["color"] == "Green"
       is_red = c["color"] == "Red"
 
-      recent_colors.append(c["color"])
-      if len(recent_colors) > 3:
-        recent_colors.pop(0)
-
-      in_green_rally = len(recent_colors) >= 2 and all(col == "Green" for col in recent_colors[-2:])
-      prev_mid = ((prev_c["high"] + prev_c["low"]) / 2.0) if prev_c is not None else close_val
-      strong_bear_rejection = (
-          is_red
-          and (prev_c is not None)
-          and (close_val < prev_c["low"])
-          and (close_val < prev_mid)
-          and ((prev_c["high"] - close_val) >= (0.65 * atr))
-      )
-
-      in_demand_guard = self._is_in_demand_or_pdl(low_val, close_val)
       choppy = self._is_choppy(c)
       buy_pullback_ok = (not choppy) and is_green and (prev_c is None or close_val > prev_c["high"])
-      sell_breakout_ok = (
-          (not choppy)
-          and (not in_demand_guard)
-          and (not in_green_rally)
-          and strong_bear_rejection
-      )
+      sell_pullback_ok = (not choppy) and is_red and (prev_c is None or close_val < prev_c["low"])
 
       # --- A. PREVIOUS DAY HIGH / LOW STRATEGY ---
-      if is_red and close_val < self.prev_high and high_val >= (self.prev_high * 0.998):
-        pdh_crossed_down = True
-        pdh_returned_top = False
-      elif pdh_crossed_down and high_val >= (self.prev_high * 0.999):
-        pdh_returned_top = True
-
-      if (
-          not first_sell
-          and pdh_crossed_down
-          and pdh_returned_top
-          and close_val < self.prev_high
-          and sell_breakout_ok
-      ):
+      if high_val >= self.prev_high:
+        broke_above_pdh = True
+      if not first_sell and broke_above_pdh and close_val < self.prev_high and sell_pullback_ok:
         sl = round(max(self.prev_high, high_val) + (1.5 * atr), dec)
         first_sell = {
             "Asset": self.symbol,
@@ -574,7 +533,7 @@ class TWTUltimateEngine:
             "Time": c["time"],
             "Candle #": c["id"],
             "Type": "SELL 🔴",
-            "Setup": "PDH Mid/Top Return + Breakdown SELL",
+            "Setup": "Prev Day High Rejection",
             "Entry Price": round(close_val, dec),
             "Stop Loss (SL)": sl,
             "TP 1": round(close_val - (1.2 * atr), dec),
@@ -583,8 +542,7 @@ class TWTUltimateEngine:
             "Is_Within_1hr": c["is_within_1hr"],
             "Signal_DT": c["dt_user"].isoformat(),
         }
-        pdh_crossed_down = False
-        pdh_returned_top = False
+        broke_above_pdh = False
 
       if low_val <= self.prev_low:
         broke_below_pdl = True
@@ -607,34 +565,51 @@ class TWTUltimateEngine:
         }
         broke_below_pdl = False
 
-      # --- B. 4H ANCHOR ZONE 1 (01:30 AM + Supply Mid Point) ---
+      # --- B. 4H ANCHOR ZONE 1 (01:30 AM + Supply/Demand Mid Point) ---
       if c["dt_user"] > anchor_dt_1 and self.demand_box_1 and self.supply_box_1:
         if self._touched_demand(self.demand_box_1, low_val, close_val):
           touched_dem1 = True
+        if self._touched_supply(self.supply_box_1, high_val, close_val):
+          touched_sup1 = True
 
-        sup1_top = self.supply_box_1[1]
-        if is_red and close_val < sup1_top and high_val >= self.supply_box_1[0]:
-          sup1_crossed_down = True
-          sup1_returned_top = False
-        elif sup1_crossed_down and high_val >= (sup1_top * 0.999):
-          sup1_returned_top = True
-
+        # Supply 1 Mid SELL sequence: red touches mid -> green goes above mid -> red crosses & touches/closes bottom of mid
         if self.supply_1_mid is not None:
-          if is_red and close_val < self.supply_1_mid and high_val >= (self.supply_1_mid * 0.999):
-            sup1_mid_crossed_down = True
-            sup1_mid_returned = False
-          elif sup1_mid_crossed_down and high_val >= (self.supply_1_mid * 0.999):
-            sup1_mid_returned = True
+          mid1 = self.supply_1_mid
+          if is_red and low_val <= mid1 and close_val <= (mid1 * 1.001):
+            sup1_mid_touched = True
+            sup1_mid_swept_above = False
+          elif sup1_mid_touched and is_green and high_val > mid1:
+            sup1_mid_swept_above = True
 
-        if not first_buy and touched_dem1 and close_val >= self.demand_box_1[0] and buy_pullback_ok:
-          sl = round(min(self.demand_box_1[0], low_val) - (1.5 * atr), dec)
+        # Demand 1 Mid BUY sequence: green touches mid -> red goes below mid -> green crosses & touches/closes top of mid
+        if self.demand_1_mid is not None:
+          dmid1 = self.demand_1_mid
+          if is_green and high_val >= dmid1 and close_val >= (dmid1 * 0.999):
+            dem1_mid_touched = True
+            dem1_mid_swept_below = False
+          elif dem1_mid_touched and is_red and low_val < dmid1:
+            dem1_mid_swept_below = True
+
+        dem1_mid_buy_trigger = (
+            self.demand_1_mid is not None
+            and dem1_mid_touched
+            and dem1_mid_swept_below
+            and is_green
+            and close_val > self.demand_1_mid
+            and high_val >= (self.demand_1_mid * 0.999)
+            and (not choppy)
+        )
+        if not first_buy and (dem1_mid_buy_trigger or (touched_dem1 and close_val >= self.demand_box_1[0] and buy_pullback_ok)):
+          ref_low = self.demand_1_mid if dem1_mid_buy_trigger else self.demand_box_1[0]
+          sl = round(min(ref_low, low_val) - (1.5 * atr), dec)
+          setup_name = "01:30 Demand Mid Sweep Re-Cross BUY" if dem1_mid_buy_trigger else "01:30 Zone Demand Bounce"
           first_buy = {
               "Asset": self.symbol,
               "Date": str(c["date"]),
               "Time": c["time"],
               "Candle #": c["id"],
               "Type": "BUY 🟢",
-              "Setup": "01:30 Zone Demand Bounce",
+              "Setup": setup_name,
               "Entry Price": round(close_val, dec),
               "Stop Loss (SL)": sl,
               "TP 1": round(close_val + (1.2 * atr), dec),
@@ -644,19 +619,23 @@ class TWTUltimateEngine:
               "Signal_DT": c["dt_user"].isoformat(),
           }
           touched_dem1 = False
+          if dem1_mid_buy_trigger:
+            dem1_mid_touched = False
+            dem1_mid_swept_below = False
 
         sup1_mid_sell_trigger = (
             self.supply_1_mid is not None
-            and sup1_mid_crossed_down
-            and sup1_mid_returned
+            and sup1_mid_touched
+            and sup1_mid_swept_above
+            and is_red
             and close_val < self.supply_1_mid
+            and low_val <= (self.supply_1_mid * 1.001)
+            and (not choppy)
         )
-        sup1_zone_sell_trigger = sup1_crossed_down and sup1_returned_top and close_val < sup1_top
-
-        if not first_sell and (sup1_zone_sell_trigger or sup1_mid_sell_trigger) and sell_breakout_ok:
-          ref_level = self.supply_1_mid if (sup1_mid_sell_trigger and self.supply_1_mid) else sup1_top
+        if not first_sell and (sup1_mid_sell_trigger or (touched_sup1 and sell_pullback_ok)):
+          ref_level = self.supply_1_mid if sup1_mid_sell_trigger else self.supply_box_1[1]
           sl = round(max(ref_level, high_val) + (1.5 * atr), dec)
-          setup_name = "01:30 Mid Return + Breakdown SELL" if sup1_mid_sell_trigger else "01:30 Top Return + Breakdown SELL"
+          setup_name = "01:30 Supply Mid Sweep Re-Cross SELL" if sup1_mid_sell_trigger else "01:30 Zone Supply Rejection"
           first_sell = {
               "Asset": self.symbol,
               "Date": str(c["date"]),
@@ -672,22 +651,17 @@ class TWTUltimateEngine:
               "Is_Within_1hr": c["is_within_1hr"],
               "Signal_DT": c["dt_user"].isoformat(),
           }
-          sup1_crossed_down = False
-          sup1_returned_top = False
-          sup1_mid_crossed_down = False
-          sup1_mid_returned = False
+          touched_sup1 = False
+          if sup1_mid_sell_trigger:
+            sup1_mid_touched = False
+            sup1_mid_swept_above = False
 
       # --- C. 4H ANCHOR ZONE 2 (05:30 AM) ---
       if anchor_dt_2 and c["dt_user"] > anchor_dt_2 and self.demand_box_2 and self.supply_box_2:
         if self._touched_demand(self.demand_box_2, low_val, close_val):
           touched_dem2 = True
-
-        sup2_top = self.supply_box_2[1]
-        if is_red and close_val < sup2_top and high_val >= self.supply_box_2[0]:
-          sup2_crossed_down = True
-          sup2_returned_top = False
-        elif sup2_crossed_down and high_val >= (sup2_top * 0.999):
-          sup2_returned_top = True
+        if self._touched_supply(self.supply_box_2, high_val, close_val):
+          touched_sup2 = True
 
         if not first_buy and touched_dem2 and close_val >= self.demand_box_2[0] and buy_pullback_ok:
           sl = round(min(self.demand_box_2[0], low_val) - (1.5 * atr), dec)
@@ -708,15 +682,15 @@ class TWTUltimateEngine:
           }
           touched_dem2 = False
 
-        if not first_sell and sup2_crossed_down and sup2_returned_top and close_val < sup2_top and sell_breakout_ok:
-          sl = round(max(sup2_top, high_val) + (1.5 * atr), dec)
+        if not first_sell and touched_sup2 and close_val <= self.supply_box_2[1] and sell_pullback_ok:
+          sl = round(max(self.supply_box_2[1], high_val) + (1.5 * atr), dec)
           first_sell = {
               "Asset": self.symbol,
               "Date": str(c["date"]),
               "Time": c["time"],
               "Candle #": c["id"],
               "Type": "SELL 🔴",
-              "Setup": "05:30 Top Return + Breakdown SELL",
+              "Setup": "05:30 Zone Supply Rejection",
               "Entry Price": round(close_val, dec),
               "Stop Loss (SL)": sl,
               "TP 1": round(close_val - (1.2 * atr), dec),
@@ -725,38 +699,54 @@ class TWTUltimateEngine:
               "Is_Within_1hr": c["is_within_1hr"],
               "Signal_DT": c["dt_user"].isoformat(),
           }
-          sup2_crossed_down = False
-          sup2_returned_top = False
+          touched_sup2 = False
 
-      # --- D. 4H ANCHOR ZONE 3 (21:30 PM + Supply Mid Point) ---
+      # --- D. 4H ANCHOR ZONE 3 (21:30 PM + Supply/Demand Mid Point) ---
       in_2130_window = (anchor_3 is not None and anchor_dt_3 is not None and c["dt_user"] > anchor_dt_3)
       if in_2130_window and self.demand_box_3 and self.supply_box_3:
         if self._touched_demand(self.demand_box_3, low_val, close_val):
           touched_dem3 = True
+        if self._touched_supply(self.supply_box_3, high_val, close_val):
+          touched_sup3 = True
 
-        sup3_top = self.supply_box_3[1]
-        if is_red and close_val < sup3_top and high_val >= self.supply_box_3[0]:
-          sup3_crossed_down = True
-          sup3_returned_top = False
-        elif sup3_crossed_down and high_val >= (sup3_top * 0.999):
-          sup3_returned_top = True
-
+        # Supply 3 Mid SELL sequence: red touches mid -> green goes above mid -> red crosses & touches/closes bottom of mid
         if self.supply_3_mid is not None:
-          if is_red and close_val < self.supply_3_mid and high_val >= (self.supply_3_mid * 0.999):
-            sup3_mid_crossed_down = True
-            sup3_mid_returned = False
-          elif sup3_mid_crossed_down and high_val >= (self.supply_3_mid * 0.999):
-            sup3_mid_returned = True
+          mid3 = self.supply_3_mid
+          if is_red and low_val <= mid3 and close_val <= (mid3 * 1.001):
+            sup3_mid_touched = True
+            sup3_mid_swept_above = False
+          elif sup3_mid_touched and is_green and high_val > mid3:
+            sup3_mid_swept_above = True
 
-        if not first_buy and touched_dem3 and close_val >= self.demand_box_3[0] and buy_pullback_ok:
-          sl = round(min(self.demand_box_3[0], low_val) - (1.5 * atr), dec)
+        # Demand 3 Mid BUY sequence: green touches mid -> red goes below mid -> green crosses & touches/closes top of mid
+        if self.demand_3_mid is not None:
+          dmid3 = self.demand_3_mid
+          if is_green and high_val >= dmid3 and close_val >= (dmid3 * 0.999):
+            dem3_mid_touched = True
+            dem3_mid_swept_below = False
+          elif dem3_mid_touched and is_red and low_val < dmid3:
+            dem3_mid_swept_below = True
+
+        dem3_mid_buy_trigger = (
+            self.demand_3_mid is not None
+            and dem3_mid_touched
+            and dem3_mid_swept_below
+            and is_green
+            and close_val > self.demand_3_mid
+            and high_val >= (self.demand_3_mid * 0.999)
+            and (not choppy)
+        )
+        if not first_buy and (dem3_mid_buy_trigger or (touched_dem3 and close_val >= self.demand_box_3[0] and buy_pullback_ok)):
+          ref_low = self.demand_3_mid if dem3_mid_buy_trigger else self.demand_box_3[0]
+          sl = round(min(ref_low, low_val) - (1.5 * atr), dec)
+          setup_name = "21:30 Demand Mid Sweep Re-Cross BUY" if dem3_mid_buy_trigger else "21:30 Zone Demand Bounce"
           first_buy = {
               "Asset": self.symbol,
               "Date": str(c["date"]),
               "Time": c["time"],
               "Candle #": c["id"],
               "Type": "BUY 🟢",
-              "Setup": "21:30 Zone Demand Bounce",
+              "Setup": setup_name,
               "Entry Price": round(close_val, dec),
               "Stop Loss (SL)": sl,
               "TP 1": round(close_val + (1.2 * atr), dec),
@@ -766,19 +756,23 @@ class TWTUltimateEngine:
               "Signal_DT": c["dt_user"].isoformat(),
           }
           touched_dem3 = False
+          if dem3_mid_buy_trigger:
+            dem3_mid_touched = False
+            dem3_mid_swept_below = False
 
         sup3_mid_sell_trigger = (
             self.supply_3_mid is not None
-            and sup3_mid_crossed_down
-            and sup3_mid_returned
+            and sup3_mid_touched
+            and sup3_mid_swept_above
+            and is_red
             and close_val < self.supply_3_mid
+            and low_val <= (self.supply_3_mid * 1.001)
+            and (not choppy)
         )
-        sup3_zone_sell_trigger = sup3_crossed_down and sup3_returned_top and close_val < sup3_top
-
-        if not first_sell and (sup3_zone_sell_trigger or sup3_mid_sell_trigger) and sell_breakout_ok:
-          ref_level = self.supply_3_mid if (sup3_mid_sell_trigger and self.supply_3_mid) else sup3_top
+        if not first_sell and (sup3_mid_sell_trigger or (touched_sup3 and sell_pullback_ok)):
+          ref_level = self.supply_3_mid if sup3_mid_sell_trigger else self.supply_box_3[1]
           sl = round(max(ref_level, high_val) + (1.5 * atr), dec)
-          setup_name = "21:30 Mid Return + Breakdown SELL" if sup3_mid_sell_trigger else "21:30 Top Return + Breakdown SELL"
+          setup_name = "21:30 Supply Mid Sweep Re-Cross SELL" if sup3_mid_sell_trigger else "21:30 Zone Supply Rejection"
           first_sell = {
               "Asset": self.symbol,
               "Date": str(c["date"]),
@@ -794,10 +788,10 @@ class TWTUltimateEngine:
               "Is_Within_1hr": c["is_within_1hr"],
               "Signal_DT": c["dt_user"].isoformat(),
           }
-          sup3_crossed_down = False
-          sup3_returned_top = False
-          sup3_mid_crossed_down = False
-          sup3_mid_returned = False
+          touched_sup3 = False
+          if sup3_mid_sell_trigger:
+            sup3_mid_touched = False
+            sup3_mid_swept_above = False
 
       prev_c = c
 
