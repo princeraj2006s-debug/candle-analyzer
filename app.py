@@ -223,14 +223,13 @@ ledger_start_date = st.sidebar.text_input(
 )
 
 selected_tf = "5m"
-st.sidebar.text("⏱️ Entry Timeframe : 5m (Pullback Allowed)")
-st.sidebar.text("📊 BUY Zone   : Near/Cross Demand + AVG > 45%")
-st.sidebar.text("📉 SELL Zone  : Near/Cross Supply + AVG > 45%")
+st.sidebar.text("⏱️ Entry Timeframe : 5m (After 21:30)")
+st.sidebar.text("📊 BUY Zone   : Demand Zone + AVG > 45%")
+st.sidebar.text("📉 SELL Zone  : Supply Zone + AVG > 45%")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Master Confluence Rules")
-st.sidebar.text("Primary  : 21:30 4H Zone & Mid")
-st.sidebar.text("Fallback : 01:30 4H Zone & Mid")
+st.sidebar.text("Session  : After 21:30 4H Anchor")
 st.sidebar.text("Zone AVG : MTF AVG > 45% Required")
 st.sidebar.text("Dual Side: Both BUY & SELL Active")
 
@@ -371,7 +370,7 @@ def fetch_data(symbol):
 
 
 # ---------------------------------------------------------
-# DUAL-SIDE ZONE PROXIMITY & MID-CROSS ENGINE (>45% AVG)
+# POST-21:30 DUAL-SIDE ZONE ENGINE (>45% AVG)
 # ---------------------------------------------------------
 class TWTUltimateEngine:
 
@@ -458,7 +457,6 @@ class TWTUltimateEngine:
     return self.avg_vol_pct > 45.0
 
   def _near_or_in_zone(self, low_val, high_val, close_val, box, mid, atr):
-    """True if candle touches/enters zone box or is within 1.5*ATR of zone/mid."""
     buffer = max(1.5 * atr, close_val * 0.0015)
     in_or_near_box = False
     if box is not None:
@@ -471,19 +469,15 @@ class TWTUltimateEngine:
     if not self._avg_above_45_ok():
       return "LOW (<45%)"
     if not self.candles_5m:
-      return "DUAL READY ⚡"
+      return "POST-21:30 READY ⚡"
     last_c = self.candles_5m[-1]
     near_dem = self._near_or_in_zone(
         last_c["low"], last_c["high"], last_c["close"],
-        self.demand_box_3 or self.demand_box_1,
-        self.demand_3_mid or self.demand_1_mid,
-        last_c["atr"],
+        self.demand_box_3, self.demand_3_mid, last_c["atr"],
     )
     near_sup = self._near_or_in_zone(
         last_c["low"], last_c["high"], last_c["close"],
-        self.supply_box_3 or self.supply_box_1,
-        self.supply_3_mid or self.supply_1_mid,
-        last_c["atr"],
+        self.supply_box_3, self.supply_3_mid, last_c["atr"],
     )
     if near_dem and near_sup:
       return "BUY & SELL ZONE ⚡"
@@ -491,21 +485,23 @@ class TWTUltimateEngine:
       return "DEMAND ZONE (BUY) 🟢"
     if near_sup:
       return "SUPPLY ZONE (SELL) 🔴"
-    return "DUAL READY (>45%) ⚡"
+    return "POST-21:30 READY ⚡"
 
-  def _scan_dual_zone_signals(self, candles, start_dt, sup_box, sup_mid, dem_box, dem_mid, label):
-    """Generate BUY signals near Demand Zone and SELL signals near Supply Zone."""
+  def _scan_post_2130_signals(self, candles, start_dt, sup_box, sup_mid, dem_box, dem_mid):
+    """Scan strictly after 21:30 anchor; emit SELL when Supply rules fulfill and BUY when Demand rules fulfill."""
     if start_dt is None or not candles:
-      return []
+      return None, None
 
-    sub = [c for c in candles if c["dt_user"] > start_dt]
+    # Strictly after 21:30 anchor candle
+    sub = [c for c in candles if c["dt_user"] > start_dt and c["dt_user"].time() >= time(21, 30) or (c["dt_user"] > start_dt and c["dt_user"].date() > start_dt.date())]
     if not sub:
-      return []
+      return None, None
 
     if not self._avg_above_45_ok():
-      return []
+      return None, None
 
-    found = []
+    latest_sell = None
+    latest_buy = None
     seen_above_sup = False
     seen_below_dem = False
     prev_c = None
@@ -519,29 +515,29 @@ class TWTUltimateEngine:
       choppy = self._is_choppy(c)
       prev_close = prev_c["close"] if prev_c is not None else close_val
 
-      # SELL setup when price is near/crossing Supply Zone or Supply Mid
+      # SELL check: must be near/in Supply zone or mid, not choppy, and rejection/cross fulfilled
       near_supply = self._near_or_in_zone(low_val, high_val, close_val, sup_box, sup_mid, atr)
       if sup_mid is not None and (high_val >= sup_mid or prev_close >= sup_mid):
         seen_above_sup = True
 
-      sell_trigger = (
+      sell_fulfilled = (
           near_supply
           and (not choppy)
           and (
               (sup_mid is not None and close_val < sup_mid and (prev_close >= sup_mid or high_val >= sup_mid or seen_above_sup))
-              or (sup_box is not None and high_val >= sup_box[0] and close_val <= sup_box[1])
+              or (sup_box is not None and high_val >= sup_box[0] and close_val < sup_box[1] and c["color"] == "Red")
           )
       )
-      if sell_trigger:
+      if sell_fulfilled:
         ref_high = max(sup_mid or high_val, high_val)
         sl = round(ref_high + (1.5 * atr), dec)
-        found.append({
+        latest_sell = {
             "Asset": self.symbol,
             "Date": str(c["date"]),
             "Time": c["time"],
             "Candle #": c["id"],
             "Type": "SELL 🔴",
-            "Setup": f"{label} Supply Zone SELL (AVG {self.avg_vol_pct}%)",
+            "Setup": f"21:30+ Supply SELL (AVG {self.avg_vol_pct}%)",
             "Entry Price": round(close_val, dec),
             "Stop Loss (SL)": sl,
             "TP 1": round(close_val - (1.2 * atr), dec),
@@ -549,31 +545,31 @@ class TWTUltimateEngine:
             "TP 3": round(close_val - (4.0 * atr), dec),
             "Is_Within_1hr": c["is_within_1hr"],
             "Signal_DT": c["dt_user"].isoformat(),
-        })
+        }
 
-      # BUY setup when price is near/crossing Demand Zone or Demand Mid
+      # BUY check: must be near/in Demand zone or mid, not choppy, and bounce/cross fulfilled
       near_demand = self._near_or_in_zone(low_val, high_val, close_val, dem_box, dem_mid, atr)
       if dem_mid is not None and (low_val <= dem_mid or prev_close <= dem_mid):
         seen_below_dem = True
 
-      buy_trigger = (
+      buy_fulfilled = (
           near_demand
           and (not choppy)
           and (
               (dem_mid is not None and close_val > dem_mid and (prev_close <= dem_mid or low_val <= dem_mid or seen_below_dem))
-              or (dem_box is not None and low_val <= dem_box[1] and close_val >= dem_box[0])
+              or (dem_box is not None and low_val <= dem_box[1] and close_val > dem_box[0] and c["color"] == "Green")
           )
       )
-      if buy_trigger:
+      if buy_fulfilled:
         ref_low = min(dem_mid or low_val, low_val)
         sl = round(ref_low - (1.5 * atr), dec)
-        found.append({
+        latest_buy = {
             "Asset": self.symbol,
             "Date": str(c["date"]),
             "Time": c["time"],
             "Candle #": c["id"],
             "Type": "BUY 🟢",
-            "Setup": f"{label} Demand Zone BUY (AVG {self.avg_vol_pct}%)",
+            "Setup": f"21:30+ Demand BUY (AVG {self.avg_vol_pct}%)",
             "Entry Price": round(close_val, dec),
             "Stop Loss (SL)": sl,
             "TP 1": round(close_val + (1.2 * atr), dec),
@@ -581,11 +577,11 @@ class TWTUltimateEngine:
             "TP 3": round(close_val + (4.0 * atr), dec),
             "Is_Within_1hr": c["is_within_1hr"],
             "Signal_DT": c["dt_user"].isoformat(),
-        })
+        }
 
       prev_c = c
 
-    return found
+    return latest_buy, latest_sell
 
   def calculate_and_scan(self):
     if self.df_1d is None or self.df_1d.empty or self.df_4h is None or self.df_4h.empty or self.df_5m is None or self.df_5m.empty:
@@ -674,37 +670,16 @@ class TWTUltimateEngine:
           "is_within_1hr": age_min <= 60.0
       })
 
-    sigs_2130 = self._scan_dual_zone_signals(
+    buy_sig, sell_sig = self._scan_post_2130_signals(
         self.candles_5m,
         self.anchor_2130_start,
         self.supply_box_3,
         self.supply_3_mid,
         self.demand_box_3,
         self.demand_3_mid,
-        "21:30",
     )
 
-    sigs_0130 = self._scan_dual_zone_signals(
-        self.candles_5m,
-        self.anchor_0130_start,
-        self.supply_box_1,
-        self.supply_1_mid,
-        self.demand_box_1,
-        self.demand_1_mid,
-        "01:30",
-    )
-
-    # Keep representative BUY and SELL entries (latest or key signals) so both sides show cleanly
-    all_raw = sigs_2130 if sigs_2130 else sigs_0130
-    buys = [s for s in all_raw if "BUY" in s["Type"]]
-    sells = [s for s in all_raw if "SELL" in s["Type"]]
-
-    collected = []
-    if buys:
-      collected.append(buys[-1])
-    if sells:
-      collected.append(sells[-1])
-
+    collected = [sig for sig in [buy_sig, sell_sig] if sig is not None]
     collected.sort(key=lambda x: x["Candle #"])
 
     self.history = collected
@@ -739,7 +714,7 @@ def scan_asset(sym):
   return sym, None, []
 
 
-with st.spinner("⚡ Scanning 20+ assets with Dual-Side Zone + >45% AVG..."):
+with st.spinner("⚡ Scanning 20+ assets (Post-21:30 Dual-Side + >45% AVG)..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
@@ -755,11 +730,11 @@ for eng in asset_engines.values():
 save_ledger(ledger_records)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} active setup(s) with AVG > 45% across assets!")
+  st.success(f"✅ Found {len(master_signals)} active setup(s) after 21:30 with AVG > 45%!")
   df_display = pd.DataFrame(master_signals).drop(columns=["Is_Within_1hr", "Signal_DT"], errors="ignore")
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active setups within 1hr meeting Zone + >45% AVG right now.")
+  st.info("ℹ️ No active setups within 1hr after 21:30 meeting Zone + >45% AVG right now.")
 
 # ---------------------------------------------------------
 # MANUAL ASSET INSPECTOR & PER-ASSET LEDGER
@@ -831,8 +806,7 @@ if bot.candles_5m:
   if bot.anchor_2130_candle:
     st.caption(
         f"🕒 21:30 4H Candle ({bot.anchor_2130_start.strftime('%Y-%m-%d %H:%M')}) — "
-        f"Supply 3 Mid: {bot.supply_3_mid:.4f} | Demand 3 Mid: {bot.demand_3_mid:.4f} "
-        f"(Fallback -> 01:30 Supply Mid: {bot.supply_1_mid:.4f} | Demand Mid: {bot.demand_1_mid:.4f})"
+        f"Supply 3 Mid: {bot.supply_3_mid:.4f} | Demand 3 Mid: {bot.demand_3_mid:.4f}"
     )
 
   if bot.history:
