@@ -58,9 +58,9 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("#### Master Confluence Rules")
 st.sidebar.text("Demand Zones : 01:30, 05:30 & 21:30 (till next 21:30) Lows + Prev Day Low")
 st.sidebar.text("Supply Zones : 01:30, 05:30 & 21:30 (till next 21:30) Highs + Prev Day High")
-st.sidebar.text("Mid Point    : 01:30 & 21:30 Demand/Supply Mid Line")
+st.sidebar.text("Supply Mid   : 01:30 & 21:30 Supply Zone Mid Line")
 st.sidebar.text("BUY          : Strict Demand Zone Bounce + EMA50")
-st.sidebar.text("SELL         : Supply Rejection / Above Mid Line -> Below Mid + EMA50")
+st.sidebar.text("SELL         : Supply Rejection / Above Supply Mid -> Below Mid + EMA50")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -178,7 +178,6 @@ class TWTUltimateEngine:
     return dem_box, sup_box, dem_mid, sup_mid
 
   def _get_latest_2130_anchor(self, candles_4h):
-    # Find the most recent 21:30 4H candle (within +/- 60 mins of 21:30 in user timezone)
     candidates_2130 = [
         c for c in candles_4h
         if abs(
@@ -284,7 +283,6 @@ class TWTUltimateEngine:
           "is_within_1hr": age_min <= 60.0
       })
 
-    # Include candles from anchor_dt_3 if anchor_dt_3 is earlier than today's midnight so active 21:30 window is scanned
     scan_start_dt = datetime.combine(latest_date, time.min, tzinfo=self.user_tz)
     if anchor_dt_3 and anchor_dt_3 < scan_start_dt:
       scan_start_dt = anchor_dt_3
@@ -298,11 +296,9 @@ class TWTUltimateEngine:
     broke_above_pdh = False
     broke_below_pdl = False
 
-    # Track price going above mid points and then dropping back below
+    # Track price going above SUPPLY zone mid points and then dropping back below (SELL only)
     went_above_sup1_mid = False
-    went_above_dem1_mid = False
     went_above_sup3_mid = False
-    went_above_dem3_mid = False
 
     for c in scan_5m:
       atr = c["atr"]
@@ -319,7 +315,6 @@ class TWTUltimateEngine:
       in_supply_zone_1 = self.supply_box_1 and (self.supply_box_1[0] <= close_val <= self.supply_box_1[1])
       in_supply_zone_2 = self.supply_box_2 and (self.supply_box_2[0] <= close_val <= self.supply_box_2[1])
 
-      # 21:30 4H anchor stays active from anchor_dt_3 until a newer 21:30 4H candle forms
       in_2130_window = (anchor_3 is not None and anchor_dt_3 is not None and c["dt_user"] >= anchor_dt_3)
       in_demand_zone_3 = in_2130_window and self.demand_box_3 and (self.demand_box_3[0] <= close_val <= self.demand_box_3[1])
       in_supply_zone_3 = in_2130_window and self.supply_box_3 and (self.supply_box_3[0] <= close_val <= self.supply_box_3[1])
@@ -365,12 +360,10 @@ class TWTUltimateEngine:
         }
         broke_below_pdl = False
 
-      # --- B. 4H ANCHOR ZONE 1 (01:30 AM + Mid Point) ---
+      # --- B. 4H ANCHOR ZONE 1 (01:30 AM + Supply Mid Point) ---
       if c["dt_user"] > anchor_dt_1 and self.demand_box_1 and self.supply_box_1:
         if self.supply_1_mid is not None and high_val >= self.supply_1_mid:
           went_above_sup1_mid = True
-        if self.demand_1_mid is not None and high_val >= self.demand_1_mid:
-          went_above_dem1_mid = True
 
         if not first_buy and c["color"] == "Green" and in_demand_zone_1 and close_val > ema:
           sl = round(self.demand_box_1[0] - (1.5 * atr), dec)
@@ -389,14 +382,11 @@ class TWTUltimateEngine:
               "Is_Within_1hr": c["is_within_1hr"],
           }
 
-        mid1_sell_trigger = (
-            (self.supply_1_mid is not None and went_above_sup1_mid and close_val < self.supply_1_mid)
-            or (self.demand_1_mid is not None and went_above_dem1_mid and close_val < self.demand_1_mid)
-        )
-        if not first_sell and c["color"] == "Red" and (in_supply_zone_1 or mid1_sell_trigger) and close_val < ema:
-          ref_level = self.supply_1_mid if (mid1_sell_trigger and self.supply_1_mid) else self.supply_box_1[1]
+        sup1_mid_sell_trigger = (self.supply_1_mid is not None and went_above_sup1_mid and close_val < self.supply_1_mid)
+        if not first_sell and c["color"] == "Red" and (in_supply_zone_1 or sup1_mid_sell_trigger) and close_val < ema:
+          ref_level = self.supply_1_mid if (sup1_mid_sell_trigger and self.supply_1_mid) else self.supply_box_1[1]
           sl = round(max(ref_level, high_val) + (1.5 * atr), dec)
-          setup_name = "01:30 Mid Point Rejection SELL" if mid1_sell_trigger else "01:30 Zone Supply Rejection"
+          setup_name = "01:30 Supply Mid Rejection SELL" if sup1_mid_sell_trigger else "01:30 Zone Supply Rejection"
           first_sell = {
               "Asset": self.symbol,
               "Date": str(c["date"]),
@@ -412,7 +402,6 @@ class TWTUltimateEngine:
               "Is_Within_1hr": c["is_within_1hr"],
           }
           went_above_sup1_mid = False
-          went_above_dem1_mid = False
 
       # --- C. 4H ANCHOR ZONE 2 (05:30 AM) ---
       if anchor_dt_2 and c["dt_user"] > anchor_dt_2 and self.demand_box_2 and self.supply_box_2:
@@ -450,12 +439,10 @@ class TWTUltimateEngine:
               "Is_Within_1hr": c["is_within_1hr"],
           }
 
-      # --- D. 4H ANCHOR ZONE 3 (21:30 PM + Mid Point, active until next 21:30 forms) ---
+      # --- D. 4H ANCHOR ZONE 3 (21:30 PM + Supply Mid Point, active until next 21:30 forms) ---
       if in_2130_window and self.demand_box_3 and self.supply_box_3:
         if self.supply_3_mid is not None and high_val >= self.supply_3_mid:
           went_above_sup3_mid = True
-        if self.demand_3_mid is not None and high_val >= self.demand_3_mid:
-          went_above_dem3_mid = True
 
         if not first_buy and c["color"] == "Green" and in_demand_zone_3 and close_val > ema:
           sl = round(self.demand_box_3[0] - (1.5 * atr), dec)
@@ -474,14 +461,11 @@ class TWTUltimateEngine:
               "Is_Within_1hr": c["is_within_1hr"],
           }
 
-        mid3_sell_trigger = (
-            (self.supply_3_mid is not None and went_above_sup3_mid and close_val < self.supply_3_mid)
-            or (self.demand_3_mid is not None and went_above_dem3_mid and close_val < self.demand_3_mid)
-        )
-        if not first_sell and c["color"] == "Red" and (in_supply_zone_3 or mid3_sell_trigger) and close_val < ema:
-          ref_level = self.supply_3_mid if (mid3_sell_trigger and self.supply_3_mid) else self.supply_box_3[1]
+        sup3_mid_sell_trigger = (self.supply_3_mid is not None and went_above_sup3_mid and close_val < self.supply_3_mid)
+        if not first_sell and c["color"] == "Red" and (in_supply_zone_3 or sup3_mid_sell_trigger) and close_val < ema:
+          ref_level = self.supply_3_mid if (sup3_mid_sell_trigger and self.supply_3_mid) else self.supply_box_3[1]
           sl = round(max(ref_level, high_val) + (1.5 * atr), dec)
-          setup_name = "21:30 Mid Point Rejection SELL" if mid3_sell_trigger else "21:30 Zone Supply Rejection"
+          setup_name = "21:30 Supply Mid Rejection SELL" if sup3_mid_sell_trigger else "21:30 Zone Supply Rejection"
           first_sell = {
               "Asset": self.symbol,
               "Date": str(c["date"]),
@@ -497,7 +481,6 @@ class TWTUltimateEngine:
               "Is_Within_1hr": c["is_within_1hr"],
           }
           went_above_sup3_mid = False
-          went_above_dem3_mid = False
 
     collected = [sig for sig in [first_buy, first_sell] if sig is not None]
     collected.sort(key=lambda x: x["Candle #"])
@@ -595,14 +578,13 @@ if bot.candles_5m:
     ax.bar(c["id"], body_height, bottom=lower_val, color=col, width=0.6, edgecolor=col)
     ax.vlines(c["id"], c["low"], c["high"], color=col, linewidth=1.2)
 
-  # Highlight the 21:30 4H candle's 5m window if present in visible 5m candles
   if bot.anchor_2130_start:
     c_2130_list = [c for c in bot.candles_5m if c["dt_user"] >= bot.anchor_2130_start]
     if c_2130_list:
       first_2130_id = c_2130_list[0]["id"]
       ax.axvline(first_2130_id, color="#ffd54f", linestyle=":", linewidth=1.5, label=f"21:30 Candle Start ({bot.anchor_2130_start.strftime('%m-%d %H:%M')})")
 
-  # Plot 01:30 AM Zones + Mid Points
+  # Plot 01:30 AM Zones + Supply Mid Point
   if bot.demand_box_1:
     ax.axhspan(bot.demand_box_1[0], bot.demand_box_1[1], color="#00897b", alpha=0.30, label="Demand 1 (01:30)")
   if bot.demand_1_mid is not None:
@@ -618,7 +600,7 @@ if bot.candles_5m:
   if bot.supply_box_2:
     ax.axhspan(bot.supply_box_2[0], bot.supply_box_2[1], color="#ff7043", alpha=0.18, label="Supply 2 (05:30)")
 
-  # Plot 21:30 PM Zones + Mid Points (active until next 21:30 forms)
+  # Plot 21:30 PM Zones + Supply Mid Point (active until next 21:30 forms)
   if bot.demand_box_3:
     ax.axhspan(bot.demand_box_3[0], bot.demand_box_3[1], color="#29b6f6", alpha=0.20, label="Demand 3 (21:30)")
   if bot.demand_3_mid is not None:
