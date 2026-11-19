@@ -58,8 +58,9 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("#### Master Confluence Rules")
 st.sidebar.text("Demand Zones : 01:30, 05:30 & 21:30 Lows + Prev Day Low")
 st.sidebar.text("Supply Zones : 01:30, 05:30 & 21:30 Highs + Prev Day High")
-st.sidebar.text("BUY  : Strict Demand Zone Bounce + EMA50")
-st.sidebar.text("SELL : Strict Supply Zone Rejection + EMA50")
+st.sidebar.text("BUY  : HH+HL Structure + Zone Bounce + Vol/Body + EMA50")
+st.sidebar.text("SELL : LH+LL Structure + Zone Rejection + Vol/Body + EMA50")
+st.sidebar.text("Filter : No Sideways / Confused Market | Max 1B/1S per Day")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -164,7 +165,6 @@ class TWTUltimateEngine:
     return (low_val, low_val + zone_thickness), (high_val - zone_thickness, high_val)
 
   def _get_2130_anchor_for_date(self, candles_4h, target_date):
-    # Look for a 4H candle on target_date in the evening/night window (>= 20:00) closest to 21:30
     evening_candidates = [
         c for c in candles_4h if c["date"] == target_date and c["time_obj"] >= time(20, 0)
     ]
@@ -183,11 +183,19 @@ class TWTUltimateEngine:
       return False
     z_low, z_high = zone_box
     if is_demand:
-      # Price taps or dips into demand zone
       return (low_val <= z_high) and (high_val >= z_low)
     else:
-      # Price taps or pokes into supply zone
       return (high_val >= z_low) and (low_val <= z_high)
+
+  def _compute_power(self, strong_vol, strong_body, structure_aligned):
+    score = 55
+    if structure_aligned:
+      score += 18
+    if strong_vol:
+      score += 12
+    if strong_body:
+      score += 10
+    return min(score, 98)
 
   def calculate_and_scan(self):
     if self.df_1d is None or self.df_1d.empty or self.df_4h is None or self.df_4h.empty or self.df_5m is None or self.df_5m.empty:
@@ -244,9 +252,7 @@ class TWTUltimateEngine:
       anchor_dt_2 = anchor_2["dt_user"]
       self.demand_box_2, self.supply_box_2 = self._build_zones(anchor_2)
 
-    # Anchor 3 (~21:30 PM 4H candle)
-    # Uses today's 21:30 4H candle once it forms; otherwise uses the most recent prior 21:30 4H candle
-    # (e.g., Wednesday's 21:30 candle remains active through Thursday until Thursday's 21:30 candle forms)
+    # Anchor 3 (~21:30 PM 4H candle, rolling across days until next 21:30 forms)
     unique_dates = sorted({c["date"] for c in candles_4h}, reverse=True)
     anchor_3 = None
     anchor_dt_3 = None
@@ -258,24 +264,35 @@ class TWTUltimateEngine:
         self.demand_box_3, self.supply_box_3 = self._build_zones(anchor_3)
         break
 
-    # 3. Process 5M Candles & Indicators
-    self.df_5m["TR"] = np.maximum(
-        self.df_5m["High"] - self.df_5m["Low"],
+    # 3. Process 5M Candles & Indicators (Structure, Volume, Body, ATR, EMA50)
+    df5 = self.df_5m.copy()
+    df5["TR"] = np.maximum(
+        df5["High"] - df5["Low"],
         np.maximum(
-            abs(self.df_5m["High"] - self.df_5m["Close"].shift(1)),
-            abs(self.df_5m["Low"] - self.df_5m["Close"].shift(1)),
+            abs(df5["High"] - df5["Close"].shift(1)),
+            abs(df5["Low"] - df5["Close"].shift(1)),
         ),
     )
-    self.df_5m["ATR"] = self.df_5m["TR"].rolling(14).mean()
-    self.df_5m["EMA50"] = self.df_5m["Close"].ewm(span=50, adjust=False).mean()
+    df5["ATR"] = df5["TR"].rolling(14).mean()
+    df5["EMA50"] = df5["Close"].ewm(span=50, adjust=False).mean()
+    df5["VOL_SMA20"] = df5["Volume"].rolling(20).mean()
+    df5["BODY"] = abs(df5["Close"] - df5["Open"])
+    df5["BODY_SMA14"] = df5["BODY"].rolling(14).mean()
+    df5["SWING_HIGH_10"] = df5["High"].shift(1).rolling(10).max()
+    df5["SWING_LOW_10"] = df5["Low"].shift(1).rolling(10).min()
 
-    for idx, row in enumerate(self.df_5m.iterrows()):
+    for idx, row in enumerate(df5.iterrows()):
       dt_utc = row[0]
       dt_user = dt_utc.astimezone(self.user_tz)
       r = row[1]
       o, h, l, c, v = float(r["Open"]), float(r["High"]), float(r["Low"]), float(r["Close"]), float(r["Volume"])
       atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
       ema50 = float(r["EMA50"]) if not pd.isna(r["EMA50"]) else c
+      vol_sma = float(r["VOL_SMA20"]) if not pd.isna(r["VOL_SMA20"]) and r["VOL_SMA20"] > 0 else v
+      body = float(r["BODY"])
+      body_sma = float(r["BODY_SMA14"]) if not pd.isna(r["BODY_SMA14"]) and r["BODY_SMA14"] > 0 else body
+      sh10 = float(r["SWING_HIGH_10"]) if not pd.isna(r["SWING_HIGH_10"]) else h
+      sl10 = float(r["SWING_LOW_10"]) if not pd.isna(r["SWING_LOW_10"]) else l
       age_min = (current_utc_time - dt_utc).total_seconds() / 60.0
 
       self.candles_5m.append({
@@ -284,12 +301,13 @@ class TWTUltimateEngine:
           "date": dt_user.date(),
           "dt_user": dt_user,
           "color": "Green" if c >= o else "Red",
-          "open": o, "high": h, "low": l, "close": c,
+          "open": o, "high": h, "low": l, "close": c, "volume": v,
           "atr": atr, "ema50": ema50,
+          "vol_sma": vol_sma, "body": body, "body_sma": body_sma,
+          "sh10": sh10, "sl10": sl10,
           "is_within_1hr": age_min <= 60.0
       })
 
-    # Scan today's 5m candles (or recent 144 candles = 12h if today's count is small)
     today_5m = [c for c in self.candles_5m if c["date"] == latest_date]
     scan_candles = today_5m if len(today_5m) >= 12 else self.candles_5m[-144:]
     if not scan_candles:
@@ -300,6 +318,12 @@ class TWTUltimateEngine:
     broke_above_pdh = False
     broke_below_pdl = False
 
+    # Track recent swing lows/highs inside scan loop for HH+HL / LH+LL structure
+    last_swing_low = None
+    prev_swing_low = None
+    last_swing_high = None
+    prev_swing_high = None
+
     for c in scan_candles:
       atr = c["atr"]
       ema = c["ema50"]
@@ -307,6 +331,37 @@ class TWTUltimateEngine:
       high_val = c["high"]
       low_val = c["low"]
       close_val = c["close"]
+
+      # Update rolling swing highs/lows
+      if low_val <= c["sl10"]:
+        prev_swing_low = last_swing_low
+        last_swing_low = low_val
+      if high_val >= c["sh10"]:
+        prev_swing_high = last_swing_high
+        last_swing_high = high_val
+
+      # Structure & Sideways/Confused filter
+      hh_hl_ok = (
+          (last_swing_high is not None and prev_swing_high is not None and last_swing_high > prev_swing_high)
+          or (last_swing_low is not None and prev_swing_low is not None and last_swing_low > prev_swing_low)
+          or (close_val > c["sh10"])
+      )
+      lh_ll_ok = (
+          (last_swing_low is not None and prev_swing_low is not None and last_swing_low < prev_swing_low)
+          or (last_swing_high is not None and prev_swing_high is not None and last_swing_high < prev_swing_high)
+          or (close_val < c["sl10"])
+      )
+
+      # Avoid flat/confused EMA50 chop (price sitting tightly on EMA50 with tiny ATR)
+      not_confused = atr > (close_val * 0.0003) and abs(close_val - ema) > (atr * 0.1)
+
+      # Strong candle body & volume confirmation
+      strong_body = c["body"] >= (c["body_sma"] * 0.75)
+      strong_vol = c["volume"] >= (c["vol_sma"] * 1.05)
+      quality_ok = strong_body and strong_vol and not_confused
+
+      bull_trend_ok = close_val > ema and hh_hl_ok and quality_ok
+      bear_trend_ok = close_val < ema and lh_ll_ok and quality_ok
 
       touch_demand_1 = self._touches_zone(low_val, high_val, self.demand_box_1, is_demand=True)
       touch_demand_2 = self._touches_zone(low_val, high_val, self.demand_box_2, is_demand=True)
@@ -317,11 +372,13 @@ class TWTUltimateEngine:
       touch_supply_2 = self._touches_zone(low_val, high_val, self.supply_box_2, is_demand=False)
       touch_supply_3 = self._touches_zone(low_val, high_val, self.supply_box_3, is_demand=False)
 
+      power_val = self._compute_power(strong_vol, strong_body, True)
+
       # --- A. PREVIOUS DAY HIGH / LOW REJECTION STRATEGY ---
       if high_val > self.prev_high:
         broke_above_pdh = True
-      if not first_sell and broke_above_pdh and close_val < self.prev_high and c["color"] == "Red" and close_val < ema:
-        sl = round(self.prev_high + (1.5 * atr), dec)
+      if not first_sell and broke_above_pdh and close_val < self.prev_high and c["color"] == "Red" and bear_trend_ok:
+        sl = round(max(self.prev_high, high_val) + (1.5 * atr), dec)
         first_sell = {
             "Asset": self.symbol,
             "Date": str(c["date"]),
@@ -329,6 +386,7 @@ class TWTUltimateEngine:
             "Candle #": c["id"],
             "Type": "SELL 🔴",
             "Setup": "Prev Day High Rejection",
+            "Power": f"{power_val}%",
             "Entry Price": round(close_val, dec),
             "Stop Loss (SL)": sl,
             "TP 1": round(close_val - (1.2 * atr), dec),
@@ -340,8 +398,8 @@ class TWTUltimateEngine:
 
       if low_val < self.prev_low:
         broke_below_pdl = True
-      if not first_buy and (broke_below_pdl or near_prev_low) and close_val >= self.prev_low and c["color"] == "Green" and close_val > ema:
-        sl = round(self.prev_low - (1.5 * atr), dec)
+      if not first_buy and (broke_below_pdl or near_prev_low) and close_val >= self.prev_low and c["color"] == "Green" and bull_trend_ok:
+        sl = round(min(self.prev_low, low_val) - (1.5 * atr), dec)
         first_buy = {
             "Asset": self.symbol,
             "Date": str(c["date"]),
@@ -349,6 +407,7 @@ class TWTUltimateEngine:
             "Candle #": c["id"],
             "Type": "BUY 🟢",
             "Setup": "Prev Day Low Bounce",
+            "Power": f"{power_val}%",
             "Entry Price": round(close_val, dec),
             "Stop Loss (SL)": sl,
             "TP 1": round(close_val + (1.2 * atr), dec),
@@ -360,8 +419,8 @@ class TWTUltimateEngine:
 
       # --- B. 4H ANCHOR ZONE 1 (01:30 AM) ---
       if anchor_dt_1 and c["dt_user"] >= anchor_dt_1 and self.demand_box_1 and self.supply_box_1:
-        if not first_buy and c["color"] == "Green" and touch_demand_1 and close_val > ema:
-          sl = round(self.demand_box_1[0] - (1.5 * atr), dec)
+        if not first_buy and c["color"] == "Green" and touch_demand_1 and bull_trend_ok:
+          sl = round(min(self.demand_box_1[0], low_val) - (1.5 * atr), dec)
           first_buy = {
               "Asset": self.symbol,
               "Date": str(c["date"]),
@@ -369,6 +428,7 @@ class TWTUltimateEngine:
               "Candle #": c["id"],
               "Type": "BUY 🟢",
               "Setup": "01:30 Zone Demand Bounce",
+              "Power": f"{power_val}%",
               "Entry Price": round(close_val, dec),
               "Stop Loss (SL)": sl,
               "TP 1": round(close_val + (1.2 * atr), dec),
@@ -377,8 +437,8 @@ class TWTUltimateEngine:
               "Is_Within_1hr": c["is_within_1hr"],
           }
 
-        if not first_sell and c["color"] == "Red" and touch_supply_1 and close_val < ema:
-          sl = round(self.supply_box_1[1] + (1.5 * atr), dec)
+        if not first_sell and c["color"] == "Red" and touch_supply_1 and bear_trend_ok:
+          sl = round(max(self.supply_box_1[1], high_val) + (1.5 * atr), dec)
           first_sell = {
               "Asset": self.symbol,
               "Date": str(c["date"]),
@@ -386,6 +446,7 @@ class TWTUltimateEngine:
               "Candle #": c["id"],
               "Type": "SELL 🔴",
               "Setup": "01:30 Zone Supply Rejection",
+              "Power": f"{power_val}%",
               "Entry Price": round(close_val, dec),
               "Stop Loss (SL)": sl,
               "TP 1": round(close_val - (1.2 * atr), dec),
@@ -396,8 +457,8 @@ class TWTUltimateEngine:
 
       # --- C. 4H ANCHOR ZONE 2 (05:30 AM) ---
       if anchor_dt_2 and c["dt_user"] >= anchor_dt_2 and self.demand_box_2 and self.supply_box_2:
-        if not first_buy and c["color"] == "Green" and touch_demand_2 and close_val > ema:
-          sl = round(self.demand_box_2[0] - (1.5 * atr), dec)
+        if not first_buy and c["color"] == "Green" and touch_demand_2 and bull_trend_ok:
+          sl = round(min(self.demand_box_2[0], low_val) - (1.5 * atr), dec)
           first_buy = {
               "Asset": self.symbol,
               "Date": str(c["date"]),
@@ -405,6 +466,7 @@ class TWTUltimateEngine:
               "Candle #": c["id"],
               "Type": "BUY 🟢",
               "Setup": "05:30 Zone Demand Bounce",
+              "Power": f"{power_val}%",
               "Entry Price": round(close_val, dec),
               "Stop Loss (SL)": sl,
               "TP 1": round(close_val + (1.2 * atr), dec),
@@ -413,8 +475,8 @@ class TWTUltimateEngine:
               "Is_Within_1hr": c["is_within_1hr"],
           }
 
-        if not first_sell and c["color"] == "Red" and touch_supply_2 and close_val < ema:
-          sl = round(self.supply_box_2[1] + (1.5 * atr), dec)
+        if not first_sell and c["color"] == "Red" and touch_supply_2 and bear_trend_ok:
+          sl = round(max(self.supply_box_2[1], high_val) + (1.5 * atr), dec)
           first_sell = {
               "Asset": self.symbol,
               "Date": str(c["date"]),
@@ -422,6 +484,7 @@ class TWTUltimateEngine:
               "Candle #": c["id"],
               "Type": "SELL 🔴",
               "Setup": "05:30 Zone Supply Rejection",
+              "Power": f"{power_val}%",
               "Entry Price": round(close_val, dec),
               "Stop Loss (SL)": sl,
               "TP 1": round(close_val - (1.2 * atr), dec),
@@ -432,8 +495,8 @@ class TWTUltimateEngine:
 
       # --- D. 4H ANCHOR ZONE 3 (21:30 PM Rolling) ---
       if anchor_dt_3 and self.demand_box_3 and self.supply_box_3:
-        if not first_buy and c["color"] == "Green" and touch_demand_3 and close_val > ema:
-          sl = round(self.demand_box_3[0] - (1.5 * atr), dec)
+        if not first_buy and c["color"] == "Green" and touch_demand_3 and bull_trend_ok:
+          sl = round(min(self.demand_box_3[0], low_val) - (1.5 * atr), dec)
           first_buy = {
               "Asset": self.symbol,
               "Date": str(c["date"]),
@@ -441,6 +504,7 @@ class TWTUltimateEngine:
               "Candle #": c["id"],
               "Type": "BUY 🟢",
               "Setup": "21:30 Zone Demand Bounce",
+              "Power": f"{power_val}%",
               "Entry Price": round(close_val, dec),
               "Stop Loss (SL)": sl,
               "TP 1": round(close_val + (1.2 * atr), dec),
@@ -449,8 +513,8 @@ class TWTUltimateEngine:
               "Is_Within_1hr": c["is_within_1hr"],
           }
 
-        if not first_sell and c["color"] == "Red" and touch_supply_3 and close_val < ema:
-          sl = round(self.supply_box_3[1] + (1.5 * atr), dec)
+        if not first_sell and c["color"] == "Red" and touch_supply_3 and bear_trend_ok:
+          sl = round(max(self.supply_box_3[1], high_val) + (1.5 * atr), dec)
           first_sell = {
               "Asset": self.symbol,
               "Date": str(c["date"]),
@@ -458,6 +522,7 @@ class TWTUltimateEngine:
               "Candle #": c["id"],
               "Type": "SELL 🔴",
               "Setup": "21:30 Zone Supply Rejection",
+              "Power": f"{power_val}%",
               "Entry Price": round(close_val, dec),
               "Stop Loss (SL)": sl,
               "TP 1": round(close_val - (1.2 * atr), dec),
@@ -591,7 +656,7 @@ if bot.candles_5m:
   for sig in bot.history:
     is_b = "BUY" in sig["Type"]
     bg_col = "#00e676" if is_b else "#ff5252"
-    txt = " BUY " if is_b else " SELL "
+    txt = f" BUY ({sig['Power']}) " if is_b else f" SELL ({sig['Power']}) "
     ax.text(
         sig["Candle #"],
         sig["Entry Price"],
