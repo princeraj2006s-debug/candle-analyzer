@@ -561,6 +561,11 @@ class TWTUltimateEngine:
     self.demand_3_mid = None
     self.supply_3_mid = None
 
+    # 17:30 4H candle (closes 4h later at 21:29) -> High (Supply) & Low (Demand)
+    self.c1730_4h_closed = False
+    self.c1730_4h_supply_high = None
+    self.c1730_4h_demand_low = None
+
     self.anchor_2130_candle = None
     self.anchor_2130_start = None
     self.anchor_0130_start = None
@@ -594,7 +599,6 @@ class TWTUltimateEngine:
       return best, target_dt, (now_user >= anchor_2130_today)
 
     if now_user >= anchor_2130_today:
-      # Fallback if exchange 4h timestamp slightly differs around 21:30
       synthetic = {
           "date": now_user.date(),
           "time_obj": time(21, 30),
@@ -605,6 +609,41 @@ class TWTUltimateEngine:
       return synthetic, target_dt, True
 
     return None, None, False
+
+  def _compute_1730_4h_close_2129_levels(self, now_user):
+    """17:30 4H candle runs 17:30 -> 21:29 (4h); once closed at/after 21:29, marks High (Supply) & Low (Demand)."""
+    t1730_today = datetime.combine(now_user.date(), time(17, 30), tzinfo=now_user.tzinfo)
+    t2129_today = datetime.combine(now_user.date(), time(21, 29), tzinfo=now_user.tzinfo)
+
+    if now_user >= t2129_today:
+      start_dt = t1730_today
+      end_dt = t2129_today
+      closed = True
+    elif now_user >= t1730_today:
+      return False, None, None
+    else:
+      prev_d = now_user.date() - timedelta(days=1)
+      start_dt = datetime.combine(prev_d, time(17, 30), tzinfo=now_user.tzinfo)
+      end_dt = datetime.combine(prev_d, time(21, 29), tzinfo=now_user.tzinfo)
+      closed = True
+
+    highs = []
+    lows = []
+    for c in self.candles_5m:
+      if start_dt <= c["dt_user"] <= end_dt:
+        highs.append(c["high"])
+        lows.append(c["low"])
+
+    if not highs and self.dfs_by_tf.get("1h") is not None:
+      for dt_utc, r in self.dfs_by_tf["1h"].iterrows():
+        dt_u = dt_utc.astimezone(self.user_tz)
+        if start_dt <= dt_u <= end_dt:
+          highs.append(float(r["High"]))
+          lows.append(float(r["Low"]))
+
+    if highs and lows:
+      return closed, max(highs), min(lows)
+    return False, None, None
 
   def _is_choppy(self, c):
     if not self.chop_filter:
@@ -701,7 +740,6 @@ class TWTUltimateEngine:
     if start_dt is None or not candles:
       return None, None
 
-    # Only scan candles AT OR AFTER start_dt (21:30 onwards)
     sub = [c for c in candles if c["dt_user"] >= start_dt]
     if not sub:
       return None, None
@@ -890,6 +928,8 @@ class TWTUltimateEngine:
           "is_within_1hr": age_min <= 60.0
       })
 
+    self.c1730_4h_closed, self.c1730_4h_supply_high, self.c1730_4h_demand_low = self._compute_1730_4h_close_2129_levels(now_user)
+
     if self.anchor_2130_start is not None:
       final_buy, final_sell = self._scan_mid_cross(
           self.candles_5m,
@@ -1048,9 +1088,12 @@ if bot.candles_5m:
     st.metric(label="Timezone", value=selected_tz_name)
 
   if bot.anchor_2130_candle:
+    extra_1730 = ""
+    if bot.c1730_4h_closed and bot.c1730_4h_supply_high is not None and bot.c1730_4h_demand_low is not None:
+      extra_1730 = f" | 17:30->21:29 4H Supply (High): {bot.c1730_4h_supply_high:.2f} | Demand (Low): {bot.c1730_4h_demand_low:.2f}"
     st.caption(
         f"🕒 21:30 4H Session Start ({bot.anchor_2130_start.strftime('%Y-%m-%d %H:%M')}) — "
-        f"Supply 3 Mid: {bot.supply_3_mid:.4f} | Demand 3 Mid: {bot.demand_3_mid:.4f}"
+        f"Supply 3 Mid: {bot.supply_3_mid:.4f} | Demand 3 Mid: {bot.demand_3_mid:.4f}{extra_1730}"
     )
 
   if bot.history:
@@ -1076,6 +1119,11 @@ if bot.candles_5m:
   zl_vals = [c["zl_line"] for c in bot.candles_5m]
   if c_ids and zl_vals:
     ax.plot(c_ids, zl_vals, color="#00e5ff", linewidth=1.6, label="Zero-Lag Trend Line (ZLEMA)")
+
+  if bot.c1730_4h_closed and bot.c1730_4h_supply_high is not None:
+    ax.axhline(bot.c1730_4h_supply_high, color="#ff5252", linestyle="-.", linewidth=1.5, label=f"17:30 4H Supply (High @21:29): {bot.c1730_4h_supply_high:.2f}")
+  if bot.c1730_4h_closed and bot.c1730_4h_demand_low is not None:
+    ax.axhline(bot.c1730_4h_demand_low, color="#00e676", linestyle="-.", linewidth=1.5, label=f"17:30 4H Demand (Low @21:29): {bot.c1730_4h_demand_low:.2f}")
 
   if bot.anchor_2130_start:
     c_2130_list = [c for c in bot.candles_5m if c["dt_user"] >= bot.anchor_2130_start]
