@@ -30,11 +30,11 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
 count = st_autorefresh(interval=30000, key="twt_multi_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA — 4H POI Engine (Last 1Hr Live | Max 1 BUY + 1 SELL)")
+st.title("⚡ TRADE WITH TUCKYAA — 4H POI Engine (BUY & SELL Signals)")
 
-LEDGER_FILE = Path("twt_signals_ledger_v3.json")
+LEDGER_FILE = Path("twt_signals_ledger_v4.json")
 STRENGTH_LOCK_FILE = Path("twt_strength_locks.json")
-LIVE_WINDOW_MINUTES = 60.0  # Only signals within last 1 hour stay on Live Dashboard
+LIVE_WINDOW_MINUTES = 60.0
 
 
 # ---------------------------------------------------------
@@ -95,7 +95,6 @@ def update_ledger_with_engine(records, engine):
   by_id = {r["id"]: r for r in records}
   changed = False
 
-  # Save all detected signals (including >1hr expired live signals) into per-asset history
   for sig in engine.all_detected_signals:
     sig_id = f"{sig['Asset']}|{sig['Date']}|{sig['Time']}|{sig['Type']}|{sig['Entry Price']}"
     if sig_id not in by_id:
@@ -264,9 +263,8 @@ ledger_start_date = st.sidebar.text_input(
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### 4H POI + Confluence Rules")
 st.sidebar.text("Anchor   : 01:30→05:30 4H Candle")
-st.sidebar.text("Live Window: Last 1 Hour Only")
-st.sidebar.text("POI High : Supply POI (Max 1 SELL)")
-st.sidebar.text("POI Low  : Demand POI (Max 1 BUY)")
+st.sidebar.text("Live Dash: Last 1 Hour Signals")
+st.sidebar.text("Chart    : Latest BUY + Latest SELL")
 st.sidebar.text("History  : Selected Asset Only")
 
 ASSET_LIST = [
@@ -510,7 +508,7 @@ def fetch_data(symbol):
 
 
 # ---------------------------------------------------------
-# 01:30 -> 05:30 4H POI ENGINE (LAST 1 HR LIVE | MAX 1 BUY + 1 SELL)
+# 01:30 -> 05:30 4H POI ENGINE (BUY & SELL SIGNALS)
 # ---------------------------------------------------------
 class TWTUltimateEngine:
 
@@ -539,9 +537,10 @@ class TWTUltimateEngine:
     self.live_window_min = live_window_min
 
     self.candles_5m = []
-    self.all_detected_signals = []  # Max 1 BUY + 1 SELL (saved to per-asset history)
-    self.history = []              # Live signals within last 1 hour
-    self.signals = []              # Live signals within last 1 hour (Max 1 BUY + 1 SELL)
+    self.all_detected_signals = []  # Latest 1 BUY + Latest 1 SELL near POI
+    self.live_1hr_signals = []      # Only signals within last 1 hour
+    self.signals = []               # Chart/Inspector BUY & SELL signals
+    self.history = []
     self.diy_checklist = []
 
     self.c0130_closed = False
@@ -559,8 +558,8 @@ class TWTUltimateEngine:
     atr_sma = c["atr_sma"]
     ema = c["ema50"]
     close_val = c["close"]
-    low_atr = (atr_sma is not None and atr_sma > 0 and atr < (0.60 * atr_sma))
-    near_ema_chop = (atr > 0 and abs(close_val - ema) < (0.10 * atr))
+    low_atr = (atr_sma is not None and atr_sma > 0 and atr < (0.55 * atr_sma))
+    near_ema_chop = (atr > 0 and abs(close_val - ema) < (0.08 * atr))
     return low_atr or near_ema_chop
 
   def _check_candle_wick_rejection(self, c, side):
@@ -599,7 +598,7 @@ class TWTUltimateEngine:
     if self.strict_confluence:
       passed = (score >= 3) and zl_ok and (wick_ok or htf_ok)
     else:
-      passed = (score >= 2)
+      passed = (score >= 1)
 
     grade = "A-GRADE 🔥" if score >= 3 else "NORMAL ⚡"
     note = f"POI + Conf {score}/4 | ZL:{'OK' if zl_ok else 'Mix'} | HTF:{'OK' if htf_ok else 'Mix'} | Wick:{'OK' if wick_ok else 'Lt'}"
@@ -633,8 +632,7 @@ class TWTUltimateEngine:
 
   def _scan_poi_confluences(self, now_user):
     """
-    Finds at most 1 SELL (near 01:30-05:30 High POI) and 1 BUY (near 01:30-05:30 Low POI).
-    Uses exact candle open timestamp (`dt_user`) so entry time stays fixed across refreshes.
+    Finds latest 1 SELL (near 01:30-05:30 High POI) and latest 1 BUY (near 01:30-05:30 Low POI).
     """
     if not self.c0130_closed or self.c0530_close is None:
       return []
@@ -663,7 +661,7 @@ class TWTUltimateEngine:
       age_min = (now_user - c["dt_user"]).total_seconds() / 60.0
       is_live_1hr = (0.0 <= age_min <= self.live_window_min)
 
-      near_high_poi = (h >= sup_low) and (cl <= sup_high * 1.005)
+      near_high_poi = (h >= sup_low) and (cl <= sup_high * 1.008)
       if "SELL" not in latest_by_side and near_high_poi and (cl < o):
         ok, grade, conf_note = self._evaluate_all_confluences(c, "SELL")
         if ok:
@@ -690,7 +688,7 @@ class TWTUltimateEngine:
           }
           continue
 
-      near_low_poi = (l <= dem_high) and (cl >= dem_low * 0.995)
+      near_low_poi = (l <= dem_high) and (cl >= dem_low * 0.992)
       if "BUY" not in latest_by_side and near_low_poi and (cl > o):
         ok, grade, conf_note = self._evaluate_all_confluences(c, "BUY")
         if ok:
@@ -735,7 +733,7 @@ class TWTUltimateEngine:
             "SELL Side (Near High)": f"{self.supply_poi_zone[0]:.2f} – {self.supply_poi_zone[1]:.2f}" if self.supply_poi_zone else "N/A",
         },
         {
-            "Rule (01:30–05:30 POI)": "3. Live Signals (Last 1 Hr)",
+            "Rule (01:30–05:30 POI)": "3. Screen BUY / SELL Signals",
             "BUY Side (Near Low)": f"{buy_cnt} / 1 BUY",
             "SELL Side (Near High)": f"{sell_cnt} / 1 SELL",
         },
@@ -793,22 +791,24 @@ class TWTUltimateEngine:
 
     if closed and h_val is not None and l_val is not None:
       rng = max(h_val - l_val, 1e-9)
-      poi_thick = max(rng * 0.22, h_val * 0.0015)
-      self.supply_poi_zone = (h_val - poi_thick, h_val + poi_thick * 0.4)
-      self.demand_poi_zone = (l_val - poi_thick * 0.4, l_val + poi_thick)
+      poi_thick = max(rng * 0.25, h_val * 0.0018)
+      self.supply_poi_zone = (h_val - poi_thick, h_val + poi_thick * 0.45)
+      self.demand_poi_zone = (l_val - poi_thick * 0.45, l_val + poi_thick)
 
     sigs = self._scan_poi_confluences(now_user)
     self.all_detected_signals = sigs
 
-    # Auto-remove signals older than 1 hour from live dashboard
-    live_1hr_sigs = [s for s in sigs if s.get("Is_Live_1Hr", False)]
-    self.signals = live_1hr_sigs
-    self.history = live_1hr_sigs
+    # Chart & Inspector show latest BUY & SELL signals near POI
+    self.signals = sigs
+
+    # Master live dashboard shows only signals within last 1 hour
+    self.live_1hr_signals = [s for s in sigs if s.get("Is_Live_1Hr", False)]
+    self.history = self.live_1hr_signals
     self._build_diy_checklist()
 
 
 # ---------------------------------------------------------
-# MASTER SCANNER (ONLY LAST 1 HOUR SIGNALS ON LIVE DASHBOARD)
+# MASTER SCANNER (LAST 1 HOUR ON LIVE DASHBOARD)
 # ---------------------------------------------------------
 st.markdown("---")
 st.subheader("🔥 TWT Master Live Signal Dashboard (Last 1 Hour Only)")
@@ -828,7 +828,7 @@ def scan_asset(sym):
   return sym, df_1d, df_4h, df_5m, dfs_by_tf
 
 
-with st.spinner("⚡ Scanning 20+ assets (Showing only last 1 hour signals on Live Dashboard)..."):
+with st.spinner("⚡ Scanning 20+ assets..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
@@ -853,8 +853,8 @@ with st.spinner("⚡ Scanning 20+ assets (Showing only last 1 hour signals on Li
         )
         engine.calculate_and_scan()
         asset_engines[sym] = engine
-        if engine.signals:
-          master_signals.extend(engine.signals)
+        if engine.live_1hr_signals:
+          master_signals.extend(engine.live_1hr_signals)
 
 if locks_updated:
   save_strength_locks(strength_locks)
@@ -865,19 +865,19 @@ for eng in asset_engines.values():
 save_ledger(ledger_records)
 
 if master_signals:
-  st.success(f"✅ {len(master_signals)} active signal(s) from the last 1 hour!")
+  st.success(f"✅ {len(master_signals)} signal(s) from the last 1 hour!")
   df_display = pd.DataFrame(master_signals).drop(
       columns=["Is_Live_1Hr", "Age_Min", "Signal_DT"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ Pichhle 1 hour mein koi naya POI signal nahi aaya hai. Purane signals neeche Selected Asset ki History mein hain.")
+  st.info("ℹ️ Pichhle 1 hour mein naya signal nahi aaya hai. Neeche asset select karke BUY/SELL signals aur chart dekho.")
 
 # ---------------------------------------------------------
 # INDIVIDUAL ASSET INSPECTOR & SELECTED ASSET HISTORY ONLY
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("📊 Individual Asset Inspector & Selected Asset History")
+st.subheader("📊 Individual Asset Inspector & BUY / SELL Signals")
 
 selected_symbol = st.selectbox(
     "🔍 Select Asset to Load Chart & History",
@@ -916,7 +916,6 @@ st.markdown(f"### 📈 {selected_symbol} Performance Summary (From {ledger_start
 summary_df = summarize_asset_ledger(ledger_records, selected_symbol, start_date_str=ledger_start_date)
 st.dataframe(summary_df, width="stretch")
 
-# Strictly filtered to ONLY `selected_symbol`
 selected_asset_history = [
     {
         "Asset": r.get("Asset"),
@@ -948,7 +947,7 @@ if bot.candles_5m:
   with col1:
     st.metric(label=f"Current {selected_symbol} Price", value=f"{curr_p:.2f}")
   with col2:
-    st.metric(label="Live Signals (Last 1 Hr)", value=len(bot.signals))
+    st.metric(label="BUY / SELL Signals Shown", value=len(bot.signals))
   with col3:
     st.metric(label="4H POI Close Time", value=bot.c0530_close.strftime("%H:%M") if bot.c0530_close else "Waiting ⏳")
 
@@ -959,11 +958,11 @@ if bot.candles_5m:
     )
 
   if bot.signals:
-    st.markdown(f"### 📋 Live Signals (Last 1 Hr) for {selected_symbol}")
-    df_live_asset = pd.DataFrame(bot.signals).drop(
+    st.markdown(f"### 📋 BUY & SELL Signals for {selected_symbol}")
+    df_sig_asset = pd.DataFrame(bot.signals).drop(
         columns=["Is_Live_1Hr", "Age_Min", "Signal_DT"], errors="ignore"
     )
-    st.dataframe(df_live_asset, width="stretch")
+    st.dataframe(df_sig_asset, width="stretch")
 
   # --- PLOT CHART ---
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
@@ -1022,7 +1021,7 @@ if bot.candles_5m:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m Chart — 01:30–05:30 POI (Last 1Hr Live Signals)",
+      f"{selected_symbol} 5m Chart — 01:30–05:30 POI (BUY & SELL Signals)",
       color="white",
       fontsize=13,
   )
