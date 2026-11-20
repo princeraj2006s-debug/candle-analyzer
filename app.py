@@ -30,10 +30,11 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
 count = st_autorefresh(interval=30000, key="twt_multi_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA — 4H POI + All-Confluence Engine (Max 2 Signals / Asset)")
+st.title("⚡ TRADE WITH TUCKYAA — 4H POI + All-Confluence Engine (Max 1 BUY + 1 SELL)")
 
 LEDGER_FILE = Path("twt_signals_ledger.json")
 STRENGTH_LOCK_FILE = Path("twt_strength_locks.json")
+DASHBOARD_MAX_AGE_MINUTES = 60.0  # Only signals within last 1 hour appear on Dashboard
 
 
 # ---------------------------------------------------------
@@ -94,7 +95,8 @@ def update_ledger_with_engine(records, engine):
   by_id = {r["id"]: r for r in records}
   changed = False
 
-  for sig in engine.history:
+  # Save ALL detected signals (including >1 hr old signals) into persistent history
+  for sig in engine.all_detected_signals:
     sig_id = f"{sig['Asset']}|{sig['Date']}|{sig['Time']}|{sig['Type']}|{sig['Entry Price']}"
     if sig_id not in by_id:
       by_id[sig_id] = {
@@ -262,10 +264,10 @@ ledger_start_date = st.sidebar.text_input(
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### 4H POI + Confluence Rules")
 st.sidebar.text("Anchor   : 01:30→05:30 4H Candle")
-st.sidebar.text("POI High : Supply POI (SELL Zone)")
-st.sidebar.text("POI Low  : Demand POI (BUY Zone)")
-st.sidebar.text("Trigger  : Post-05:30 Full Confluence")
-st.sidebar.text("Hard Cap : Max 2 Signals Per Asset")
+st.sidebar.text("POI High : Supply POI (SELL Only Near High)")
+st.sidebar.text("POI Low  : Demand POI (BUY Only Near Low)")
+st.sidebar.text("Limit    : Max 1 BUY + 1 SELL Per Asset")
+st.sidebar.text("Dashboard: Only Last 1 Hour Signals")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -508,7 +510,7 @@ def fetch_data(symbol):
 
 
 # ---------------------------------------------------------
-# 01:30 -> 05:30 4H POI + ALL-CONFLUENCE ENGINE (MAX 2 / ASSET)
+# 01:30 -> 05:30 4H POI ENGINE (MAX 1 BUY + 1 SELL, LAST 1 HR DASHBOARD)
 # ---------------------------------------------------------
 class TWTUltimateEngine:
 
@@ -523,7 +525,7 @@ class TWTUltimateEngine:
       strict_confluence=True,
       strength_info=None,
       dfs_by_tf=None,
-      max_signals_per_asset=2,
+      dashboard_max_age_min=DASHBOARD_MAX_AGE_MINUTES,
   ):
     self.df_1d = df_1d
     self.df_4h = df_4h
@@ -534,11 +536,12 @@ class TWTUltimateEngine:
     self.strict_confluence = strict_confluence
     self.strength_info = strength_info or {}
     self.dfs_by_tf = dfs_by_tf or {}
-    self.max_signals_per_asset = max_signals_per_asset
+    self.dashboard_max_age_min = dashboard_max_age_min
 
     self.candles_5m = []
-    self.history = []
-    self.signals = []
+    self.all_detected_signals = []  # Max 1 BUY + 1 SELL (saved to history ledger)
+    self.history = []              # Signals within last 1 hour (Max 1 BUY + 1 SELL)
+    self.signals = []              # Dashboard signals (only within last 1 hour)
     self.diy_checklist = []
 
     self.c0130_closed = False
@@ -579,7 +582,6 @@ class TWTUltimateEngine:
       return (cl > o) and ((lower_wick / rng) >= 0.15)
 
   def _evaluate_all_confluences(self, c, side):
-    """Checks POI touch + Wick Rejection + Zero-Lag + HTF Strength together."""
     locked_info = self.strength_info
     if side == "BUY":
       htf_ok = bool(locked_info.get("htf_buy_aligned", False))
@@ -606,10 +608,6 @@ class TWTUltimateEngine:
     return passed, grade, note
 
   def _find_latest_completed_0130_4h(self, now_user):
-    """
-    Finds the latest completed 01:30 -> 05:30 4H candle.
-    If today's 05:30 hasn't passed yet, uses yesterday's 01:30 -> 05:30 completed 4H candle.
-    """
     today_0130 = datetime.combine(now_user.date(), time(1, 30), tzinfo=self.user_tz)
     today_0530 = today_0130 + timedelta(hours=4)
 
@@ -621,7 +619,6 @@ class TWTUltimateEngine:
 
     sub_4h = [c for c in self.candles_5m if c_start <= c["dt_user"] < c_end]
     if len(sub_4h) < 4:
-      # Fallback if 5m buffer starts later than 01:30->05:30: use latest completed 4h candle from df_4h
       if len(self.df_4h) >= 2:
         prev_4h = self.df_4h.iloc[-2]
         h_val = float(prev_4h["High"])
@@ -637,9 +634,8 @@ class TWTUltimateEngine:
 
   def _scan_poi_confluences(self, now_user):
     """
-    After 05:30 close, marks 01:30->05:30 High (Supply POI) & Low (Demand POI).
-    Scans candles >= 05:30 close where price taps POI AND all confluences align.
-    Strictly caps output at max_signals_per_asset = 2 per asset.
+    Finds at most ONE BUY (near 01:30-05:30 Low) and ONE SELL (near 01:30-05:30 High)
+    only when price is near the High/Low POI (NOT in the middle) and confluence passes.
     """
     if not self.c0130_closed or self.c0530_close is None:
       return []
@@ -658,7 +654,7 @@ class TWTUltimateEngine:
     prev_c = None
 
     for c in sub:
-      if len(found) >= self.max_signals_per_asset:
+      if len(seen_sides) >= 2:  # Max 1 BUY + 1 SELL
         break
 
       if self._is_choppy(c):
@@ -671,10 +667,11 @@ class TWTUltimateEngine:
       prev_h = prev_c["high"] if prev_c is not None else h
       prev_l = prev_c["low"] if prev_c is not None else l
       prev_cl = prev_c["close"] if prev_c is not None else cl
+      age_min = (now_user - c["dt_user"]).total_seconds() / 60.0
 
-      # 1. Supply POI (01:30-05:30 High Zone) -> SELL with All Confluences
-      in_supply_poi = (h >= sup_low) or (prev_h >= sup_low)
-      bear_trigger = (cl < o) and in_supply_poi and (cl < self.supply_poi_mid or prev_cl >= self.supply_poi_mid)
+      # SELL strictly near 01:30-05:30 High (Supply POI)
+      near_high_poi = (sup_low <= cl <= sup_high) or (h >= sup_low and cl <= sup_high) or (prev_h >= sup_low and cl <= sup_high)
+      bear_trigger = (cl < o) and near_high_poi and (cl < self.supply_poi_mid or prev_cl >= self.supply_poi_mid)
 
       if "SELL" not in seen_sides and bear_trigger:
         ok, grade, conf_note = self._evaluate_all_confluences(c, "SELL")
@@ -690,21 +687,23 @@ class TWTUltimateEngine:
               "Grade": grade,
               "Locked Buyer %": f"{b_lock}%",
               "Locked Seller %": f"{s_lock}%",
-              "Setup": f"01:30–05:30 Supply POI ({self.c0130_high:.{dec}f}) SELL | {conf_note}",
+              "Setup": f"Near 01:30–05:30 High ({self.c0130_high:.{dec}f}) SELL | {conf_note}",
               "Entry Price": round(cl, dec),
               "Stop Loss (SL)": sl,
               "TP 1": round(cl - (1.2 * atr), dec),
               "TP 2": round(cl - (2.5 * atr), dec),
               "TP 3": round(cl - (4.0 * atr), dec),
+              "Age_Min": round(age_min, 1),
+              "Is_Recent_1Hr": age_min <= self.dashboard_max_age_min,
               "Signal_DT": c["dt_user"].isoformat(),
           })
           seen_sides.add("SELL")
           prev_c = c
           continue
 
-      # 2. Demand POI (01:30-05:30 Low Zone) -> BUY with All Confluences
-      in_demand_poi = (l <= dem_high) or (prev_l <= dem_high)
-      bull_trigger = (cl > o) and in_demand_poi and (cl > self.demand_poi_mid or prev_cl <= self.demand_poi_mid)
+      # BUY strictly near 01:30-05:30 Low (Demand POI)
+      near_low_poi = (dem_low <= cl <= dem_high) or (l <= dem_high and cl >= dem_low) or (prev_l <= dem_high and cl >= dem_low)
+      bull_trigger = (cl > o) and near_low_poi and (cl > self.demand_poi_mid or prev_cl <= self.demand_poi_mid)
 
       if "BUY" not in seen_sides and bull_trigger:
         ok, grade, conf_note = self._evaluate_all_confluences(c, "BUY")
@@ -720,38 +719,40 @@ class TWTUltimateEngine:
               "Grade": grade,
               "Locked Buyer %": f"{b_lock}%",
               "Locked Seller %": f"{s_lock}%",
-              "Setup": f"01:30–05:30 Demand POI ({self.c0130_low:.{dec}f}) BUY | {conf_note}",
+              "Setup": f"Near 01:30–05:30 Low ({self.c0130_low:.{dec}f}) BUY | {conf_note}",
               "Entry Price": round(cl, dec),
               "Stop Loss (SL)": sl,
               "TP 1": round(cl + (1.2 * atr), dec),
               "TP 2": round(cl + (2.5 * atr), dec),
               "TP 3": round(cl + (4.0 * atr), dec),
+              "Age_Min": round(age_min, 1),
+              "Is_Recent_1Hr": age_min <= self.dashboard_max_age_min,
               "Signal_DT": c["dt_user"].isoformat(),
           })
           seen_sides.add("BUY")
 
       prev_c = c
 
-    return found[: self.max_signals_per_asset]
+    return found
 
   def _build_diy_checklist(self):
-    buy_cnt = sum(1 for s in self.history if "BUY" in s["Type"])
-    sell_cnt = sum(1 for s in self.history if "SELL" in s["Type"])
+    buy_cnt = sum(1 for s in self.signals if "BUY" in s["Type"])
+    sell_cnt = sum(1 for s in self.signals if "SELL" in s["Type"])
     self.diy_checklist = [
         {
-            "Rule (POI + Confluence)": "1. 01:30–05:30 4H Closed POI Levels",
-            "BUY Side (Demand POI)": f"Low: {self.c0130_low:.2f}" if self.c0130_low else "WAIT ⏳",
-            "SELL Side (Supply POI)": f"High: {self.c0130_high:.2f}" if self.c0130_high else "WAIT ⏳",
+            "Rule (POI + 1Hr Live)": "1. 01:30–05:30 4H Closed High / Low",
+            "BUY Side (Near Low)": f"Low: {self.c0130_low:.2f}" if self.c0130_low else "WAIT ⏳",
+            "SELL Side (Near High)": f"High: {self.c0130_high:.2f}" if self.c0130_high else "WAIT ⏳",
         },
         {
-            "Rule (POI + Confluence)": "2. POI Zone Range",
-            "BUY Side (Demand POI)": f"{self.demand_poi_zone[0]:.2f} – {self.demand_poi_zone[1]:.2f}" if self.demand_poi_zone else "N/A",
-            "SELL Side (Supply POI)": f"{self.supply_poi_zone[0]:.2f} – {self.supply_poi_zone[1]:.2f}" if self.supply_poi_zone else "N/A",
+            "Rule (POI + 1Hr Live)": "2. POI Zone Range (No Mid Entries)",
+            "BUY Side (Near Low)": f"{self.demand_poi_zone[0]:.2f} – {self.demand_poi_zone[1]:.2f}" if self.demand_poi_zone else "N/A",
+            "SELL Side (Near High)": f"{self.supply_poi_zone[0]:.2f} – {self.supply_poi_zone[1]:.2f}" if self.supply_poi_zone else "N/A",
         },
         {
-            "Rule (POI + Confluence)": "3. Signals Issued (Hard Cap: 2 Max)",
-            "BUY Side (Demand POI)": f"{buy_cnt} BUY",
-            "SELL Side (Supply POI)": f"{sell_cnt} SELL",
+            "Rule (POI + 1Hr Live)": "3. Live Dashboard Signals (Last 1 Hr)",
+            "BUY Side (Near Low)": f"{buy_cnt} / 1 BUY",
+            "SELL Side (Near High)": f"{sell_cnt} / 1 SELL",
         },
     ]
 
@@ -809,7 +810,7 @@ class TWTUltimateEngine:
 
     if closed and h_val is not None and l_val is not None:
       rng = max(h_val - l_val, 1e-9)
-      poi_thick = max(rng * 0.15, h_val * 0.001)
+      poi_thick = max(rng * 0.12, h_val * 0.0008)
       self.supply_poi_zone = (h_val - poi_thick, h_val + poi_thick * 0.35)
       self.demand_poi_zone = (l_val - poi_thick * 0.35, l_val + poi_thick)
       self.supply_poi_mid = (self.supply_poi_zone[0] + self.supply_poi_zone[1]) / 2.0
@@ -817,16 +818,22 @@ class TWTUltimateEngine:
 
     sigs = self._scan_poi_confluences(now_user)
     sigs.sort(key=lambda x: x["Candle #"])
-    self.history = sigs[: self.max_signals_per_asset]
-    self.signals = sigs[: self.max_signals_per_asset]
+
+    # All signals (max 1 BUY + 1 SELL) go to history ledger
+    self.all_detected_signals = sigs
+
+    # Only signals from the last 1 hour appear on the live dashboard
+    recent_sigs = [s for s in sigs if s.get("Is_Recent_1Hr", False)]
+    self.signals = recent_sigs
+    self.history = recent_sigs
     self._build_diy_checklist()
 
 
 # ---------------------------------------------------------
-# MASTER SCANNER (MAX 2 SIGNALS PER ASSET)
+# MASTER SCANNER (ONLY LAST 1 HOUR SIGNALS ON DASHBOARD)
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("🔥 TWT Master Live Signal Dashboard (Max 2 Signals Per Asset)")
+st.subheader("🔥 TWT Master Live Signal Dashboard (Last 1 Hour Only | Max 1 BUY + 1 SELL)")
 
 if "twt_strength_locks" not in st.session_state:
   st.session_state.twt_strength_locks = load_strength_locks()
@@ -843,7 +850,7 @@ def scan_asset(sym):
   return sym, df_1d, df_4h, df_5m, dfs_by_tf
 
 
-with st.spinner("⚡ Scanning 20+ assets on 01:30–05:30 4H POI + Full Confluence..."):
+with st.spinner("⚡ Scanning 20+ assets (Filtering signals older than 1 hour to History)..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
@@ -864,12 +871,12 @@ with st.spinner("⚡ Scanning 20+ assets on 01:30–05:30 4H POI + Full Confluen
             strict_confluence=require_full_confluence,
             strength_info=locked_strength,
             dfs_by_tf=dfs_by_tf,
-            max_signals_per_asset=2,
+            dashboard_max_age_min=DASHBOARD_MAX_AGE_MINUTES,
         )
         engine.calculate_and_scan()
         asset_engines[sym] = engine
         if engine.signals:
-          master_signals.extend(engine.signals[:2])
+          master_signals.extend(engine.signals)
 
 if locks_updated:
   save_strength_locks(strength_locks)
@@ -880,11 +887,13 @@ for eng in asset_engines.values():
 save_ledger(ledger_records)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} high-confluence POI signal(s) (Max 2 per asset)!")
-  df_display = pd.DataFrame(master_signals).drop(columns=["Signal_DT"], errors="ignore")
+  st.success(f"✅ Found {len(master_signals)} recent signal(s) from the last 1 hour!")
+  df_display = pd.DataFrame(master_signals).drop(
+      columns=["Is_Recent_1Hr", "Age_Min", "Signal_DT"], errors="ignore"
+  )
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ Abhi kisi asset par 01:30–05:30 POI par full confluence signal trigger nahi hua hai.")
+  st.info("ℹ️ Pichhle 1 hour mein koi naya POI signal nahi aaya hai. Purane signals Complete Trade History mein hain.")
 
 # ---------------------------------------------------------
 # MANUAL ASSET INSPECTOR & FULL TRADE HISTORY
@@ -917,12 +926,12 @@ else:
       strict_confluence=require_full_confluence,
       strength_info=locked_strength,
       dfs_by_tf=dfs_by_tf,
-      max_signals_per_asset=2,
+      dashboard_max_age_min=DASHBOARD_MAX_AGE_MINUTES,
   )
   bot.calculate_and_scan()
 
 if bot.diy_checklist:
-  st.markdown(f"#### 🧩 {selected_symbol} 01:30–05:30 POI & Confluence Status")
+  st.markdown(f"#### 🧩 {selected_symbol} 01:30–05:30 POI & 1-Hour Live Status")
   st.dataframe(pd.DataFrame(bot.diy_checklist), width="stretch")
 
 st.markdown(f"### 📈 {selected_symbol} Performance Summary (From {ledger_start_date})")
@@ -949,7 +958,7 @@ asset_history_rows = [
 ]
 
 if asset_history_rows:
-  st.markdown(f"### 📜 Complete Trade History for {selected_symbol}")
+  st.markdown(f"### 📜 Complete Trade History for {selected_symbol} (All Signals Including >1Hr Old)")
   st.dataframe(pd.DataFrame(asset_history_rows), width="stretch")
 
 if bot.candles_5m:
@@ -959,7 +968,7 @@ if bot.candles_5m:
   with col1:
     st.metric(label=f"Current {selected_symbol} Price", value=f"{curr_p:.2f}")
   with col2:
-    st.metric(label="Active Asset Signals (Max 2)", value=len(bot.history))
+    st.metric(label="Dashboard Signals (Last 1 Hr)", value=len(bot.signals))
   with col3:
     st.metric(label="4H POI Close Time", value=bot.c0530_close.strftime("%H:%M") if bot.c0530_close else "Waiting ⏳")
 
@@ -969,9 +978,11 @@ if bot.candles_5m:
         f"Demand POI Low: {bot.c0130_low:.2f}"
     )
 
-  if bot.history:
-    st.markdown(f"### 📋 Active POI Signals for {selected_symbol} (Max 2)")
-    df_history = pd.DataFrame(bot.history).drop(columns=["Signal_DT"], errors="ignore")
+  if bot.signals:
+    st.markdown(f"### 📋 Recent 1-Hour Signals for {selected_symbol}")
+    df_history = pd.DataFrame(bot.signals).drop(
+        columns=["Is_Recent_1Hr", "Age_Min", "Signal_DT"], errors="ignore"
+    )
     st.dataframe(df_history, width="stretch")
 
   # --- PLOT CHART ---
@@ -1014,7 +1025,7 @@ if bot.candles_5m:
       margin = curr_p * 0.005
     ax.set_ylim(min(lows) - margin, max(highs) + margin)
 
-  for sig in bot.history:
+  for sig in bot.signals:
     is_b = "BUY" in sig["Type"]
     bg_col = "#00e676" if is_b else "#ff5252"
     txt = f" {'BUY' if is_b else 'SELL'} ({sig['Time']}) "
@@ -1031,7 +1042,7 @@ if bot.candles_5m:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m Chart — 01:30–05:30 POI + All Confluence (Max 2 Signals)",
+      f"{selected_symbol} 5m Chart — 01:30–05:30 POI (Last 1Hr Live Signals)",
       color="white",
       fontsize=13,
   )
