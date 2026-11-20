@@ -266,10 +266,10 @@ st.sidebar.markdown("#### Master Confluence Rules")
 st.sidebar.text("Anchors  : 01:30 (4H), 05:30 (6H), 17:30 (4H->21:30)")
 st.sidebar.text("No-Entry : 17:30 to 21:30 Blocked")
 st.sidebar.text("Signal   : Only After 21:30 PM")
-st.sidebar.text("17:30 Zone: High-Low Zone + Mid Point")
-st.sidebar.text("High Confl: 01:30/05:30 High Inside 17:30 -> Stronger Side")
+st.sidebar.text("17:30 Sup: Separate Supply Zone + Supply Mid")
+st.sidebar.text("17:30 Dem: Separate Demand Zone + Demand Mid")
+st.sidebar.text("High Confl: 01:30/05:30 High Inside 17:30 Supply")
 st.sidebar.text("01:30/05:30 High: SELL Only | Low: BUY Only")
-st.sidebar.text("Zero-Lag : ZLEMA + ATR Band Trend")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -520,8 +520,10 @@ def fetch_data(symbol):
 # CUSTOM SESSION & CANDLE ANCHOR ENGINE
 # - 01:30 AM (4H) High & Low (High -> SELL only, Low -> BUY only)
 # - 05:30 AM (6H) High & Low (High -> SELL only, Low -> BUY only)
-# - 17:30 PM (4H -> closes 21:30 PM) High-Low Zone & Mid Point
-# - If 01:30 or 05:30 High lies inside 17:30 zone -> check stronger side at 17:30 high
+# - 17:30 PM (4H -> closes 21:30 PM):
+#     * Separate Supply Zone (High side) + separate Supply Mid Point
+#     * Separate Demand Zone (Low side) + separate Demand Mid Point
+# - If 01:30 or 05:30 High lies inside 17:30 Supply Zone -> check stronger side at 17:30 High
 # - No signals between 17:30 PM and 21:30 PM
 # - Signals ONLY after 21:30 PM
 # - No 21:30 4H demand/supply zone or mid point
@@ -563,15 +565,19 @@ class TWTUltimateEngine:
     self.c0530_6h_high = None
     self.c0530_6h_low = None
 
-    # 17:30 PM 4H candle (closes at 21:30 PM) -> Zone (High-Low) & Mid Point
+    # 17:30 PM 4H candle (closes at 21:30 PM) -> Separate Supply Zone & Demand Zone with separate Mid Points
     self.c1730_4h_start = None
     self.c1730_4h_close = None
     self.c1730_4h_closed = False
     self.c1730_4h_high = None
     self.c1730_4h_low = None
-    self.c1730_4h_mid = None
 
-    # High confluence inside 17:30 zone
+    self.supply_zone_1730 = None   # (sup_low, sup_high)
+    self.supply_mid_1730 = None    # midpoint of supply zone
+    self.demand_zone_1730 = None   # (dem_low, dem_high)
+    self.demand_mid_1730 = None    # midpoint of demand zone
+
+    # High confluence inside 17:30 Supply Zone
     self.high_confluence_in_1730 = False
     self.confluence_highs_matched = []
 
@@ -669,7 +675,7 @@ class TWTUltimateEngine:
 
     self.diy_checklist = [
         {
-            "Rule (DIY Builder)": "1. 17:30 4H Zone Closed at 21:30 PM",
+            "Rule (DIY Builder)": "1. 17:30 4H Candle Closed at 21:30 PM",
             "BUY Side": "READY ✅" if self.c1730_4h_closed else "WAITING 21:30 ⏳",
             "SELL Side": "READY ✅" if self.c1730_4h_closed else "WAITING 21:30 ⏳",
         },
@@ -679,7 +685,7 @@ class TWTUltimateEngine:
             "SELL Side": "ACTIVE ✅" if has_sell else "WAITING >=21:30 ⏳",
         },
         {
-            "Rule (DIY Builder)": "3. High Inside 17:30 Zone Confluence",
+            "Rule (DIY Builder)": "3. High Inside 17:30 Supply Confluence",
             "BUY Side": "MATCHED ✅" if self.high_confluence_in_1730 else "NO MATCH ⚪",
             "SELL Side": "MATCHED ✅" if self.high_confluence_in_1730 else "NO MATCH ⚪",
         },
@@ -731,8 +737,30 @@ class TWTUltimateEngine:
       return max(highs), min(lows)
     return None, None
 
+  def _setup_1730_separate_zones_and_mids(self, h_1730, l_1730):
+    """Creates separate Supply Zone + Supply Mid (from High) and separate Demand Zone + Demand Mid (from Low)."""
+    if h_1730 is None or l_1730 is None:
+      self.supply_zone_1730 = None
+      self.supply_mid_1730 = None
+      self.demand_zone_1730 = None
+      self.demand_mid_1730 = None
+      return
+
+    rng = max(h_1730 - l_1730, 1e-9)
+    z_thick = rng * 0.20
+
+    sup_low = h_1730 - z_thick
+    sup_high = h_1730
+    self.supply_zone_1730 = (sup_low, sup_high)
+    self.supply_mid_1730 = (sup_low + sup_high) / 2.0
+
+    dem_low = l_1730
+    dem_high = l_1730 + z_thick
+    self.demand_zone_1730 = (dem_low, dem_high)
+    self.demand_mid_1730 = (dem_low + dem_high) / 2.0
+
   def _detect_1730_high_confluence(self):
-    """Checks if 01:30 (4H) High or 05:30 (6H) High lies inside the closed 17:30->21:30 4H zone."""
+    """Checks if 01:30 (4H) High or 05:30 (6H) High lies inside the 17:30 Supply Zone (or 17:30 candle range)."""
     matched = []
     if self.c1730_4h_high is None or self.c1730_4h_low is None:
       return False, matched
@@ -752,12 +780,13 @@ class TWTUltimateEngine:
     Strictly:
     - No signals between 17:30 and 21:30.
     - Signals ONLY on candles AT OR AFTER 21:30 PM (`c["dt_user"] >= after_2130`).
-    - If 01:30 (4H) High or 05:30 (6H) High is inside the 17:30->21:30 4H zone:
-        * At 17:30 High/Zone, check stronger side (Buyer vs Seller) and give entry on the stronger side.
-    - Otherwise:
-        * 01:30 (4H) & 05:30 (6H) High -> SELL only (never BUY at High)
-        * 01:30 (4H) & 05:30 (6H) Low  -> BUY only (never SELL at Low)
-        * 17:30 (4H -> closes 21:30) Mid Point cross logic after 21:30.
+    - If 01:30 (4H) High or 05:30 (6H) High is inside the 17:30 zone:
+        * At 17:30 High, check stronger side (Buyer vs Seller) and give entry on the stronger side.
+    - 01:30 (4H) & 05:30 (6H) High -> SELL only (never BUY at High)
+    - 01:30 (4H) & 05:30 (6H) Low  -> BUY only (never SELL at Low)
+    - 17:30 (4H -> closes 21:30):
+        * Separate Supply Mid cross -> SELL (when Seller strong)
+        * Separate Demand Mid cross -> BUY (when Buyer strong)
     """
     if after_2130 is None or not candles:
       return []
@@ -773,8 +802,8 @@ class TWTUltimateEngine:
     buy_sig = None
     sell_sig = None
     prev_c = None
-    seen_above_1730_mid = False
-    seen_below_1730_mid = False
+    seen_above_sup_mid = False
+    seen_below_dem_mid = False
 
     b_lock = self._buyer_pct()
     s_lock = self._seller_pct()
@@ -799,7 +828,7 @@ class TWTUltimateEngine:
       choppy = self._is_choppy(c)
       prev_close = prev_c["close"] if prev_c is not None else close_val
 
-      # A) 17:30 High Confluence Entry (when 01:30 or 05:30 High is inside 17:30 zone)
+      # A) 17:30 High Confluence Entry (when 01:30 or 05:30 High is inside 17:30 range)
       if self.high_confluence_in_1730 and self.c1730_4h_high is not None and (not choppy):
         at_1730_high = (high_val >= self.c1730_4h_high) or (prev_c is not None and prev_c["high"] >= self.c1730_4h_high)
         if at_1730_high:
@@ -899,24 +928,21 @@ class TWTUltimateEngine:
             }
             break
 
-      # D) 17:30 PM (4H -> closes 21:30 PM) Mid Point logic after 21:30 PM
-      mid_1730 = self.c1730_4h_mid
-      if mid_1730 is not None and (not choppy):
-        if high_val >= mid_1730 or prev_close >= mid_1730:
-          seen_above_1730_mid = True
-        if low_val <= mid_1730 or prev_close <= mid_1730:
-          seen_below_1730_mid = True
-
-        red_mid_cross = (
+      # D) 17:30 Separate Supply Mid -> SELL logic after 21:30 PM
+      sup_mid = self.supply_mid_1730
+      if sup_mid is not None and (not choppy):
+        if high_val >= sup_mid or prev_close >= sup_mid:
+          seen_above_sup_mid = True
+        red_sup_mid_cross = (
             seller_strong
             and is_red
-            and (close_val < mid_1730)
-            and (prev_close >= mid_1730 or high_val >= mid_1730)
-            and seen_above_1730_mid
+            and (close_val < sup_mid)
+            and (prev_close >= sup_mid or high_val >= sup_mid)
+            and seen_above_sup_mid
         )
-        if not sell_sig and red_mid_cross:
+        if not sell_sig and red_sup_mid_cross:
           grade, conf_note = self._grade_signal(c, "SELL")
-          sl = round(max(mid_1730, high_val) + (1.5 * atr), dec)
+          sl = round(max(sup_mid, high_val) + (1.5 * atr), dec)
           sell_sig = {
               "Asset": self.symbol,
               "Date": str(c["date"]),
@@ -926,7 +952,7 @@ class TWTUltimateEngine:
               "Grade": grade,
               "Locked Buyer %": f"{b_lock}%",
               "Locked Seller %": f"{s_lock}%",
-              "Setup": f"17:30 4H Mid Cross SELL ({conf_note})",
+              "Setup": f"17:30 Supply Mid Cross SELL ({conf_note})",
               "Entry Price": round(close_val, dec),
               "Stop Loss (SL)": sl,
               "TP 1": round(close_val - (1.2 * atr), dec),
@@ -936,16 +962,21 @@ class TWTUltimateEngine:
               "Signal_DT": c["dt_user"].isoformat(),
           }
 
-        green_mid_cross = (
+      # E) 17:30 Separate Demand Mid -> BUY logic after 21:30 PM
+      dem_mid = self.demand_mid_1730
+      if dem_mid is not None and (not choppy):
+        if low_val <= dem_mid or prev_close <= dem_mid:
+          seen_below_dem_mid = True
+        green_dem_mid_cross = (
             buyer_strong
             and is_green
-            and (close_val > mid_1730)
-            and (prev_close <= mid_1730 or low_val <= mid_1730)
-            and seen_below_1730_mid
+            and (close_val > dem_mid)
+            and (prev_close <= dem_mid or low_val <= dem_mid)
+            and seen_below_dem_mid
         )
-        if not buy_sig and green_mid_cross:
+        if not buy_sig and green_dem_mid_cross:
           grade, conf_note = self._grade_signal(c, "BUY")
-          sl = round(min(mid_1730, low_val) - (1.5 * atr), dec)
+          sl = round(min(dem_mid, low_val) - (1.5 * atr), dec)
           buy_sig = {
               "Asset": self.symbol,
               "Date": str(c["date"]),
@@ -955,7 +986,7 @@ class TWTUltimateEngine:
               "Grade": grade,
               "Locked Buyer %": f"{b_lock}%",
               "Locked Seller %": f"{s_lock}%",
-              "Setup": f"17:30 4H Mid Cross BUY ({conf_note})",
+              "Setup": f"17:30 Demand Mid Cross BUY ({conf_note})",
               "Entry Price": round(close_val, dec),
               "Stop Loss (SL)": sl,
               "TP 1": round(close_val + (1.2 * atr), dec),
@@ -1048,7 +1079,7 @@ class TWTUltimateEngine:
       h_1730, l_1730 = self._range_high_low(self.c1730_4h_start, self.c1730_4h_close)
       self.c1730_4h_high = h_1730
       self.c1730_4h_low = l_1730
-      self.c1730_4h_mid = ((h_1730 + l_1730) / 2.0) if (h_1730 is not None and l_1730 is not None) else None
+      self._setup_1730_separate_zones_and_mids(h_1730, l_1730)
     elif now_user >= t1730_today:
       # Between 17:30 and 21:30: candle is forming, NO signals between 17:30 and 21:30
       self.c1730_4h_start = t1730_today
@@ -1065,7 +1096,7 @@ class TWTUltimateEngine:
       h_1730, l_1730 = self._range_high_low(self.c1730_4h_start, self.c1730_4h_close)
       self.c1730_4h_high = h_1730
       self.c1730_4h_low = l_1730
-      self.c1730_4h_mid = ((h_1730 + l_1730) / 2.0) if (h_1730 is not None and l_1730 is not None) else None
+      self._setup_1730_separate_zones_and_mids(h_1730, l_1730)
 
     if self.c1730_4h_closed:
       self.high_confluence_in_1730, self.confluence_highs_matched = self._detect_1730_high_confluence()
@@ -1104,7 +1135,7 @@ def scan_asset(sym):
   return sym, df_1d, df_4h, df_5m, dfs_by_tf
 
 
-with st.spinner("⚡ Scanning 20+ assets (01:30 4H + 05:30 6H + 17:30-21:30 4H Zone & Mid)..."):
+with st.spinner("⚡ Scanning 20+ assets (01:30 4H + 05:30 6H + 17:30-21:30 Supply & Demand)..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
@@ -1149,7 +1180,7 @@ else:
 # MANUAL ASSET INSPECTOR & PER-ASSET LEDGER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("📊 Individual Asset Inspector (01:30 4H + 05:30 6H + 17:30-21:30 4H Zone & Mid)")
+st.subheader("📊 Individual Asset Inspector (01:30 4H + 05:30 6H + 17:30-21:30 Supply & Demand)")
 
 selected_symbol = st.selectbox(
     "🔍 Select Asset to Load Chart",
@@ -1218,12 +1249,15 @@ if bot.candles_5m:
     info_parts.append(f"01:30(4H) H:{bot.c0130_high:.2f} / L:{bot.c0130_low:.2f}")
   if bot.c0530_6h_high is not None and bot.c0530_6h_low is not None:
     info_parts.append(f"05:30(6H) H:{bot.c0530_6h_high:.2f} / L:{bot.c0530_6h_low:.2f}")
-  if bot.c1730_4h_closed and bot.c1730_4h_high is not None and bot.c1730_4h_low is not None:
+  if bot.c1730_4h_closed and bot.supply_zone_1730 and bot.demand_zone_1730:
     info_parts.append(
-        f"17:30->21:30(4H) Zone H:{bot.c1730_4h_high:.2f} / L:{bot.c1730_4h_low:.2f} / Mid:{bot.c1730_4h_mid:.2f}"
+        f"17:30 Supply [{bot.supply_zone_1730[0]:.2f}-{bot.supply_zone_1730[1]:.2f}] Mid:{bot.supply_mid_1730:.2f}"
+    )
+    info_parts.append(
+        f"17:30 Demand [{bot.demand_zone_1730[0]:.2f}-{bot.demand_zone_1730[1]:.2f}] Mid:{bot.demand_mid_1730:.2f}"
     )
   if bot.high_confluence_in_1730:
-    info_parts.append("High Confluence Inside 17:30 Zone: " + ", ".join(bot.confluence_highs_matched))
+    info_parts.append("High Confluence Inside 17:30: " + ", ".join(bot.confluence_highs_matched))
   if info_parts:
     st.caption("🕒 Marked Levels & Zones — " + " | ".join(info_parts))
 
@@ -1266,16 +1300,19 @@ if bot.candles_5m:
   if bot.c0530_6h_low is not None:
     ax.axhline(bot.c0530_6h_low, color="#69f0ae", linestyle=":", linewidth=1.5, label=f"05:30(6H) Low [BUY]: {bot.c0530_6h_low:.2f}")
 
-  # 17:30 -> 21:30 (4H) Shaded Zone (High-Low) & Mid Point
-  if bot.c1730_4h_closed and bot.c1730_4h_high is not None and bot.c1730_4h_low is not None:
-    z_bot = min(bot.c1730_4h_low, bot.c1730_4h_high)
-    z_top = max(bot.c1730_4h_low, bot.c1730_4h_high)
-    zone_col = "#ab47bc" if bot.high_confluence_in_1730 else "#7e57c2"
-    ax.axhspan(z_bot, z_top, color=zone_col, alpha=0.22, label=f"17:30-21:30(4H) Zone [{z_bot:.2f} - {z_top:.2f}]")
-    ax.axhline(z_top, color="#ce93d8", linestyle="-.", linewidth=1.4, label=f"17:30-21:30(4H) High: {z_top:.2f}")
-    ax.axhline(z_bot, color="#81d4fa", linestyle="-.", linewidth=1.4, label=f"17:30-21:30(4H) Low: {z_bot:.2f}")
-    if bot.c1730_4h_mid is not None:
-      ax.axhline(bot.c1730_4h_mid, color="#ffd54f", linestyle="--", linewidth=1.6, label=f"17:30-21:30(4H) Mid: {bot.c1730_4h_mid:.2f}")
+  # 17:30 -> 21:30 (4H): Separate Supply Zone + Supply Mid & Separate Demand Zone + Demand Mid
+  if bot.c1730_4h_closed:
+    if bot.supply_zone_1730 is not None:
+      s_bot, s_top = bot.supply_zone_1730
+      ax.axhspan(s_bot, s_top, color="#e53935", alpha=0.24, label=f"17:30 Supply Zone [{s_bot:.2f} - {s_top:.2f}]")
+    if bot.supply_mid_1730 is not None:
+      ax.axhline(bot.supply_mid_1730, color="#ff8a80", linestyle="--", linewidth=1.5, label=f"17:30 Supply Mid: {bot.supply_mid_1730:.2f}")
+
+    if bot.demand_zone_1730 is not None:
+      d_bot, d_top = bot.demand_zone_1730
+      ax.axhspan(d_bot, d_top, color="#00897b", alpha=0.24, label=f"17:30 Demand Zone [{d_bot:.2f} - {d_top:.2f}]")
+    if bot.demand_mid_1730 is not None:
+      ax.axhline(bot.demand_mid_1730, color="#80cbc4", linestyle="--", linewidth=1.5, label=f"17:30 Demand Mid: {bot.demand_mid_1730:.2f}")
 
   if bot.signal_start_2130:
     c_2130_list = [c for c in bot.candles_5m if c["dt_user"] >= bot.signal_start_2130]
@@ -1313,7 +1350,7 @@ if bot.candles_5m:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m Chart — 01:30(4H) + 05:30(6H) + 17:30-21:30(4H Zone & Mid)",
+      f"{selected_symbol} 5m Chart — Separate 17:30 Supply & Demand Zones + Mids",
       color="white",
       fontsize=14,
   )
