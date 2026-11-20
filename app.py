@@ -30,29 +30,26 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
 count = st_autorefresh(interval=30000, key="twt_multi_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA — 4H POI Engine (BUY & SELL Signals)")
+st.title("⚡ TRADE WITH TUCKYAA — 4H POI Engine (Locked 1 BUY + 1 SELL)")
 
-LEDGER_FILE = Path("twt_signals_ledger_v4.json")
-STRENGTH_LOCK_FILE = Path("twt_strength_locks.json")
+LEDGER_FILE = Path("twt_signals_ledger_v5.json")
+LOCKED_ENTRIES_FILE = Path("twt_locked_entries_v1.json")
 LIVE_WINDOW_MINUTES = 60.0
 
 
 # ---------------------------------------------------------
-# 21:30 SESSION STRENGTH LOCK HELPERS
+# SESSION & LOCK HELPERS (FIRST SIGNAL LOCKED PER SIDE)
 # ---------------------------------------------------------
-def get_2130_session_key(now_user):
-  anchor_2130_today = datetime.combine(now_user.date(), time(21, 30), tzinfo=now_user.tzinfo)
-  if now_user >= anchor_2130_today:
-    session_start = anchor_2130_today
-  else:
-    session_start = anchor_2130_today - timedelta(days=1)
-  return session_start.strftime("%Y-%m-%d_%H:%M")
+def get_poi_session_key(c0530_close):
+  if c0530_close is None:
+    return "NO_SESSION"
+  return c0530_close.strftime("%Y-%m-%d_%H:%M")
 
 
-def load_strength_locks():
-  if STRENGTH_LOCK_FILE.exists():
+def load_locked_entries():
+  if LOCKED_ENTRIES_FILE.exists():
     try:
-      data = json.loads(STRENGTH_LOCK_FILE.read_text(encoding="utf-8"))
+      data = json.loads(LOCKED_ENTRIES_FILE.read_text(encoding="utf-8"))
       if isinstance(data, dict):
         return data
     except Exception:
@@ -60,9 +57,9 @@ def load_strength_locks():
   return {}
 
 
-def save_strength_locks(locks):
+def save_locked_entries(locks):
   try:
-    STRENGTH_LOCK_FILE.write_text(json.dumps(locks, indent=2), encoding="utf-8")
+    LOCKED_ENTRIES_FILE.write_text(json.dumps(locks, indent=2), encoding="utf-8")
   except Exception:
     pass
 
@@ -96,7 +93,7 @@ def update_ledger_with_engine(records, engine):
   changed = False
 
   for sig in engine.all_detected_signals:
-    sig_id = f"{sig['Asset']}|{sig['Date']}|{sig['Time']}|{sig['Type']}|{sig['Entry Price']}"
+    sig_id = f"{sig['Asset']}|{sig.get('Session', '')}|{sig['Type']}"
     if sig_id not in by_id:
       by_id[sig_id] = {
           "id": sig_id,
@@ -107,8 +104,8 @@ def update_ledger_with_engine(records, engine):
           "Direction": "BUY" if "BUY" in sig["Type"] else "SELL",
           "Type": sig["Type"],
           "Grade": sig.get("Grade", "NORMAL ⚡"),
-          "Locked Buyer %": sig.get("Locked Buyer %", "50.0%"),
-          "Locked Seller %": sig.get("Locked Seller %", "50.0%"),
+          "Zone Buyer %": sig.get("Zone Buyer %", "50.0%"),
+          "Zone Seller %": sig.get("Zone Seller %", "50.0%"),
           "Setup": sig["Setup"],
           "Entry Price": float(sig["Entry Price"]),
           "Stop Loss (SL)": float(sig["Stop Loss (SL)"]),
@@ -261,11 +258,11 @@ ledger_start_date = st.sidebar.text_input(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### 4H POI + Confluence Rules")
+st.sidebar.markdown("#### 4H POI + Lock Rules")
 st.sidebar.text("Anchor   : 01:30→05:30 4H Candle")
-st.sidebar.text("Live Dash: Last 1 Hour Signals")
-st.sidebar.text("Chart    : Latest BUY + Latest SELL")
-st.sidebar.text("History  : Selected Asset Only")
+st.sidebar.text("Entry Cap: Max 1 BUY + 1 SELL")
+st.sidebar.text("Lock     : 1st Entry Locked (No Shift)")
+st.sidebar.text("Strength : Buyer@Demand | Seller@Supply")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -343,133 +340,38 @@ def _compute_zero_lag_series(df, length=21, band_mult=1.2):
   return zl_line, band, pd.Series(states, index=df.index)
 
 
-def _candle_strength_at_row(row):
-  if row is None:
-    return 50.0, 50.0, "Neutral ⚪"
-  o = float(row["Open"])
-  h = float(row["High"])
-  l = float(row["Low"])
-  c = float(row["Close"])
+def _candle_zone_strength(c, zone_type):
+  """
+  Calculates Buyer Strength % when price is in Demand Zone,
+  and Seller Strength % when price is in Supply Zone.
+  """
+  o = float(c["open"])
+  h = float(c["high"])
+  l = float(c["low"])
+  cl = float(c["close"])
   rng = max(h - l, 1e-9)
-  body_ratio = min(1.0, abs(c - o) / rng)
 
-  if c >= o:
-    close_pos = (c - l) / rng
-    buyer = round(min(100.0, 50.0 + (body_ratio * 35.0) + ((close_pos - 0.5) * 30.0)), 1)
-    seller = round(max(0.0, 100.0 - buyer), 1)
-    label = "Buyer Green 🟢"
+  body_ratio = min(1.0, abs(cl - o) / rng)
+  close_pos = max(0.0, min(1.0, (cl - l) / rng))
+
+  if zone_type == "DEMAND":
+    # Bullish reaction + lower wick rejection + high close in candle range
+    bull_bonus = 20.0 if cl >= o else -10.0
+    buyer_pct = round(
+        max(5.0, min(99.0, 45.0 + (body_ratio * 25.0) + (close_pos * 25.0) + bull_bonus)),
+        1,
+    )
+    seller_pct = round(max(1.0, 100.0 - buyer_pct), 1)
+    return buyer_pct, seller_pct
   else:
-    close_pos = (c - l) / rng
-    seller = round(min(100.0, 50.0 + (body_ratio * 35.0) + ((0.5 - close_pos) * 30.0)), 1)
-    buyer = round(max(0.0, 100.0 - seller), 1)
-    label = "Seller Red 🔴"
-
-  return buyer, seller, label
-
-
-def _pick_candle_at_or_before(df, dt_utc=None, use_closed_latest=True):
-  if df is None or df.empty:
-    return None, -1
-  if dt_utc is not None:
-    sub = df[df.index <= dt_utc]
-    if not sub.empty:
-      idx = len(sub) - 1
-      return sub.iloc[-1], idx
-  if use_closed_latest and len(df) >= 2:
-    return df.iloc[-2], len(df) - 2
-  return df.iloc[-1], len(df) - 1
-
-
-def compute_mtf_candle_strength(dfs_by_tf, dt_utc=None, use_closed_latest=True):
-  weights = {
-      "1d": 0.30,
-      "4h": 0.25,
-      "1h": 0.20,
-      "15m": 0.15,
-      "5m": 0.10,
-  }
-  rows = []
-  w_buyer = 0.0
-  w_seller = 0.0
-  tot_w = 0.0
-  tf_scores = {}
-  zl_mtf = {}
-
-  for tf in ("5m", "15m", "1h", "4h", "1d"):
-    df = dfs_by_tf.get(tf)
-    row, r_idx = _pick_candle_at_or_before(df, dt_utc=dt_utc, use_closed_latest=use_closed_latest)
-    b_val, s_val, c_label = _candle_strength_at_row(row)
-    _, _, zl_series = _compute_zero_lag_series(df, length=21, band_mult=1.2)
-    if zl_series is not None and not zl_series.empty and 0 <= r_idx < len(zl_series):
-      zl_state = str(zl_series.iloc[r_idx])
-    else:
-      zl_state = "BULL" if b_val >= s_val else "BEAR"
-    zl_mtf[tf] = zl_state
-
-    tf_scores[tf] = {"buyer": b_val, "seller": s_val}
-    w = weights[tf]
-    w_buyer += b_val * w
-    w_seller += s_val * w
-    tot_w += w
-    rows.append({
-        "Timeframe": tf,
-        "Candle": c_label,
-        "Zero-Lag Trend": "Bullish 🟢" if zl_state == "BULL" else "Bearish 🔴",
-        "Buyer Strength": f"{b_val}%",
-        "Seller Strength": f"{s_val}%",
-        "Dominant": "BUYER 🟢" if b_val >= s_val else "SELLER 🔴",
-    })
-
-  avg_buyer = round(w_buyer / tot_w, 1) if tot_w > 0 else 50.0
-  avg_seller = round(w_seller / tot_w, 1) if tot_w > 0 else 50.0
-  diff = round(avg_buyer - avg_seller, 1)
-
-  h4_b = tf_scores.get("4h", {}).get("buyer", 50.0)
-  h4_s = tf_scores.get("4h", {}).get("seller", 50.0)
-  d1_b = tf_scores.get("1d", {}).get("buyer", 50.0)
-  d1_s = tf_scores.get("1d", {}).get("seller", 50.0)
-
-  htf_buy_aligned = (h4_b >= h4_s) and (d1_b >= d1_s)
-  htf_sell_aligned = (h4_s > h4_b) and (d1_s > d1_b)
-
-  zl_buy_aligned = (zl_mtf.get("4h") == "BULL") and (zl_mtf.get("1d") == "BULL")
-  zl_sell_aligned = (zl_mtf.get("4h") == "BEAR") and (zl_mtf.get("1d") == "BEAR")
-
-  if diff >= 8.0:
-    verdict = f"BUY Zyada Faydemand 🟢 (+{diff}% Buyer Edge)"
-  elif diff <= -8.0:
-    verdict = f"SELL Zyada Faydemand 🔴 (+{abs(diff)}% Seller Edge)"
-  else:
-    verdict = f"Balanced / Mixed ⚖️ (Buyer {avg_buyer}% vs Seller {avg_seller}%)"
-
-  return {
-      "buyer_pct": avg_buyer,
-      "seller_pct": avg_seller,
-      "diff": diff,
-      "verdict": verdict,
-      "rows": rows,
-      "htf_buy_aligned": htf_buy_aligned,
-      "htf_sell_aligned": htf_sell_aligned,
-      "zl_mtf": zl_mtf,
-      "zl_buy_aligned": zl_buy_aligned,
-      "zl_sell_aligned": zl_sell_aligned,
-  }
-
-
-def get_or_lock_2130_strength(symbol, user_tz, dfs_by_tf, locks_dict):
-  now_user = datetime.now(timezone.utc).astimezone(user_tz)
-  session_key = get_2130_session_key(now_user)
-  lock_key = f"{symbol}|{session_key}"
-
-  if lock_key in locks_dict and isinstance(locks_dict[lock_key], dict):
-    cached = dict(locks_dict[lock_key])
-    cached["session_key"] = session_key
-    return cached, False
-
-  computed = compute_mtf_candle_strength(dfs_by_tf, dt_utc=None, use_closed_latest=True)
-  computed["session_key"] = session_key
-  locks_dict[lock_key] = computed
-  return dict(computed), True
+    # Bearish rejection + upper wick rejection + low close in candle range
+    bear_bonus = 20.0 if cl <= o else -10.0
+    seller_pct = round(
+        max(5.0, min(99.0, 45.0 + (body_ratio * 25.0) + ((1.0 - close_pos) * 25.0) + bear_bonus)),
+        1,
+    )
+    buyer_pct = round(max(1.0, 100.0 - seller_pct), 1)
+    return buyer_pct, seller_pct
 
 
 # ---------------------------------------------------------
@@ -508,7 +410,7 @@ def fetch_data(symbol):
 
 
 # ---------------------------------------------------------
-# 01:30 -> 05:30 4H POI ENGINE (BUY & SELL SIGNALS)
+# 01:30 -> 05:30 4H POI ENGINE (FIRST SIGNAL LOCKED PER SIDE)
 # ---------------------------------------------------------
 class TWTUltimateEngine:
 
@@ -521,8 +423,7 @@ class TWTUltimateEngine:
       user_tz,
       chop_filter=True,
       strict_confluence=False,
-      strength_info=None,
-      dfs_by_tf=None,
+      locked_entries=None,
       live_window_min=LIVE_WINDOW_MINUTES,
   ):
     self.df_1d = df_1d
@@ -532,15 +433,14 @@ class TWTUltimateEngine:
     self.user_tz = user_tz
     self.chop_filter = chop_filter
     self.strict_confluence = strict_confluence
-    self.strength_info = strength_info or {}
-    self.dfs_by_tf = dfs_by_tf or {}
+    self.locked_entries = locked_entries if locked_entries is not None else {}
+    self.locks_mutated = False
     self.live_window_min = live_window_min
 
     self.candles_5m = []
-    self.all_detected_signals = []  # Latest 1 BUY + Latest 1 SELL near POI
-    self.live_1hr_signals = []      # Only signals within last 1 hour
-    self.signals = []               # Chart/Inspector BUY & SELL signals
-    self.history = []
+    self.all_detected_signals = []  # Locked 1 BUY + Locked 1 SELL for this session
+    self.live_1hr_signals = []      # Only locked signals within last 1 hour
+    self.signals = []               # Locked 1 BUY + Locked 1 SELL shown on screen/chart
     self.diy_checklist = []
 
     self.c0130_closed = False
@@ -573,35 +473,25 @@ class TWTUltimateEngine:
 
     if side == "SELL":
       upper_wick = max(0.0, h - body_top)
-      return (cl < o) and ((upper_wick / rng) >= 0.05 or upper_wick > 0)
+      return (cl < o) and ((upper_wick / rng) >= 0.08 or upper_wick > 0)
     else:
       lower_wick = max(0.0, body_bot - l)
-      return (cl > o) and ((lower_wick / rng) >= 0.05 or lower_wick > 0)
+      return (cl > o) and ((lower_wick / rng) >= 0.08 or lower_wick > 0)
 
-  def _evaluate_all_confluences(self, c, side):
-    locked_info = self.strength_info
-    if side == "BUY":
-      htf_ok = bool(locked_info.get("htf_buy_aligned", False))
-      zl_5m_ok = c.get("zl_trend") == "BULL"
-      zl_htf_ok = bool(locked_info.get("zl_buy_aligned", False))
-      str_ok = float(locked_info.get("buyer_pct", 50.0)) >= 45.0
-    else:
-      htf_ok = bool(locked_info.get("htf_sell_aligned", False))
-      zl_5m_ok = c.get("zl_trend") == "BEAR"
-      zl_htf_ok = bool(locked_info.get("zl_sell_aligned", False))
-      str_ok = float(locked_info.get("seller_pct", 50.0)) >= 45.0
-
+  def _evaluate_confirmation(self, c, side, buyer_pct, seller_pct):
     wick_ok = self._check_candle_wick_rejection(c, side)
-    zl_ok = zl_5m_ok or zl_htf_ok
-    score = sum([htf_ok, wick_ok, zl_ok, str_ok])
+    zl_ok = (c.get("zl_trend") == "BULL") if side == "BUY" else (c.get("zl_trend") == "BEAR")
+    zone_str_ok = (buyer_pct >= 55.0) if side == "BUY" else (seller_pct >= 55.0)
+    candle_dir_ok = (c["close"] > c["open"]) if side == "BUY" else (c["close"] < c["open"])
 
+    score = sum([wick_ok, zl_ok, zone_str_ok, candle_dir_ok])
     if self.strict_confluence:
-      passed = (score >= 3) and zl_ok and (wick_ok or htf_ok)
+      passed = candle_dir_ok and wick_ok and (zl_ok or zone_str_ok) and (score >= 3)
     else:
-      passed = (score >= 1)
+      passed = candle_dir_ok and (score >= 2)
 
-    grade = "A-GRADE 🔥" if score >= 3 else "NORMAL ⚡"
-    note = f"POI + Conf {score}/4 | ZL:{'OK' if zl_ok else 'Mix'} | HTF:{'OK' if htf_ok else 'Mix'} | Wick:{'OK' if wick_ok else 'Lt'}"
+    grade = "A-GRADE 🔥" if score >= 3 else "CONFIRMED ⚡"
+    note = f"Conf {score}/4 | Dir:OK | Wick:{'OK' if wick_ok else 'Lt'} | ZL:{'OK' if zl_ok else 'Mix'}"
     return passed, grade, note
 
   def _find_latest_completed_0130_4h(self, now_user):
@@ -630,93 +520,116 @@ class TWTUltimateEngine:
 
     return False, None, None, None, None
 
-  def _scan_poi_confluences(self, now_user):
+  def _scan_and_lock_first_signals(self, now_user):
     """
-    Finds latest 1 SELL (near 01:30-05:30 High POI) and latest 1 BUY (near 01:30-05:30 Low POI).
+    Locks the FIRST confirmed SELL near Supply POI (01:30-05:30 High) and
+    the FIRST confirmed BUY near Demand POI (01:30-05:30 Low) for the session.
+    Once locked, entry time/price/SL/TP/strength never shift when price re-hits the zone.
     """
     if not self.c0130_closed or self.c0530_close is None:
       return []
 
-    sub = [c for c in self.candles_5m if self.c0530_close <= c["dt_user"] <= now_user]
-    if not sub:
-      return []
+    session_key = get_poi_session_key(self.c0530_close)
+    sell_lock_key = f"{self.symbol}|{session_key}|SELL"
+    buy_lock_key = f"{self.symbol}|{session_key}|BUY"
 
+    locked_sell = self.locked_entries.get(sell_lock_key)
+    locked_buy = self.locked_entries.get(buy_lock_key)
+
+    sub = [c for c in self.candles_5m if self.c0530_close <= c["dt_user"] <= now_user]
     sup_low, sup_high = self.supply_poi_zone
     dem_low, dem_high = self.demand_poi_zone
-    b_lock = float(self.strength_info.get("buyer_pct", 50.0))
-    s_lock = float(self.strength_info.get("seller_pct", 50.0))
 
-    latest_by_side = {}
-
-    for c in reversed(sub):
-      if len(latest_by_side) >= 2:
-        break
-
-      if self._is_choppy(c):
-        continue
-
-      atr = c["atr"]
-      dec = get_decimals(c["close"])
-      o, h, l, cl = c["open"], c["high"], c["low"], c["close"]
-      age_min = (now_user - c["dt_user"]).total_seconds() / 60.0
-      is_live_1hr = (0.0 <= age_min <= self.live_window_min)
-
-      near_high_poi = (h >= sup_low) and (cl <= sup_high * 1.008)
-      if "SELL" not in latest_by_side and near_high_poi and (cl < o):
-        ok, grade, conf_note = self._evaluate_all_confluences(c, "SELL")
-        if ok:
-          sl = round(max(self.c0130_high, h) + (1.2 * atr), dec)
-          latest_by_side["SELL"] = {
-              "Asset": self.symbol,
-              "Date": c["dt_user"].strftime("%Y-%m-%d"),
-              "Time": c["dt_user"].strftime("%H:%M"),
-              "Window": f"Post-{self.c0530_close.strftime('%H:%M')} POI",
-              "Candle #": c["id"],
-              "Type": "SELL 🔴",
-              "Grade": grade,
-              "Locked Buyer %": f"{b_lock}%",
-              "Locked Seller %": f"{s_lock}%",
-              "Setup": f"Near 01:30–05:30 High ({self.c0130_high:.{dec}f}) SELL | {conf_note}",
-              "Entry Price": round(cl, dec),
-              "Stop Loss (SL)": sl,
-              "TP 1": round(cl - (1.2 * atr), dec),
-              "TP 2": round(cl - (2.5 * atr), dec),
-              "TP 3": round(cl - (4.0 * atr), dec),
-              "Age_Min": round(age_min, 1),
-              "Is_Live_1Hr": is_live_1hr,
-              "Signal_DT": c["dt_user"].isoformat(),
-          }
+    if not locked_sell or not locked_buy:
+      for c in sub:
+        if locked_sell and locked_buy:
+          break
+        if self._is_choppy(c):
           continue
 
-      near_low_poi = (l <= dem_high) and (cl >= dem_low * 0.992)
-      if "BUY" not in latest_by_side and near_low_poi and (cl > o):
-        ok, grade, conf_note = self._evaluate_all_confluences(c, "BUY")
-        if ok:
-          sl = round(min(self.c0130_low, l) - (1.2 * atr), dec)
-          latest_by_side["BUY"] = {
-              "Asset": self.symbol,
-              "Date": c["dt_user"].strftime("%Y-%m-%d"),
-              "Time": c["dt_user"].strftime("%H:%M"),
-              "Window": f"Post-{self.c0530_close.strftime('%H:%M')} POI",
-              "Candle #": c["id"],
-              "Type": "BUY 🟢",
-              "Grade": grade,
-              "Locked Buyer %": f"{b_lock}%",
-              "Locked Seller %": f"{s_lock}%",
-              "Setup": f"Near 01:30–05:30 Low ({self.c0130_low:.{dec}f}) BUY | {conf_note}",
-              "Entry Price": round(cl, dec),
-              "Stop Loss (SL)": sl,
-              "TP 1": round(cl + (1.2 * atr), dec),
-              "TP 2": round(cl + (2.5 * atr), dec),
-              "TP 3": round(cl + (4.0 * atr), dec),
-              "Age_Min": round(age_min, 1),
-              "Is_Live_1Hr": is_live_1hr,
-              "Signal_DT": c["dt_user"].isoformat(),
-          }
+        atr = c["atr"]
+        dec = get_decimals(c["close"])
+        o, h, l, cl = c["open"], c["high"], c["low"], c["close"]
 
-    found = list(latest_by_side.values())
-    found.sort(key=lambda x: x["Signal_DT"])
-    return found
+        # First SELL at Supply POI
+        if not locked_sell:
+          near_supply = (h >= sup_low) and (cl <= sup_high * 1.005) and (cl < o)
+          if near_supply:
+            b_pct, s_pct = _candle_zone_strength(c, "SUPPLY")
+            ok, grade, conf_note = self._evaluate_confirmation(c, "SELL", b_pct, s_pct)
+            if ok:
+              sl = round(max(self.c0130_high, h) + (1.2 * atr), dec)
+              locked_sell = {
+                  "Asset": self.symbol,
+                  "Session": session_key,
+                  "Date": c["dt_user"].strftime("%Y-%m-%d"),
+                  "Time": c["dt_user"].strftime("%H:%M"),
+                  "Window": f"Post-{self.c0530_close.strftime('%H:%M')} Supply POI",
+                  "Candle #": c["id"],
+                  "Type": "SELL 🔴",
+                  "Grade": grade,
+                  "Zone Buyer %": f"{b_pct}%",
+                  "Zone Seller %": f"{s_pct}%",
+                  "Setup": f"1st Supply POI ({self.c0130_high:.{dec}f}) SELL | {conf_note}",
+                  "Entry Price": round(cl, dec),
+                  "Stop Loss (SL)": sl,
+                  "TP 1": round(cl - (1.2 * atr), dec),
+                  "TP 2": round(cl - (2.5 * atr), dec),
+                  "TP 3": round(cl - (4.0 * atr), dec),
+                  "Signal_DT": c["dt_user"].isoformat(),
+              }
+              self.locked_entries[sell_lock_key] = locked_sell
+              self.locks_mutated = True
+
+        # First BUY at Demand POI
+        if not locked_buy:
+          near_demand = (l <= dem_high) and (cl >= dem_low * 0.995) and (cl > o)
+          if near_demand:
+            b_pct, s_pct = _candle_zone_strength(c, "DEMAND")
+            ok, grade, conf_note = self._evaluate_confirmation(c, "BUY", b_pct, s_pct)
+            if ok:
+              sl = round(min(self.c0130_low, l) - (1.2 * atr), dec)
+              locked_buy = {
+                  "Asset": self.symbol,
+                  "Session": session_key,
+                  "Date": c["dt_user"].strftime("%Y-%m-%d"),
+                  "Time": c["dt_user"].strftime("%H:%M"),
+                  "Window": f"Post-{self.c0530_close.strftime('%H:%M')} Demand POI",
+                  "Candle #": c["id"],
+                  "Type": "BUY 🟢",
+                  "Grade": grade,
+                  "Zone Buyer %": f"{b_pct}%",
+                  "Zone Seller %": f"{s_pct}%",
+                  "Setup": f"1st Demand POI ({self.c0130_low:.{dec}f}) BUY | {conf_note}",
+                  "Entry Price": round(cl, dec),
+                  "Stop Loss (SL)": sl,
+                  "TP 1": round(cl + (1.2 * atr), dec),
+                  "TP 2": round(cl + (2.5 * atr), dec),
+                  "TP 3": round(cl + (4.0 * atr), dec),
+                  "Signal_DT": c["dt_user"].isoformat(),
+              }
+              self.locked_entries[buy_lock_key] = locked_buy
+              self.locks_mutated = True
+
+    result = []
+    for item in (locked_sell, locked_buy):
+      if item:
+        rec = dict(item)
+        # Match current candle id if present in visible 5m window
+        matched_c = next((x for x in self.candles_5m if x["dt_user"].isoformat() == rec["Signal_DT"]), None)
+        if matched_c:
+          rec["Candle #"] = matched_c["id"]
+        try:
+          sig_dt = datetime.fromisoformat(rec["Signal_DT"])
+          age_min = (now_user - sig_dt).total_seconds() / 60.0
+        except Exception:
+          age_min = 9999.0
+        rec["Age_Min"] = round(age_min, 1)
+        rec["Is_Live_1Hr"] = (0.0 <= age_min <= self.live_window_min)
+        result.append(rec)
+
+    result.sort(key=lambda x: x["Signal_DT"])
+    return result
 
   def _build_diy_checklist(self):
     buy_cnt = sum(1 for s in self.signals if "BUY" in s["Type"])
@@ -724,18 +637,18 @@ class TWTUltimateEngine:
     self.diy_checklist = [
         {
             "Rule (01:30–05:30 POI)": "1. 4H Closed High / Low",
-            "BUY Side (Near Low)": f"Low: {self.c0130_low:.2f}" if self.c0130_low else "WAIT ⏳",
-            "SELL Side (Near High)": f"High: {self.c0130_high:.2f}" if self.c0130_high else "WAIT ⏳",
+            "BUY Side (Demand POI)": f"Low: {self.c0130_low:.2f}" if self.c0130_low else "WAIT ⏳",
+            "SELL Side (Supply POI)": f"High: {self.c0130_high:.2f}" if self.c0130_high else "WAIT ⏳",
         },
         {
             "Rule (01:30–05:30 POI)": "2. POI Zone Range",
-            "BUY Side (Near Low)": f"{self.demand_poi_zone[0]:.2f} – {self.demand_poi_zone[1]:.2f}" if self.demand_poi_zone else "N/A",
-            "SELL Side (Near High)": f"{self.supply_poi_zone[0]:.2f} – {self.supply_poi_zone[1]:.2f}" if self.supply_poi_zone else "N/A",
+            "BUY Side (Demand POI)": f"{self.demand_poi_zone[0]:.2f} – {self.demand_poi_zone[1]:.2f}" if self.demand_poi_zone else "N/A",
+            "SELL Side (Supply POI)": f"{self.supply_poi_zone[0]:.2f} – {self.supply_poi_zone[1]:.2f}" if self.supply_poi_zone else "N/A",
         },
         {
-            "Rule (01:30–05:30 POI)": "3. Screen BUY / SELL Signals",
-            "BUY Side (Near Low)": f"{buy_cnt} / 1 BUY",
-            "SELL Side (Near High)": f"{sell_cnt} / 1 SELL",
+            "Rule (01:30–05:30 POI)": "3. Locked Entries (Max 1 BUY + 1 SELL)",
+            "BUY Side (Demand POI)": f"{buy_cnt} / 1 BUY (Buyer@Demand)",
+            "SELL Side (Supply POI)": f"{sell_cnt} / 1 SELL (Seller@Supply)",
         },
     ]
 
@@ -791,32 +704,28 @@ class TWTUltimateEngine:
 
     if closed and h_val is not None and l_val is not None:
       rng = max(h_val - l_val, 1e-9)
-      poi_thick = max(rng * 0.25, h_val * 0.0018)
-      self.supply_poi_zone = (h_val - poi_thick, h_val + poi_thick * 0.45)
-      self.demand_poi_zone = (l_val - poi_thick * 0.45, l_val + poi_thick)
+      poi_thick = max(rng * 0.22, h_val * 0.0015)
+      self.supply_poi_zone = (h_val - poi_thick, h_val + poi_thick * 0.4)
+      self.demand_poi_zone = (l_val - poi_thick * 0.4, l_val + poi_thick)
 
-    sigs = self._scan_poi_confluences(now_user)
-    self.all_detected_signals = sigs
-
-    # Chart & Inspector show latest BUY & SELL signals near POI
-    self.signals = sigs
-
-    # Master live dashboard shows only signals within last 1 hour
-    self.live_1hr_signals = [s for s in sigs if s.get("Is_Live_1Hr", False)]
+    locked_sigs = self._scan_and_lock_first_signals(now_user)
+    self.all_detected_signals = locked_sigs
+    self.signals = locked_sigs
+    self.live_1hr_signals = [s for s in locked_sigs if s.get("Is_Live_1Hr", False)]
     self.history = self.live_1hr_signals
     self._build_diy_checklist()
 
 
 # ---------------------------------------------------------
-# MASTER SCANNER (LAST 1 HOUR ON LIVE DASHBOARD)
+# MASTER SCANNER (LAST 1 HOUR LOCKED SIGNALS ON LIVE DASHBOARD)
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("🔥 TWT Master Live Signal Dashboard (Last 1 Hour Only)")
+st.subheader("🔥 TWT Master Live Signal Dashboard (Last 1 Hour | Locked)")
 
-if "twt_strength_locks" not in st.session_state:
-  st.session_state.twt_strength_locks = load_strength_locks()
+if "twt_locked_entries" not in st.session_state:
+  st.session_state.twt_locked_entries = load_locked_entries()
 
-strength_locks = st.session_state.twt_strength_locks
+locked_entries = st.session_state.twt_locked_entries
 locks_updated = False
 
 master_signals = []
@@ -825,20 +734,15 @@ asset_engines = {}
 
 def scan_asset(sym):
   df_1d, df_4h, df_5m, dfs_by_tf = fetch_data(sym)
-  return sym, df_1d, df_4h, df_5m, dfs_by_tf
+  return sym, df_1d, df_4h, df_5m
 
 
-with st.spinner("⚡ Scanning 20+ assets..."):
+with st.spinner("⚡ Scanning 20+ assets (Locking 1st BUY & 1st SELL per asset)..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
-      sym, df_1d, df_4h, df_5m, dfs_by_tf = future.result()
+      sym, df_1d, df_4h, df_5m = future.result()
       if df_1d is not None and df_4h is not None and df_5m is not None:
-        locked_strength, newly_computed = get_or_lock_2130_strength(
-            sym, active_tz, dfs_by_tf, strength_locks
-        )
-        if newly_computed:
-          locks_updated = True
         engine = TWTUltimateEngine(
             df_1d,
             df_4h,
@@ -847,17 +751,18 @@ with st.spinner("⚡ Scanning 20+ assets..."):
             active_tz,
             chop_filter=use_chop_filter,
             strict_confluence=require_full_confluence,
-            strength_info=locked_strength,
-            dfs_by_tf=dfs_by_tf,
+            locked_entries=locked_entries,
             live_window_min=LIVE_WINDOW_MINUTES,
         )
         engine.calculate_and_scan()
+        if engine.locks_mutated:
+          locks_updated = True
         asset_engines[sym] = engine
         if engine.live_1hr_signals:
           master_signals.extend(engine.live_1hr_signals)
 
 if locks_updated:
-  save_strength_locks(strength_locks)
+  save_locked_entries(locked_entries)
 
 ledger_records = load_ledger()
 for eng in asset_engines.values():
@@ -865,19 +770,19 @@ for eng in asset_engines.values():
 save_ledger(ledger_records)
 
 if master_signals:
-  st.success(f"✅ {len(master_signals)} signal(s) from the last 1 hour!")
+  st.success(f"✅ {len(master_signals)} locked signal(s) from the last 1 hour!")
   df_display = pd.DataFrame(master_signals).drop(
-      columns=["Is_Live_1Hr", "Age_Min", "Signal_DT"], errors="ignore"
+      columns=["Is_Live_1Hr", "Age_Min", "Signal_DT", "Session"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ Pichhle 1 hour mein naya signal nahi aaya hai. Neeche asset select karke BUY/SELL signals aur chart dekho.")
+  st.info("ℹ️ Pichhle 1 hour mein koi naya locked signal nahi aaya hai. Neeche asset select karke locked BUY/SELL entries aur ussi asset ki history dekho.")
 
 # ---------------------------------------------------------
 # INDIVIDUAL ASSET INSPECTOR & SELECTED ASSET HISTORY ONLY
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("📊 Individual Asset Inspector & BUY / SELL Signals")
+st.subheader("📊 Individual Asset Inspector & Locked BUY / SELL Entries")
 
 selected_symbol = st.selectbox(
     "🔍 Select Asset to Load Chart & History",
@@ -888,12 +793,7 @@ selected_symbol = st.selectbox(
 if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
-  df_1d, df_4h, df_5m, dfs_by_tf = fetch_data(selected_symbol)
-  locked_strength, newly_computed = get_or_lock_2130_strength(
-      selected_symbol, active_tz, dfs_by_tf, strength_locks
-  )
-  if newly_computed:
-    save_strength_locks(strength_locks)
+  df_1d, df_4h, df_5m, _ = fetch_data(selected_symbol)
   bot = TWTUltimateEngine(
       df_1d,
       df_4h,
@@ -902,11 +802,12 @@ else:
       active_tz,
       chop_filter=use_chop_filter,
       strict_confluence=require_full_confluence,
-      strength_info=locked_strength,
-      dfs_by_tf=dfs_by_tf,
+      locked_entries=locked_entries,
       live_window_min=LIVE_WINDOW_MINUTES,
   )
   bot.calculate_and_scan()
+  if bot.locks_mutated:
+    save_locked_entries(locked_entries)
 
 if bot.diy_checklist:
   st.markdown(f"#### 🧩 {selected_symbol} 01:30–05:30 POI Status")
@@ -924,6 +825,8 @@ selected_asset_history = [
         "Window": r.get("Window", ""),
         "Type": r.get("Type"),
         "Grade": r.get("Grade"),
+        "Zone Buyer %": r.get("Zone Buyer %", "50.0%"),
+        "Zone Seller %": r.get("Zone Seller %", "50.0%"),
         "Entry Price": r.get("Entry Price"),
         "Stop Loss (SL)": r.get("Stop Loss (SL)"),
         "TP 1": r.get("TP 1"),
@@ -947,7 +850,7 @@ if bot.candles_5m:
   with col1:
     st.metric(label=f"Current {selected_symbol} Price", value=f"{curr_p:.2f}")
   with col2:
-    st.metric(label="BUY / SELL Signals Shown", value=len(bot.signals))
+    st.metric(label="Locked Entries (Max 2)", value=len(bot.signals))
   with col3:
     st.metric(label="4H POI Close Time", value=bot.c0530_close.strftime("%H:%M") if bot.c0530_close else "Waiting ⏳")
 
@@ -958,9 +861,9 @@ if bot.candles_5m:
     )
 
   if bot.signals:
-    st.markdown(f"### 📋 BUY & SELL Signals for {selected_symbol}")
+    st.markdown(f"### 🔒 Locked BUY & SELL Entries for {selected_symbol}")
     df_sig_asset = pd.DataFrame(bot.signals).drop(
-        columns=["Is_Live_1Hr", "Age_Min", "Signal_DT"], errors="ignore"
+        columns=["Is_Live_1Hr", "Age_Min", "Signal_DT", "Session"], errors="ignore"
     )
     st.dataframe(df_sig_asset, width="stretch")
 
@@ -1021,7 +924,7 @@ if bot.candles_5m:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m Chart — 01:30–05:30 POI (BUY & SELL Signals)",
+      f"{selected_symbol} 5m Chart — 01:30–05:30 POI (Locked 1 BUY + 1 SELL)",
       color="white",
       fontsize=13,
   )
