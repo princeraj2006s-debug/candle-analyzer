@@ -259,17 +259,17 @@ ledger_start_date = st.sidebar.text_input(
 
 selected_tf = "5m"
 st.sidebar.text("⏱️ Entry Timeframe : 5m (Fixed)")
-st.sidebar.text("🕒 Session Window : Signals Only >= 21:30")
+st.sidebar.text("📊 Priority : Post-21:30 Session Entries")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Master Confluence Rules")
-st.sidebar.text("Anchors  : 01:30 (4H), 05:30 (6H), 17:30 (4H->21:30)")
-st.sidebar.text("No-Entry : 17:30 to 21:30 Blocked")
-st.sidebar.text("Signal   : Only After 21:30 PM")
-st.sidebar.text("17:30 Sup: Separate Supply Zone + Supply Mid")
-st.sidebar.text("17:30 Dem: Separate Demand Zone + Demand Mid")
-st.sidebar.text("High Confl: 01:30/05:30 High Inside 17:30 Supply")
-st.sidebar.text("01:30/05:30 High: SELL Only | Low: BUY Only")
+st.sidebar.text("Primary  : 21:30 4H Mid Point Cross")
+st.sidebar.text("Session  : Only Entries >= 21:30 Start")
+st.sidebar.text("SELL     : Red Candle Crosses Below Mid")
+st.sidebar.text("BUY      : Green Candle Crosses Above Mid")
+st.sidebar.text("Strength : Locked Until Next 21:30 4H")
+st.sidebar.text("Zero-Lag : ZLEMA + ATR Band Trend")
+st.sidebar.text("A-Grade  : HTF + Wick + Zero-Lag")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -501,7 +501,7 @@ def fetch_data(symbol):
         ohlcv_4h = exchange.fetch_ohlcv(sym, timeframe="4h", limit=50)
         ohlcv_1h = exchange.fetch_ohlcv(sym, timeframe="1h", limit=35)
         ohlcv_15m = exchange.fetch_ohlcv(sym, timeframe="15m", limit=35)
-        ohlcv_5m = exchange.fetch_ohlcv(sym, timeframe="5m", limit=350)
+        ohlcv_5m = exchange.fetch_ohlcv(sym, timeframe="5m", limit=300)
         if ohlcv_1d and ohlcv_4h and ohlcv_5m:
           dfs_by_tf = {
               "5m": _df_from_ohlcv(ohlcv_5m),
@@ -517,16 +517,7 @@ def fetch_data(symbol):
 
 
 # ---------------------------------------------------------
-# CUSTOM SESSION & CANDLE ANCHOR ENGINE
-# - 01:30 AM (4H) High & Low (High -> SELL only, Low -> BUY only)
-# - 05:30 AM (6H) High & Low (High -> SELL only, Low -> BUY only)
-# - 17:30 PM (4H -> closes 21:30 PM):
-#     * Separate Supply Zone (High side) + separate Supply Mid Point
-#     * Separate Demand Zone (Low side) + separate Demand Mid Point
-# - If 01:30 or 05:30 High lies inside 17:30 Supply Zone -> check stronger side at 17:30 High
-# - No signals between 17:30 PM and 21:30 PM
-# - Signals ONLY after 21:30 PM
-# - No 21:30 4H demand/supply zone or mid point
+# MULTI-CONFLUENCE MID-CROSS ENGINE (POST-21:30 ENTRIES)
 # ---------------------------------------------------------
 class TWTUltimateEngine:
 
@@ -554,61 +545,66 @@ class TWTUltimateEngine:
     self.signals = []
     self.diy_checklist = []
 
+    # Levels & Zones
     self.prev_high = None
     self.prev_low = None
+    self.demand_box_1 = None
+    self.supply_box_1 = None
+    self.demand_1_mid = None
+    self.supply_1_mid = None
 
-    # 01:30 AM 4H candle High & Low
-    self.c0130_high = None
-    self.c0130_low = None
+    self.demand_box_2 = None
+    self.supply_box_2 = None
 
-    # 05:30 AM 6H candle High & Low
-    self.c0530_6h_high = None
-    self.c0530_6h_low = None
+    self.demand_box_3 = None
+    self.supply_box_3 = None
+    self.demand_3_mid = None
+    self.supply_3_mid = None
 
-    # 17:30 PM 4H candle (closes at 21:30 PM) -> Separate Supply Zone & Demand Zone with separate Mid Points
-    self.c1730_4h_start = None
-    self.c1730_4h_close = None
-    self.c1730_4h_closed = False
-    self.c1730_4h_high = None
-    self.c1730_4h_low = None
+    self.anchor_2130_candle = None
+    self.anchor_2130_start = None
+    self.anchor_0130_start = None
+    self.session_2130_active = False
 
-    self.supply_zone_1730 = None   # (sup_low, sup_high)
-    self.supply_mid_1730 = None    # midpoint of supply zone
-    self.demand_zone_1730 = None   # (dem_low, dem_high)
-    self.demand_mid_1730 = None    # midpoint of demand zone
+  def _build_zones(self, anchor_candle):
+    high_val = anchor_candle["high"]
+    low_val = anchor_candle["low"]
+    rng = high_val - low_val
+    zone_thickness = (rng * 0.25) if rng > 0 else (high_val * 0.002)
+    dem_box = (low_val, low_val + zone_thickness)
+    sup_box = (high_val - zone_thickness, high_val)
+    dem_mid = (dem_box[0] + dem_box[1]) / 2.0
+    sup_mid = (sup_box[0] + sup_box[1]) / 2.0
+    return dem_box, sup_box, dem_mid, sup_mid
 
-    # High confluence inside 17:30 Supply Zone
-    self.high_confluence_in_1730 = False
-    self.confluence_highs_matched = []
+  def _get_2130_session_anchor(self, candles_4h, now_user):
+    """Returns the 21:30 4H anchor candle for the current 21:30 cycle if now_user >= 21:30."""
+    anchor_2130_today = datetime.combine(now_user.date(), time(21, 30), tzinfo=now_user.tzinfo)
+    if now_user >= anchor_2130_today:
+      target_dt = anchor_2130_today
+    else:
+      target_dt = anchor_2130_today - timedelta(days=1)
 
-    # Signal cutoff: only after 21:30 PM
-    self.signal_start_2130 = None
+    matching = [
+        c for c in candles_4h
+        if abs((c["dt_user"] - target_dt).total_seconds()) <= 5400
+    ]
+    if matching:
+      best = min(matching, key=lambda x: abs((x["dt_user"] - target_dt).total_seconds()))
+      return best, target_dt, (now_user >= anchor_2130_today)
 
-  def _buyer_pct(self):
-    return float(self.strength_info.get("buyer_pct", 50.0))
+    if now_user >= anchor_2130_today:
+      # Fallback if exchange 4h timestamp slightly differs around 21:30
+      synthetic = {
+          "date": now_user.date(),
+          "time_obj": time(21, 30),
+          "dt_user": target_dt,
+          "high": float(self.df_4h["High"].iloc[-1]),
+          "low": float(self.df_4h["Low"].iloc[-1]),
+      }
+      return synthetic, target_dt, True
 
-  def _seller_pct(self):
-    return float(self.strength_info.get("seller_pct", 50.0))
-
-  def _is_buyer_strong(self):
-    b_pct = self._buyer_pct()
-    s_pct = self._seller_pct()
-    return (b_pct > s_pct) and (b_pct >= 52.0)
-
-  def _is_seller_strong(self):
-    b_pct = self._buyer_pct()
-    s_pct = self._seller_pct()
-    return (s_pct > b_pct) and (s_pct >= 52.0)
-
-  def _stronger_side_at_1730_high(self):
-    """Returns 'BUY' if Buyer is stronger, 'SELL' if Seller is stronger, else None."""
-    b_pct = self._buyer_pct()
-    s_pct = self._seller_pct()
-    if b_pct > s_pct:
-      return "BUY"
-    if s_pct > b_pct:
-      return "SELL"
-    return None
+    return None, None, False
 
   def _is_choppy(self, c):
     if not self.chop_filter:
@@ -643,12 +639,12 @@ class TWTUltimateEngine:
       htf_ok = bool(locked_info.get("htf_buy_aligned", False))
       zl_5m_ok = c.get("zl_trend") == "BULL"
       zl_htf_ok = bool(locked_info.get("zl_buy_aligned", False))
-      str_ok = self._is_buyer_strong()
+      str_ok = float(locked_info.get("buyer_pct", 50.0)) >= 52.0
     else:
       htf_ok = bool(locked_info.get("htf_sell_aligned", False))
       zl_5m_ok = c.get("zl_trend") == "BEAR"
       zl_htf_ok = bool(locked_info.get("zl_sell_aligned", False))
-      str_ok = self._is_seller_strong()
+      str_ok = float(locked_info.get("seller_pct", 50.0)) >= 52.0
 
     wick_ok = self._check_candle_wick_rejection(c, side)
     conf_score = sum([htf_ok, wick_ok, zl_5m_ok or zl_htf_ok, str_ok])
@@ -675,147 +671,49 @@ class TWTUltimateEngine:
 
     self.diy_checklist = [
         {
-            "Rule (DIY Builder)": "1. 17:30 4H Candle Closed at 21:30 PM",
-            "BUY Side": "READY ✅" if self.c1730_4h_closed else "WAITING 21:30 ⏳",
-            "SELL Side": "READY ✅" if self.c1730_4h_closed else "WAITING 21:30 ⏳",
+            "Rule (DIY Builder)": "1. Leading Trigger (Post-21:30 Mid Cross)",
+            "BUY Side": "ACTIVE ✅" if has_buy else "WAITING ⏳",
+            "SELL Side": "ACTIVE ✅" if has_sell else "WAITING ⏳",
         },
         {
-            "Rule (DIY Builder)": "2. Post-21:30 Entry (17:30-21:30 Blocked)",
-            "BUY Side": "ACTIVE ✅" if has_buy else "WAITING >=21:30 ⏳",
-            "SELL Side": "ACTIVE ✅" if has_sell else "WAITING >=21:30 ⏳",
-        },
-        {
-            "Rule (DIY Builder)": "3. High Inside 17:30 Supply Confluence",
-            "BUY Side": "MATCHED ✅" if self.high_confluence_in_1730 else "NO MATCH ⚪",
-            "SELL Side": "MATCHED ✅" if self.high_confluence_in_1730 else "NO MATCH ⚪",
-        },
-        {
-            "Rule (DIY Builder)": "4. 01:30(4H) & 05:30(6H) High=SELL / Low=BUY Only",
-            "BUY Side": "LOW-ONLY ✅" if self._is_buyer_strong() else "BUY WEAK ❌",
-            "SELL Side": "HIGH-ONLY ✅" if self._is_seller_strong() else "SELL WEAK ❌",
-        },
-        {
-            "Rule (DIY Builder)": "5. Zero-Lag Trend (ZLEMA + ATR Band)",
+            "Rule (DIY Builder)": "2. Zero-Lag Trend (ZLEMA + ATR Band)",
             "BUY Side": "BULLISH ✅" if last_zl == "BULL" else "BEARISH ⏳",
             "SELL Side": "BEARISH ✅" if last_zl == "BEAR" else "BULLISH ⏳",
         },
         {
-            "Rule (DIY Builder)": "6. Zero-Lag MTF (4H + 1D Trend)",
+            "Rule (DIY Builder)": "3. Zero-Lag MTF (4H + 1D Trend)",
             "BUY Side": "ALIGNED ✅" if zl_htf_buy else "NOT ALIGNED ⏳",
             "SELL Side": "ALIGNED ✅" if zl_htf_sell else "NOT ALIGNED ⏳",
         },
         {
-            "Rule (DIY Builder)": "7. HTF Candle Strength (4H + 1D)",
+            "Rule (DIY Builder)": "4. HTF Candle Strength (4H + 1D)",
             "BUY Side": "STRONG ✅" if htf_buy else "MIXED ⏳",
             "SELL Side": "STRONG ✅" if htf_sell else "MIXED ⏳",
         },
         {
-            "Rule (DIY Builder)": "8. Chop / Sideways Filter",
+            "Rule (DIY Builder)": "5. Chop / Sideways Filter",
             "BUY Side": "CLEAR ✅" if self.chop_filter else "OFF ⚪",
             "SELL Side": "CLEAR ✅" if self.chop_filter else "OFF ⚪",
         },
     ]
 
-  def _range_high_low(self, start_dt, end_dt):
-    """Computes high and low between start_dt (inclusive) and end_dt (exclusive)."""
-    highs = []
-    lows = []
-    for c in self.candles_5m:
-      if start_dt <= c["dt_user"] < end_dt:
-        highs.append(c["high"])
-        lows.append(c["low"])
+  def _scan_mid_cross(self, candles, start_dt, sup_mid, dem_mid, label):
+    if start_dt is None or not candles:
+      return None, None
 
-    if not highs and self.dfs_by_tf.get("1h") is not None:
-      df_1h = self.dfs_by_tf["1h"]
-      for dt_utc, r in df_1h.iterrows():
-        dt_u = dt_utc.astimezone(self.user_tz)
-        if start_dt <= dt_u < end_dt:
-          highs.append(float(r["High"]))
-          lows.append(float(r["Low"]))
-
-    if highs and lows:
-      return max(highs), min(lows)
-    return None, None
-
-  def _setup_1730_separate_zones_and_mids(self, h_1730, l_1730):
-    """Creates separate Supply Zone + Supply Mid (from High) and separate Demand Zone + Demand Mid (from Low)."""
-    if h_1730 is None or l_1730 is None:
-      self.supply_zone_1730 = None
-      self.supply_mid_1730 = None
-      self.demand_zone_1730 = None
-      self.demand_mid_1730 = None
-      return
-
-    rng = max(h_1730 - l_1730, 1e-9)
-    z_thick = rng * 0.20
-
-    sup_low = h_1730 - z_thick
-    sup_high = h_1730
-    self.supply_zone_1730 = (sup_low, sup_high)
-    self.supply_mid_1730 = (sup_low + sup_high) / 2.0
-
-    dem_low = l_1730
-    dem_high = l_1730 + z_thick
-    self.demand_zone_1730 = (dem_low, dem_high)
-    self.demand_mid_1730 = (dem_low + dem_high) / 2.0
-
-  def _detect_1730_high_confluence(self):
-    """Checks if 01:30 (4H) High or 05:30 (6H) High lies inside the 17:30 Supply Zone (or 17:30 candle range)."""
-    matched = []
-    if self.c1730_4h_high is None or self.c1730_4h_low is None:
-      return False, matched
-
-    z_low = min(self.c1730_4h_low, self.c1730_4h_high)
-    z_high = max(self.c1730_4h_low, self.c1730_4h_high)
-
-    if self.c0130_high is not None and (z_low <= self.c0130_high <= z_high):
-      matched.append(f"01:30 4H High ({self.c0130_high:.2f})")
-    if self.c0530_6h_high is not None and (z_low <= self.c0530_6h_high <= z_high):
-      matched.append(f"05:30 6H High ({self.c0530_6h_high:.2f})")
-
-    return len(matched) > 0, matched
-
-  def _scan_post_2130_signals(self, candles, after_2130):
-    """
-    Strictly:
-    - No signals between 17:30 and 21:30.
-    - Signals ONLY on candles AT OR AFTER 21:30 PM (`c["dt_user"] >= after_2130`).
-    - If 01:30 (4H) High or 05:30 (6H) High is inside the 17:30 zone:
-        * At 17:30 High, check stronger side (Buyer vs Seller) and give entry on the stronger side.
-    - 01:30 (4H) & 05:30 (6H) High -> SELL only (never BUY at High)
-    - 01:30 (4H) & 05:30 (6H) Low  -> BUY only (never SELL at Low)
-    - 17:30 (4H -> closes 21:30):
-        * Separate Supply Mid cross -> SELL (when Seller strong)
-        * Separate Demand Mid cross -> BUY (when Buyer strong)
-    """
-    if after_2130 is None or not candles:
-      return []
-
-    sub = [c for c in candles if c["dt_user"] >= after_2130]
+    # Only scan candles AT OR AFTER start_dt (21:30 onwards)
+    sub = [c for c in candles if c["dt_user"] >= start_dt]
     if not sub:
-      return []
-
-    buyer_strong = self._is_buyer_strong()
-    seller_strong = self._is_seller_strong()
-    stronger_side = self._stronger_side_at_1730_high()
+      return None, None
 
     buy_sig = None
     sell_sig = None
+    seen_above_sup = False
+    seen_below_dem = False
     prev_c = None
-    seen_above_sup_mid = False
-    seen_below_dem_mid = False
 
-    b_lock = self._buyer_pct()
-    s_lock = self._seller_pct()
-
-    high_sell_levels = [
-        ("01:30 4H High", self.c0130_high),
-        ("05:30 6H High", self.c0530_6h_high),
-    ]
-    low_buy_levels = [
-        ("01:30 4H Low", self.c0130_low),
-        ("05:30 6H Low", self.c0530_6h_low),
-    ]
+    b_lock = float(self.strength_info.get("buyer_pct", 50.0))
+    s_lock = float(self.strength_info.get("seller_pct", 50.0))
 
     for c in sub:
       atr = c["atr"]
@@ -828,119 +726,17 @@ class TWTUltimateEngine:
       choppy = self._is_choppy(c)
       prev_close = prev_c["close"] if prev_c is not None else close_val
 
-      # A) 17:30 High Confluence Entry (when 01:30 or 05:30 High is inside 17:30 range)
-      if self.high_confluence_in_1730 and self.c1730_4h_high is not None and (not choppy):
-        at_1730_high = (high_val >= self.c1730_4h_high) or (prev_c is not None and prev_c["high"] >= self.c1730_4h_high)
-        if at_1730_high:
-          matched_str = ", ".join(self.confluence_highs_matched)
-          if stronger_side == "SELL" and not sell_sig and is_red:
-            grade, conf_note = self._grade_signal(c, "SELL")
-            sl = round(max(self.c1730_4h_high, high_val) + (1.5 * atr), dec)
-            sell_sig = {
-                "Asset": self.symbol,
-                "Date": str(c["date"]),
-                "Time": c["time"],
-                "Candle #": c["id"],
-                "Type": "SELL 🔴",
-                "Grade": grade,
-                "Locked Buyer %": f"{b_lock}%",
-                "Locked Seller %": f"{s_lock}%",
-                "Setup": f"17:30 High Confluence [{matched_str}] -> Seller Stronger SELL ({conf_note})",
-                "Entry Price": round(close_val, dec),
-                "Stop Loss (SL)": sl,
-                "TP 1": round(close_val - (1.2 * atr), dec),
-                "TP 2": round(close_val - (2.5 * atr), dec),
-                "TP 3": round(close_val - (4.0 * atr), dec),
-                "Is_Within_1hr": c["is_within_1hr"],
-                "Signal_DT": c["dt_user"].isoformat(),
-            }
-          elif stronger_side == "BUY" and not buy_sig and is_green:
-            grade, conf_note = self._grade_signal(c, "BUY")
-            sl = round(min(self.c1730_4h_low if self.c1730_4h_low is not None else low_val, low_val) - (1.5 * atr), dec)
-            buy_sig = {
-                "Asset": self.symbol,
-                "Date": str(c["date"]),
-                "Time": c["time"],
-                "Candle #": c["id"],
-                "Type": "BUY 🟢",
-                "Grade": grade,
-                "Locked Buyer %": f"{b_lock}%",
-                "Locked Seller %": f"{s_lock}%",
-                "Setup": f"17:30 High Confluence [{matched_str}] -> Buyer Stronger BUY ({conf_note})",
-                "Entry Price": round(close_val, dec),
-                "Stop Loss (SL)": sl,
-                "TP 1": round(close_val + (1.2 * atr), dec),
-                "TP 2": round(close_val + (2.5 * atr), dec),
-                "TP 3": round(close_val + (4.0 * atr), dec),
-                "Is_Within_1hr": c["is_within_1hr"],
-                "Signal_DT": c["dt_user"].isoformat(),
-            }
-
-      # B) 01:30 (4H) & 05:30 (6H) HIGH -> SELL ONLY (No BUY on High)
-      if not sell_sig and seller_strong and (not choppy) and is_red:
-        for lbl, h_lvl in high_sell_levels:
-          if h_lvl is not None and high_val >= h_lvl:
-            grade, conf_note = self._grade_signal(c, "SELL")
-            sl = round(max(h_lvl, high_val) + (1.5 * atr), dec)
-            sell_sig = {
-                "Asset": self.symbol,
-                "Date": str(c["date"]),
-                "Time": c["time"],
-                "Candle #": c["id"],
-                "Type": "SELL 🔴",
-                "Grade": grade,
-                "Locked Buyer %": f"{b_lock}%",
-                "Locked Seller %": f"{s_lock}%",
-                "Setup": f"{lbl} SELL Only ({conf_note})",
-                "Entry Price": round(close_val, dec),
-                "Stop Loss (SL)": sl,
-                "TP 1": round(close_val - (1.2 * atr), dec),
-                "TP 2": round(close_val - (2.5 * atr), dec),
-                "TP 3": round(close_val - (4.0 * atr), dec),
-                "Is_Within_1hr": c["is_within_1hr"],
-                "Signal_DT": c["dt_user"].isoformat(),
-            }
-            break
-
-      # C) 01:30 (4H) & 05:30 (6H) LOW -> BUY ONLY (No SELL on Low)
-      if not buy_sig and buyer_strong and (not choppy) and is_green:
-        for lbl, l_lvl in low_buy_levels:
-          if l_lvl is not None and low_val <= l_lvl:
-            grade, conf_note = self._grade_signal(c, "BUY")
-            sl = round(min(l_lvl, low_val) - (1.5 * atr), dec)
-            buy_sig = {
-                "Asset": self.symbol,
-                "Date": str(c["date"]),
-                "Time": c["time"],
-                "Candle #": c["id"],
-                "Type": "BUY 🟢",
-                "Grade": grade,
-                "Locked Buyer %": f"{b_lock}%",
-                "Locked Seller %": f"{s_lock}%",
-                "Setup": f"{lbl} BUY Only ({conf_note})",
-                "Entry Price": round(close_val, dec),
-                "Stop Loss (SL)": sl,
-                "TP 1": round(close_val + (1.2 * atr), dec),
-                "TP 2": round(close_val + (2.5 * atr), dec),
-                "TP 3": round(close_val + (4.0 * atr), dec),
-                "Is_Within_1hr": c["is_within_1hr"],
-                "Signal_DT": c["dt_user"].isoformat(),
-            }
-            break
-
-      # D) 17:30 Separate Supply Mid -> SELL logic after 21:30 PM
-      sup_mid = self.supply_mid_1730
-      if sup_mid is not None and (not choppy):
+      if sup_mid is not None:
         if high_val >= sup_mid or prev_close >= sup_mid:
-          seen_above_sup_mid = True
-        red_sup_mid_cross = (
-            seller_strong
-            and is_red
+          seen_above_sup = True
+        red_cross_down = (
+            is_red
             and (close_val < sup_mid)
             and (prev_close >= sup_mid or high_val >= sup_mid)
-            and seen_above_sup_mid
+            and seen_above_sup
+            and (not choppy)
         )
-        if not sell_sig and red_sup_mid_cross:
+        if not sell_sig and red_cross_down:
           grade, conf_note = self._grade_signal(c, "SELL")
           sl = round(max(sup_mid, high_val) + (1.5 * atr), dec)
           sell_sig = {
@@ -952,7 +748,7 @@ class TWTUltimateEngine:
               "Grade": grade,
               "Locked Buyer %": f"{b_lock}%",
               "Locked Seller %": f"{s_lock}%",
-              "Setup": f"17:30 Supply Mid Cross SELL ({conf_note})",
+              "Setup": f"{label} Supply Mid Cross SELL ({conf_note})",
               "Entry Price": round(close_val, dec),
               "Stop Loss (SL)": sl,
               "TP 1": round(close_val - (1.2 * atr), dec),
@@ -962,19 +758,17 @@ class TWTUltimateEngine:
               "Signal_DT": c["dt_user"].isoformat(),
           }
 
-      # E) 17:30 Separate Demand Mid -> BUY logic after 21:30 PM
-      dem_mid = self.demand_mid_1730
-      if dem_mid is not None and (not choppy):
+      if dem_mid is not None:
         if low_val <= dem_mid or prev_close <= dem_mid:
-          seen_below_dem_mid = True
-        green_dem_mid_cross = (
-            buyer_strong
-            and is_green
+          seen_below_dem = True
+        green_cross_up = (
+            is_green
             and (close_val > dem_mid)
             and (prev_close <= dem_mid or low_val <= dem_mid)
-            and seen_below_dem_mid
+            and seen_below_dem
+            and (not choppy)
         )
-        if not buy_sig and green_dem_mid_cross:
+        if not buy_sig and green_cross_up:
           grade, conf_note = self._grade_signal(c, "BUY")
           sl = round(min(dem_mid, low_val) - (1.5 * atr), dec)
           buy_sig = {
@@ -986,7 +780,7 @@ class TWTUltimateEngine:
               "Grade": grade,
               "Locked Buyer %": f"{b_lock}%",
               "Locked Seller %": f"{s_lock}%",
-              "Setup": f"17:30 Demand Mid Cross BUY ({conf_note})",
+              "Setup": f"{label} Demand Mid Cross BUY ({conf_note})",
               "Entry Price": round(close_val, dec),
               "Stop Loss (SL)": sl,
               "TP 1": round(close_val + (1.2 * atr), dec),
@@ -998,9 +792,7 @@ class TWTUltimateEngine:
 
       prev_c = c
 
-    out = [s for s in [buy_sig, sell_sig] if s is not None]
-    out.sort(key=lambda x: x["Candle #"])
-    return out
+    return buy_sig, sell_sig
 
   def calculate_and_scan(self):
     if self.df_1d is None or self.df_1d.empty or self.df_4h is None or self.df_4h.empty or self.df_5m is None or self.df_5m.empty:
@@ -1016,6 +808,47 @@ class TWTUltimateEngine:
 
     self.prev_high = float(prev_candle["High"])
     self.prev_low = float(prev_candle["Low"])
+
+    candles_4h = []
+    for row in self.df_4h.iterrows():
+      dt_utc = row[0]
+      dt_user = dt_utc.astimezone(self.user_tz)
+      r = row[1]
+      candles_4h.append({
+          "date": dt_user.date(),
+          "time_obj": dt_user.time(),
+          "dt_user": dt_user,
+          "high": float(r["High"]),
+          "low": float(r["Low"])
+      })
+
+    latest_date = candles_4h[-1]["date"] if candles_4h else now_user.date()
+    today_4h = [c for c in candles_4h if c["date"] == latest_date]
+    if not today_4h:
+      today_4h = candles_4h
+
+    anchor_1 = min(
+        today_4h,
+        key=lambda x: abs(datetime.combine(latest_date, x["time_obj"]) - datetime.combine(latest_date, time(1, 30))),
+        default=today_4h[0]
+    )
+    self.anchor_0130_start = anchor_1["dt_user"]
+    self.demand_box_1, self.supply_box_1, self.demand_1_mid, self.supply_1_mid = self._build_zones(anchor_1)
+
+    anchor_2_candidates = [c for c in today_4h if c["time_obj"] >= time(5, 0)]
+    if anchor_2_candidates:
+      anchor_2 = min(
+          anchor_2_candidates,
+          key=lambda x: abs(datetime.combine(latest_date, x["time_obj"]) - datetime.combine(latest_date, time(5, 30)))
+      )
+      self.demand_box_2, self.supply_box_2, _, _ = self._build_zones(anchor_2)
+
+    anchor_3, anchor_dt_3, is_post_2130_today = self._get_2130_session_anchor(candles_4h, now_user)
+    self.session_2130_active = is_post_2130_today
+    if anchor_3 and anchor_dt_3:
+      self.anchor_2130_candle = anchor_3
+      self.anchor_2130_start = anchor_dt_3
+      self.demand_box_3, self.supply_box_3, self.demand_3_mid, self.supply_3_mid = self._build_zones(anchor_3)
 
     self.df_5m["TR"] = np.maximum(
         self.df_5m["High"] - self.df_5m["Low"],
@@ -1057,65 +890,33 @@ class TWTUltimateEngine:
           "is_within_1hr": age_min <= 60.0
       })
 
-    # Determine active day anchor for 01:30 (4H) and 05:30 (6H)
-    base_date = now_user.date() if now_user.time() >= time(1, 30) else (now_user.date() - timedelta(days=1))
-    d0130_start = datetime.combine(base_date, time(1, 30), tzinfo=self.user_tz)
-    d0130_end = d0130_start + timedelta(hours=4)
-    self.c0130_high, self.c0130_low = self._range_high_low(d0130_start, d0130_end)
-
-    d0530_start = datetime.combine(base_date, time(5, 30), tzinfo=self.user_tz)
-    d0530_end = d0530_start + timedelta(hours=6)
-    self.c0530_6h_high, self.c0530_6h_low = self._range_high_low(d0530_start, d0530_end)
-
-    # 17:30 PM 4H candle takes 4h to close -> completes at 21:30 PM
-    t1730_today = datetime.combine(now_user.date(), time(17, 30), tzinfo=self.user_tz)
-    t2130_today = datetime.combine(now_user.date(), time(21, 30), tzinfo=self.user_tz)
-
-    if now_user >= t2130_today:
-      self.c1730_4h_start = t1730_today
-      self.c1730_4h_close = t2130_today
-      self.c1730_4h_closed = True
-      self.signal_start_2130 = t2130_today
-      h_1730, l_1730 = self._range_high_low(self.c1730_4h_start, self.c1730_4h_close)
-      self.c1730_4h_high = h_1730
-      self.c1730_4h_low = l_1730
-      self._setup_1730_separate_zones_and_mids(h_1730, l_1730)
-    elif now_user >= t1730_today:
-      # Between 17:30 and 21:30: candle is forming, NO signals between 17:30 and 21:30
-      self.c1730_4h_start = t1730_today
-      self.c1730_4h_close = t2130_today
-      self.c1730_4h_closed = False
-      self.signal_start_2130 = t2130_today
+    if self.anchor_2130_start is not None:
+      final_buy, final_sell = self._scan_mid_cross(
+          self.candles_5m,
+          self.anchor_2130_start,
+          self.supply_3_mid,
+          self.demand_3_mid,
+          "21:30+",
+      )
     else:
-      # Before 17:30 today -> previous day's 17:30->21:30 4H candle is closed
-      prev_d = now_user.date() - timedelta(days=1)
-      self.c1730_4h_start = datetime.combine(prev_d, time(17, 30), tzinfo=self.user_tz)
-      self.c1730_4h_close = datetime.combine(prev_d, time(21, 30), tzinfo=self.user_tz)
-      self.c1730_4h_closed = True
-      self.signal_start_2130 = self.c1730_4h_close
-      h_1730, l_1730 = self._range_high_low(self.c1730_4h_start, self.c1730_4h_close)
-      self.c1730_4h_high = h_1730
-      self.c1730_4h_low = l_1730
-      self._setup_1730_separate_zones_and_mids(h_1730, l_1730)
+      final_buy, final_sell = self._scan_mid_cross(
+          self.candles_5m,
+          self.anchor_0130_start,
+          self.supply_1_mid,
+          self.demand_1_mid,
+          "01:30",
+      )
 
-    if self.c1730_4h_closed:
-      self.high_confluence_in_1730, self.confluence_highs_matched = self._detect_1730_high_confluence()
+    collected = [sig for sig in [final_buy, final_sell] if sig is not None]
+    collected.sort(key=lambda x: x["Candle #"])
 
-    # Strictly no signal between 17:30 and 21:30; signals only >= 21:30
-    in_1730_to_2130_window = (t1730_today <= now_user < t2130_today)
-    if in_1730_to_2130_window or not self.c1730_4h_closed:
-      self.history = []
-      self.signals = []
-    else:
-      collected = self._scan_post_2130_signals(self.candles_5m, self.signal_start_2130)
-      self.history = collected
-      self.signals = [s for s in collected if s.get("Is_Within_1hr", False)]
-
+    self.history = collected
+    self.signals = [s for s in collected if s.get("Is_Within_1hr", False)]
     self._build_diy_checklist()
 
 
 # ---------------------------------------------------------
-# MASTER SCANNER
+# MASTER SCANNER (WITH 21:30 LOCKED STRENGTH)
 # ---------------------------------------------------------
 st.markdown("---")
 st.subheader("🔥 TWT Master Live Signal Dashboard (20+ Assets)")
@@ -1128,6 +929,7 @@ locks_updated = False
 
 master_signals = []
 asset_engines = {}
+asset_fetched_dfs = {}
 
 
 def scan_asset(sym):
@@ -1135,12 +937,13 @@ def scan_asset(sym):
   return sym, df_1d, df_4h, df_5m, dfs_by_tf
 
 
-with st.spinner("⚡ Scanning 20+ assets (01:30 4H + 05:30 6H + 17:30-21:30 Supply & Demand)..."):
+with st.spinner("⚡ Scanning 20+ assets (Zero-Lag MTF + DIY Builder)..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
       sym, df_1d, df_4h, df_5m, dfs_by_tf = future.result()
       if df_1d is not None and df_4h is not None and df_5m is not None:
+        asset_fetched_dfs[sym] = (df_1d, df_4h, df_5m, dfs_by_tf)
         locked_strength, newly_computed = get_or_lock_2130_strength(
             sym, active_tz, dfs_by_tf, strength_locks
         )
@@ -1170,17 +973,17 @@ for eng in asset_engines.values():
 save_ledger(ledger_records)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} post-21:30 PM setup(s) across assets!")
+  st.success(f"✅ Found {len(master_signals)} mid-cross confluence setup(s) across assets!")
   df_display = pd.DataFrame(master_signals).drop(columns=["Is_Within_1hr", "Signal_DT"], errors="ignore")
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active post-21:30 PM setups right now.")
+  st.info("ℹ️ No active mid-cross setups right now.")
 
 # ---------------------------------------------------------
 # MANUAL ASSET INSPECTOR & PER-ASSET LEDGER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("📊 Individual Asset Inspector (01:30 4H + 05:30 6H + 17:30-21:30 Supply & Demand)")
+st.subheader("📊 Individual Asset Inspector (Zero-Lag MTF + DIY Builder)")
 
 selected_symbol = st.selectbox(
     "🔍 Select Asset to Load Chart",
@@ -1211,15 +1014,15 @@ else:
 
 display_strength = bot.strength_info
 session_tag = display_strength.get("session_key", "") if display_strength else ""
-display_title_tag = f"(Cycle: {session_tag})" if session_tag else ""
+display_title_tag = f"(Locked Until Next 21:30 4H | Cycle: {session_tag})" if session_tag else "(Locked Until Next 21:30 4H)"
 
 if display_strength and display_strength.get("rows"):
   st.markdown(f"#### 💪 {selected_symbol} Buyer vs Seller Strength + Zero-Lag MTF {display_title_tag}")
   s_col1, s_col2, s_col3 = st.columns(3)
   with s_col1:
-    st.metric("🟢 Buyer Strength", f"{display_strength['buyer_pct']}%")
+    st.metric("🟢 Buyer Strength (Locked)", f"{display_strength['buyer_pct']}%")
   with s_col2:
-    st.metric("🔴 Seller Strength", f"{display_strength['seller_pct']}%")
+    st.metric("🔴 Seller Strength (Locked)", f"{display_strength['seller_pct']}%")
   with s_col3:
     st.metric("⚡ Zyada Faydemand Side", display_strength["verdict"])
 
@@ -1240,38 +1043,24 @@ if bot.candles_5m:
   with col1:
     st.metric(label=f"Current {selected_symbol} Price", value=f"{curr_p:.2f}")
   with col2:
-    st.metric(label="Post-21:30 Signals", value=len(bot.history))
+    st.metric(label="Locked Signals", value=len(bot.history))
   with col3:
     st.metric(label="Timezone", value=selected_tz_name)
 
-  info_parts = []
-  if bot.c0130_high is not None and bot.c0130_low is not None:
-    info_parts.append(f"01:30(4H) H:{bot.c0130_high:.2f} / L:{bot.c0130_low:.2f}")
-  if bot.c0530_6h_high is not None and bot.c0530_6h_low is not None:
-    info_parts.append(f"05:30(6H) H:{bot.c0530_6h_high:.2f} / L:{bot.c0530_6h_low:.2f}")
-  if bot.c1730_4h_closed and bot.supply_zone_1730 and bot.demand_zone_1730:
-    info_parts.append(
-        f"17:30 Supply [{bot.supply_zone_1730[0]:.2f}-{bot.supply_zone_1730[1]:.2f}] Mid:{bot.supply_mid_1730:.2f}"
+  if bot.anchor_2130_candle:
+    st.caption(
+        f"🕒 21:30 4H Session Start ({bot.anchor_2130_start.strftime('%Y-%m-%d %H:%M')}) — "
+        f"Supply 3 Mid: {bot.supply_3_mid:.4f} | Demand 3 Mid: {bot.demand_3_mid:.4f}"
     )
-    info_parts.append(
-        f"17:30 Demand [{bot.demand_zone_1730[0]:.2f}-{bot.demand_zone_1730[1]:.2f}] Mid:{bot.demand_mid_1730:.2f}"
-    )
-  if bot.high_confluence_in_1730:
-    info_parts.append("High Confluence Inside 17:30: " + ", ".join(bot.confluence_highs_matched))
-  if info_parts:
-    st.caption("🕒 Marked Levels & Zones — " + " | ".join(info_parts))
-
-  if not bot.c1730_4h_closed:
-    st.warning("⏳ 17:30 PM se 21:30 PM tak 4H candle close ka wait hai — is beech koi signal nahi aayega.")
 
   if bot.history:
-    st.markdown(f"### 📋 Post-21:30 PM Entries Feed for {selected_symbol}")
+    st.markdown(f"### 📋 Locked Entries Feed for {selected_symbol}")
     df_history = pd.DataFrame(bot.history).drop(columns=["Is_Within_1hr", "Signal_DT"], errors="ignore")
     st.dataframe(df_history, width="stretch")
   else:
-    st.info("ℹ️ 21:30 PM ke baad abhi tak koi valid BUY/SELL entry nahi aayi hai.")
+    st.info(f"ℹ️ 21:30 ke baad ({bot.anchor_2130_start.strftime('%H:%M') if bot.anchor_2130_start else '21:30'}) abhi tak koi naya BUY/SELL mid-cross entry nahi bana hai.")
 
-  # --- PLOT CHART ---
+  # --- PLOT CHART WITH ALL LEVELS + ZERO-LAG LINE ---
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
   for c in bot.candles_5m:
     col = "#26a69a" if c["close"] >= c["open"] else "#ef5350"
@@ -1288,42 +1077,39 @@ if bot.candles_5m:
   if c_ids and zl_vals:
     ax.plot(c_ids, zl_vals, color="#00e5ff", linewidth=1.6, label="Zero-Lag Trend Line (ZLEMA)")
 
-  # 01:30 (4H) High & Low
-  if bot.c0130_high is not None:
-    ax.axhline(bot.c0130_high, color="#ff5252", linestyle="-.", linewidth=1.4, label=f"01:30(4H) High [SELL]: {bot.c0130_high:.2f}")
-  if bot.c0130_low is not None:
-    ax.axhline(bot.c0130_low, color="#00e676", linestyle="-.", linewidth=1.4, label=f"01:30(4H) Low [BUY]: {bot.c0130_low:.2f}")
-
-  # 05:30 (6H) High & Low
-  if bot.c0530_6h_high is not None:
-    ax.axhline(bot.c0530_6h_high, color="#ff8a80", linestyle=":", linewidth=1.5, label=f"05:30(6H) High [SELL]: {bot.c0530_6h_high:.2f}")
-  if bot.c0530_6h_low is not None:
-    ax.axhline(bot.c0530_6h_low, color="#69f0ae", linestyle=":", linewidth=1.5, label=f"05:30(6H) Low [BUY]: {bot.c0530_6h_low:.2f}")
-
-  # 17:30 -> 21:30 (4H): Separate Supply Zone + Supply Mid & Separate Demand Zone + Demand Mid
-  if bot.c1730_4h_closed:
-    if bot.supply_zone_1730 is not None:
-      s_bot, s_top = bot.supply_zone_1730
-      ax.axhspan(s_bot, s_top, color="#e53935", alpha=0.24, label=f"17:30 Supply Zone [{s_bot:.2f} - {s_top:.2f}]")
-    if bot.supply_mid_1730 is not None:
-      ax.axhline(bot.supply_mid_1730, color="#ff8a80", linestyle="--", linewidth=1.5, label=f"17:30 Supply Mid: {bot.supply_mid_1730:.2f}")
-
-    if bot.demand_zone_1730 is not None:
-      d_bot, d_top = bot.demand_zone_1730
-      ax.axhspan(d_bot, d_top, color="#00897b", alpha=0.24, label=f"17:30 Demand Zone [{d_bot:.2f} - {d_top:.2f}]")
-    if bot.demand_mid_1730 is not None:
-      ax.axhline(bot.demand_mid_1730, color="#80cbc4", linestyle="--", linewidth=1.5, label=f"17:30 Demand Mid: {bot.demand_mid_1730:.2f}")
-
-  if bot.signal_start_2130:
-    c_2130_list = [c for c in bot.candles_5m if c["dt_user"] >= bot.signal_start_2130]
+  if bot.anchor_2130_start:
+    c_2130_list = [c for c in bot.candles_5m if c["dt_user"] >= bot.anchor_2130_start]
     if c_2130_list:
       first_2130_id = c_2130_list[0]["id"]
-      ax.axvline(first_2130_id, color="#ffd54f", linestyle=":", linewidth=1.5, label=f"21:30 Signal Start ({bot.signal_start_2130.strftime('%m-%d %H:%M')})")
+      ax.axvline(first_2130_id, color="#ffd54f", linestyle=":", linewidth=1.5, label=f"21:30 Candle Start ({bot.anchor_2130_start.strftime('%m-%d %H:%M')})")
+
+  if bot.demand_box_1:
+    ax.axhspan(bot.demand_box_1[0], bot.demand_box_1[1], color="#00897b", alpha=0.30, label="Demand 1 (01:30)")
+  if bot.demand_1_mid is not None:
+    ax.axhline(bot.demand_1_mid, color="#80cbc4", linestyle="-.", linewidth=1.1, label=f"Demand 1 Mid: {bot.demand_1_mid:.2f}")
+  if bot.supply_box_1:
+    ax.axhspan(bot.supply_box_1[0], bot.supply_box_1[1], color="#e53935", alpha=0.30, label="Supply 1 (01:30)")
+  if bot.supply_1_mid is not None:
+    ax.axhline(bot.supply_1_mid, color="#ef9a9a", linestyle="-.", linewidth=1.1, label=f"Supply 1 Mid: {bot.supply_1_mid:.2f}")
+
+  if bot.demand_box_2:
+    ax.axhspan(bot.demand_box_2[0], bot.demand_box_2[1], color="#26a69a", alpha=0.18, label="Demand 2 (05:30)")
+  if bot.supply_box_2:
+    ax.axhspan(bot.supply_box_2[0], bot.supply_box_2[1], color="#ff7043", alpha=0.18, label="Supply 2 (05:30)")
+
+  if bot.demand_box_3:
+    ax.axhspan(bot.demand_box_3[0], bot.demand_box_3[1], color="#29b6f6", alpha=0.20, label="Demand 3 (21:30)")
+  if bot.demand_3_mid is not None:
+    ax.axhline(bot.demand_3_mid, color="#81d4fa", linestyle="-.", linewidth=1.1, label=f"Demand 3 Mid: {bot.demand_3_mid:.2f}")
+  if bot.supply_box_3:
+    ax.axhspan(bot.supply_box_3[0], bot.supply_box_3[1], color="#ab47bc", alpha=0.20, label="Supply 3 (21:30)")
+  if bot.supply_3_mid is not None:
+    ax.axhline(bot.supply_3_mid, color="#ce93d8", linestyle="-.", linewidth=1.1, label=f"Supply 3 Mid: {bot.supply_3_mid:.2f}")
 
   if bot.prev_high is not None:
-    ax.axhline(bot.prev_high, color="#ff9100", linestyle="--", linewidth=1.3, label=f"Prev Day High: {bot.prev_high}")
+    ax.axhline(bot.prev_high, color="#ff9100", linestyle="--", linewidth=2, label=f"Prev Day High: {bot.prev_high}")
   if bot.prev_low is not None:
-    ax.axhline(bot.prev_low, color="#29b6f6", linestyle="--", linewidth=1.3, label=f"Prev Day Low: {bot.prev_low}")
+    ax.axhline(bot.prev_low, color="#00e676", linestyle="--", linewidth=2, label=f"Prev Day Low: {bot.prev_low}")
 
   lows = [c["low"] for c in bot.candles_5m]
   highs = [c["high"] for c in bot.candles_5m]
@@ -1350,7 +1136,7 @@ if bot.candles_5m:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m Chart — Separate 17:30 Supply & Demand Zones + Mids",
+      f"{selected_symbol} 5m Chart — Ultimate Multi-Confluence Strategy",
       color="white",
       fontsize=14,
   )
