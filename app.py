@@ -32,7 +32,7 @@ count = st_autorefresh(interval=30000, key="twt_multi_refresh")
 
 st.title("⚡ TRADE WITH TUCKYAA — 4H POI Engine (Max 1 BUY + 1 SELL)")
 
-LEDGER_FILE = Path("twt_signals_ledger.json")
+LEDGER_FILE = Path("twt_signals_ledger_v2.json")
 STRENGTH_LOCK_FILE = Path("twt_strength_locks.json")
 
 
@@ -255,16 +255,6 @@ require_full_confluence = st.sidebar.checkbox(
     "🎯 Strict All-Confluence Filter", value=False
 )
 
-dashboard_max_age_min = float(
-    st.sidebar.slider(
-        "⏱️ Dashboard Recent Signal Window (Minutes)",
-        min_value=30,
-        max_value=240,
-        value=120,
-        step=15,
-    )
-)
-
 ledger_start_date = st.sidebar.text_input(
     "📅 Ledger Start Date (YYYY-MM-DD)", value="2026-11-01"
 )
@@ -272,9 +262,9 @@ ledger_start_date = st.sidebar.text_input(
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### 4H POI + Confluence Rules")
 st.sidebar.text("Anchor   : 01:30→05:30 4H Candle")
-st.sidebar.text("POI High : Supply POI (SELL Only Near High)")
-st.sidebar.text("POI Low  : Demand POI (BUY Only Near Low)")
-st.sidebar.text("Limit    : Max 1 BUY + 1 SELL Per Asset")
+st.sidebar.text("POI High : Supply POI (Max 1 SELL)")
+st.sidebar.text("POI Low  : Demand POI (Max 1 BUY)")
+st.sidebar.text("Total/Asset: Max 2 Signals (1 BUY + 1 SELL)")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -517,7 +507,7 @@ def fetch_data(symbol):
 
 
 # ---------------------------------------------------------
-# 01:30 -> 05:30 4H POI ENGINE (MAX 1 BUY + 1 SELL)
+# 01:30 -> 05:30 4H POI ENGINE (LATEST 1 BUY + LATEST 1 SELL)
 # ---------------------------------------------------------
 class TWTUltimateEngine:
 
@@ -532,7 +522,6 @@ class TWTUltimateEngine:
       strict_confluence=False,
       strength_info=None,
       dfs_by_tf=None,
-      dashboard_max_age_min=120.0,
   ):
     self.df_1d = df_1d
     self.df_4h = df_4h
@@ -543,7 +532,6 @@ class TWTUltimateEngine:
     self.strict_confluence = strict_confluence
     self.strength_info = strength_info or {}
     self.dfs_by_tf = dfs_by_tf or {}
-    self.dashboard_max_age_min = dashboard_max_age_min
 
     self.candles_5m = []
     self.all_detected_signals = []
@@ -566,8 +554,8 @@ class TWTUltimateEngine:
     atr_sma = c["atr_sma"]
     ema = c["ema50"]
     close_val = c["close"]
-    low_atr = (atr_sma is not None and atr_sma > 0 and atr < (0.65 * atr_sma))
-    near_ema_chop = (atr > 0 and abs(close_val - ema) < (0.12 * atr))
+    low_atr = (atr_sma is not None and atr_sma > 0 and atr < (0.60 * atr_sma))
+    near_ema_chop = (atr > 0 and abs(close_val - ema) < (0.10 * atr))
     return low_atr or near_ema_chop
 
   def _check_candle_wick_rejection(self, c, side):
@@ -581,10 +569,10 @@ class TWTUltimateEngine:
 
     if side == "SELL":
       upper_wick = max(0.0, h - body_top)
-      return (cl < o) and ((upper_wick / rng) >= 0.10 or upper_wick > 0)
+      return (cl < o) and ((upper_wick / rng) >= 0.05 or upper_wick > 0)
     else:
       lower_wick = max(0.0, body_bot - l)
-      return (cl > o) and ((lower_wick / rng) >= 0.10 or lower_wick > 0)
+      return (cl > o) and ((lower_wick / rng) >= 0.05 or lower_wick > 0)
 
   def _evaluate_all_confluences(self, c, side):
     locked_info = self.strength_info
@@ -592,12 +580,12 @@ class TWTUltimateEngine:
       htf_ok = bool(locked_info.get("htf_buy_aligned", False))
       zl_5m_ok = c.get("zl_trend") == "BULL"
       zl_htf_ok = bool(locked_info.get("zl_buy_aligned", False))
-      str_ok = float(locked_info.get("buyer_pct", 50.0)) >= 48.0
+      str_ok = float(locked_info.get("buyer_pct", 50.0)) >= 45.0
     else:
       htf_ok = bool(locked_info.get("htf_sell_aligned", False))
       zl_5m_ok = c.get("zl_trend") == "BEAR"
       zl_htf_ok = bool(locked_info.get("zl_sell_aligned", False))
-      str_ok = float(locked_info.get("seller_pct", 50.0)) >= 48.0
+      str_ok = float(locked_info.get("seller_pct", 50.0)) >= 45.0
 
     wick_ok = self._check_candle_wick_rejection(c, side)
     zl_ok = zl_5m_ok or zl_htf_ok
@@ -640,8 +628,8 @@ class TWTUltimateEngine:
 
   def _scan_poi_confluences(self, now_user):
     """
-    Finds at most 1 SELL (near 01:30-05:30 High POI) and 1 BUY (near 01:30-05:30 Low POI).
-    Never enters in the middle of the range.
+    Keeps the LATEST 1 SELL (near 01:30-05:30 High POI) and LATEST 1 BUY (near 01:30-05:30 Low POI).
+    Total per asset: max 2 signals (1 BUY + 1 SELL).
     """
     if not self.c0130_closed or self.c0530_close is None:
       return []
@@ -655,11 +643,10 @@ class TWTUltimateEngine:
     b_lock = float(self.strength_info.get("buyer_pct", 50.0))
     s_lock = float(self.strength_info.get("seller_pct", 50.0))
 
-    found = []
-    seen_sides = set()
+    latest_by_side = {}
 
-    for c in sub:
-      if len(seen_sides) >= 2:
+    for c in reversed(sub):
+      if len(latest_by_side) >= 2:
         break
 
       if self._is_choppy(c):
@@ -668,15 +655,13 @@ class TWTUltimateEngine:
       atr = c["atr"]
       dec = get_decimals(c["close"])
       o, h, l, cl = c["open"], c["high"], c["low"], c["close"]
-      age_min = (now_user - c["dt_user"]).total_seconds() / 60.0
 
-      # SELL near 01:30-05:30 High (Supply POI)
-      near_high_poi = (h >= sup_low) and (cl <= sup_high * 1.003)
-      if "SELL" not in seen_sides and near_high_poi and (cl < o):
+      near_high_poi = (h >= sup_low) and (cl <= sup_high * 1.005)
+      if "SELL" not in latest_by_side and near_high_poi and (cl < o):
         ok, grade, conf_note = self._evaluate_all_confluences(c, "SELL")
         if ok:
           sl = round(max(self.c0130_high, h) + (1.2 * atr), dec)
-          found.append({
+          latest_by_side["SELL"] = {
               "Asset": self.symbol,
               "Date": str(c["date"]),
               "Time": c["time"],
@@ -692,20 +677,16 @@ class TWTUltimateEngine:
               "TP 1": round(cl - (1.2 * atr), dec),
               "TP 2": round(cl - (2.5 * atr), dec),
               "TP 3": round(cl - (4.0 * atr), dec),
-              "Age_Min": round(age_min, 1),
-              "Is_Recent": age_min <= self.dashboard_max_age_min,
               "Signal_DT": c["dt_user"].isoformat(),
-          })
-          seen_sides.add("SELL")
+          }
           continue
 
-      # BUY near 01:30-05:30 Low (Demand POI)
-      near_low_poi = (l <= dem_high) and (cl >= dem_low * 0.997)
-      if "BUY" not in seen_sides and near_low_poi and (cl > o):
+      near_low_poi = (l <= dem_high) and (cl >= dem_low * 0.995)
+      if "BUY" not in latest_by_side and near_low_poi and (cl > o):
         ok, grade, conf_note = self._evaluate_all_confluences(c, "BUY")
         if ok:
           sl = round(min(self.c0130_low, l) - (1.2 * atr), dec)
-          found.append({
+          latest_by_side["BUY"] = {
               "Asset": self.symbol,
               "Date": str(c["date"]),
               "Time": c["time"],
@@ -721,12 +702,11 @@ class TWTUltimateEngine:
               "TP 1": round(cl + (1.2 * atr), dec),
               "TP 2": round(cl + (2.5 * atr), dec),
               "TP 3": round(cl + (4.0 * atr), dec),
-              "Age_Min": round(age_min, 1),
-              "Is_Recent": age_min <= self.dashboard_max_age_min,
               "Signal_DT": c["dt_user"].isoformat(),
-          })
-          seen_sides.add("BUY")
+          }
 
+    found = list(latest_by_side.values())
+    found.sort(key=lambda x: x["Candle #"])
     return found
 
   def _build_diy_checklist(self):
@@ -739,12 +719,12 @@ class TWTUltimateEngine:
             "SELL Side (Near High)": f"High: {self.c0130_high:.2f}" if self.c0130_high else "WAIT ⏳",
         },
         {
-            "Rule (01:30–05:30 POI)": "2. POI Zone Range (No Mid Entries)",
+            "Rule (01:30–05:30 POI)": "2. POI Zone Range",
             "BUY Side (Near Low)": f"{self.demand_poi_zone[0]:.2f} – {self.demand_poi_zone[1]:.2f}" if self.demand_poi_zone else "N/A",
             "SELL Side (Near High)": f"{self.supply_poi_zone[0]:.2f} – {self.supply_poi_zone[1]:.2f}" if self.supply_poi_zone else "N/A",
         },
         {
-            "Rule (01:30–05:30 POI)": "3. Dashboard Signals (Max 1 BUY + 1 SELL)",
+            "Rule (01:30–05:30 POI)": "3. Active Signals (Max 1 BUY + 1 SELL)",
             "BUY Side (Near Low)": f"{buy_cnt} / 1 BUY",
             "SELL Side (Near High)": f"{sell_cnt} / 1 SELL",
         },
@@ -804,25 +784,22 @@ class TWTUltimateEngine:
 
     if closed and h_val is not None and l_val is not None:
       rng = max(h_val - l_val, 1e-9)
-      poi_thick = max(rng * 0.18, h_val * 0.0012)
+      poi_thick = max(rng * 0.22, h_val * 0.0015)
       self.supply_poi_zone = (h_val - poi_thick, h_val + poi_thick * 0.4)
       self.demand_poi_zone = (l_val - poi_thick * 0.4, l_val + poi_thick)
 
     sigs = self._scan_poi_confluences(now_user)
-    sigs.sort(key=lambda x: x["Candle #"])
-
     self.all_detected_signals = sigs
-    recent_sigs = [s for s in sigs if s.get("Is_Recent", False)]
-    self.signals = recent_sigs
-    self.history = recent_sigs
+    self.signals = sigs
+    self.history = sigs
     self._build_diy_checklist()
 
 
 # ---------------------------------------------------------
-# MASTER SCANNER
+# MASTER SCANNER (MAX 1 BUY + 1 SELL PER ASSET)
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader(f"🔥 TWT Master Live Signal Dashboard (Last {int(dashboard_max_age_min)} Min | Max 1 BUY + 1 SELL)")
+st.subheader("🔥 TWT Master Live Signal Dashboard (Max 1 BUY + 1 SELL Per Asset)")
 
 if "twt_strength_locks" not in st.session_state:
   st.session_state.twt_strength_locks = load_strength_locks()
@@ -839,7 +816,7 @@ def scan_asset(sym):
   return sym, df_1d, df_4h, df_5m, dfs_by_tf
 
 
-with st.spinner("⚡ Scanning 20+ assets on 01:30–05:30 4H High/Low POI..."):
+with st.spinner("⚡ Scanning 20+ assets (Max 1 BUY + 1 SELL per asset)..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
@@ -860,7 +837,6 @@ with st.spinner("⚡ Scanning 20+ assets on 01:30–05:30 4H High/Low POI..."):
             strict_confluence=require_full_confluence,
             strength_info=locked_strength,
             dfs_by_tf=dfs_by_tf,
-            dashboard_max_age_min=dashboard_max_age_min,
         )
         engine.calculate_and_scan()
         asset_engines[sym] = engine
@@ -876,13 +852,11 @@ for eng in asset_engines.values():
 save_ledger(ledger_records)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} recent POI signal(s)!")
-  df_display = pd.DataFrame(master_signals).drop(
-      columns=["Is_Recent", "Age_Min", "Signal_DT"], errors="ignore"
-  )
+  st.success(f"✅ Found {len(master_signals)} POI signal(s)!")
+  df_display = pd.DataFrame(master_signals).drop(columns=["Signal_DT"], errors="ignore")
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ Is recent window mein kisi asset par 01:30–05:30 POI signal nahi aaya. Purane signals neeche History mein hain.")
+  st.info("ℹ️ Abhi kisi asset par naya POI BUY/SELL signal active nahi hai.")
 
 # ---------------------------------------------------------
 # MANUAL ASSET INSPECTOR & FULL TRADE HISTORY
@@ -915,7 +889,6 @@ else:
       strict_confluence=require_full_confluence,
       strength_info=locked_strength,
       dfs_by_tf=dfs_by_tf,
-      dashboard_max_age_min=dashboard_max_age_min,
   )
   bot.calculate_and_scan()
 
@@ -957,7 +930,7 @@ if bot.candles_5m:
   with col1:
     st.metric(label=f"Current {selected_symbol} Price", value=f"{curr_p:.2f}")
   with col2:
-    st.metric(label="Dashboard Signals", value=len(bot.signals))
+    st.metric(label="Active Signals (Max 2)", value=len(bot.signals))
   with col3:
     st.metric(label="4H POI Close Time", value=bot.c0530_close.strftime("%H:%M") if bot.c0530_close else "Waiting ⏳")
 
@@ -968,10 +941,8 @@ if bot.candles_5m:
     )
 
   if bot.signals:
-    st.markdown(f"### 📋 Recent Signals for {selected_symbol}")
-    df_history = pd.DataFrame(bot.signals).drop(
-        columns=["Is_Recent", "Age_Min", "Signal_DT"], errors="ignore"
-    )
+    st.markdown(f"### 📋 Active Signals for {selected_symbol} (Max 1 BUY + 1 SELL)")
+    df_history = pd.DataFrame(bot.signals).drop(columns=["Signal_DT"], errors="ignore")
     st.dataframe(df_history, width="stretch")
 
   # --- PLOT CHART ---
