@@ -258,13 +258,15 @@ ledger_start_date = st.sidebar.text_input(
 )
 
 selected_tf = "5m"
-st.sidebar.text("⏱️ Entry Timeframe : 5m (Fixed)")
-st.sidebar.text("📊 Priority : Post-21:30 Session Entries")
+st.sidebar.text("⏱️ Entry Timeframe : 5m (Post-22:00)")
+st.sidebar.text("📊 Flow : 4H → 1H (21-22h) → 15M → 5M")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Master Confluence Rules")
-st.sidebar.text("Primary  : 21:30 4H Mid Point Cross")
-st.sidebar.text("Session  : Only Entries >= 21:30 Start")
+st.sidebar.text("4H       : Major High & Low")
+st.sidebar.text("1H 21-22 : Supply (High) & Demand (Low)")
+st.sidebar.text("15M      : Zone Reaction Confirmation")
+st.sidebar.text("5M Entry : Only >= 22:00 After 1H Close")
 st.sidebar.text("SELL     : Red Candle Crosses Below Mid")
 st.sidebar.text("BUY      : Green Candle Crosses Above Mid")
 st.sidebar.text("Strength : Locked Until Next 21:30 4H")
@@ -517,7 +519,7 @@ def fetch_data(symbol):
 
 
 # ---------------------------------------------------------
-# MULTI-CONFLUENCE MID-CROSS ENGINE (POST-21:30 ENTRIES)
+# MULTI-CONFLUENCE ENGINE (4H -> 1H [21:00-22:00] -> 15M -> 5M [>=22:00])
 # ---------------------------------------------------------
 class TWTUltimateEngine:
 
@@ -545,6 +547,10 @@ class TWTUltimateEngine:
     self.signals = []
     self.diy_checklist = []
 
+    # 4H Major High & Low
+    self.h4_major_high = None
+    self.h4_major_low = None
+
     # Levels & Zones
     self.prev_high = None
     self.prev_low = None
@@ -561,7 +567,19 @@ class TWTUltimateEngine:
     self.demand_3_mid = None
     self.supply_3_mid = None
 
-    # 17:30 4H candle (closes 4h later at 21:29) -> High (Supply) & Low (Demand) zones + zone mids
+    # 21:00 -> 22:00 1H candle (Supply = High, Demand = Low) & Post-22:00 5m Entry
+    self.c2100_1h_closed = False
+    self.c2100_1h_high = None
+    self.c2100_1h_low = None
+    self.c2100_supply_zone = None
+    self.c2100_demand_zone = None
+    self.c2100_supply_mid = None
+    self.c2100_demand_mid = None
+    self.entry_2200_start = None
+    self.m15_buy_reaction = False
+    self.m15_sell_reaction = False
+
+    # Keep 17:30->21:29 fields for compatibility
     self.c1730_4h_closed = False
     self.c1730_4h_supply_high = None
     self.c1730_4h_demand_low = None
@@ -587,7 +605,6 @@ class TWTUltimateEngine:
     return dem_box, sup_box, dem_mid, sup_mid
 
   def _get_2130_session_anchor(self, candles_4h, now_user):
-    """Returns the 21:30 4H anchor candle for the current 21:30 cycle if now_user >= 21:30."""
     anchor_2130_today = datetime.combine(now_user.date(), time(21, 30), tzinfo=now_user.tzinfo)
     if now_user >= anchor_2130_today:
       target_dt = anchor_2130_today
@@ -614,48 +631,76 @@ class TWTUltimateEngine:
 
     return None, None, False
 
-  def _compute_1730_4h_close_2129_levels(self, now_user):
-    """17:30 4H candle runs 17:30 -> 21:29 (4h); once closed at/after 21:29, marks High (Supply) & Low (Demand) zones + mids."""
-    t1730_today = datetime.combine(now_user.date(), time(17, 30), tzinfo=now_user.tzinfo)
-    t2129_today = datetime.combine(now_user.date(), time(21, 29), tzinfo=now_user.tzinfo)
+  def _compute_2100_1h_and_2200_entry(self, now_user):
+    """21:00 -> 22:00 1H candle High (Supply) & Low (Demand) zones + mids; entries allowed only >= 22:00."""
+    t2100_today = datetime.combine(now_user.date(), time(21, 0), tzinfo=now_user.tzinfo)
+    t2200_today = datetime.combine(now_user.date(), time(22, 0), tzinfo=now_user.tzinfo)
 
-    if now_user >= t2129_today:
-      start_dt = t1730_today
-      end_dt = t2129_today
+    if now_user >= t2200_today:
+      candle_start = t2100_today
+      entry_start = t2200_today
       closed = True
-    elif now_user >= t1730_today:
-      return False, None, None, None, None, None, None
+    elif now_user >= t2100_today:
+      return False, None, None, None, None, None, None, None
     else:
       prev_d = now_user.date() - timedelta(days=1)
-      start_dt = datetime.combine(prev_d, time(17, 30), tzinfo=now_user.tzinfo)
-      end_dt = datetime.combine(prev_d, time(21, 29), tzinfo=now_user.tzinfo)
+      candle_start = datetime.combine(prev_d, time(21, 0), tzinfo=now_user.tzinfo)
+      entry_start = datetime.combine(prev_d, time(22, 0), tzinfo=now_user.tzinfo)
       closed = True
 
-    highs = []
-    lows = []
-    for c in self.candles_5m:
-      if start_dt <= c["dt_user"] <= end_dt:
-        highs.append(c["high"])
-        lows.append(c["low"])
-
-    if not highs and self.dfs_by_tf.get("1h") is not None:
-      for dt_utc, r in self.dfs_by_tf["1h"].iterrows():
+    high_val = None
+    low_val = None
+    df_1h = self.dfs_by_tf.get("1h")
+    if df_1h is not None and not df_1h.empty:
+      for dt_utc, r in df_1h.iterrows():
         dt_u = dt_utc.astimezone(self.user_tz)
-        if start_dt <= dt_u <= end_dt:
-          highs.append(float(r["High"]))
-          lows.append(float(r["Low"]))
+        if abs((dt_u - candle_start).total_seconds()) <= 1800:
+          high_val = float(r["High"])
+          low_val = float(r["Low"])
+          break
 
-    if highs and lows:
-      high_val = max(highs)
-      low_val = min(lows)
+    if high_val is None or low_val is None:
+      sub_5m = [c for c in self.candles_5m if candle_start <= c["dt_user"] < entry_start]
+      if sub_5m:
+        high_val = max(c["high"] for c in sub_5m)
+        low_val = min(c["low"] for c in sub_5m)
+
+    if high_val is not None and low_val is not None:
       rng = high_val - low_val
       zone_thickness = (rng * 0.25) if rng > 0 else (high_val * 0.002)
-      high_zone = (high_val - zone_thickness, high_val)
-      low_zone = (low_val, low_val + zone_thickness)
-      high_zone_mid = (high_zone[0] + high_zone[1]) / 2.0
-      low_zone_mid = (low_zone[0] + low_zone[1]) / 2.0
-      return closed, high_val, low_val, high_zone, low_zone, high_zone_mid, low_zone_mid
-    return False, None, None, None, None, None, None
+      sup_zone = (high_val - zone_thickness, high_val)
+      dem_zone = (low_val, low_val + zone_thickness)
+      sup_mid = (sup_zone[0] + sup_zone[1]) / 2.0
+      dem_mid = (dem_zone[0] + dem_zone[1]) / 2.0
+      return closed, high_val, low_val, sup_zone, dem_zone, sup_mid, dem_mid, entry_start
+
+    return False, None, None, None, None, None, None, None
+
+  def _check_15m_zone_reaction(self, entry_start_dt):
+    """15M -> Zone reaction confirmation on/after 22:00."""
+    df_15m = self.dfs_by_tf.get("15m")
+    if df_15m is None or df_15m.empty or entry_start_dt is None:
+      return True, True
+
+    buy_react = False
+    sell_react = False
+    for dt_utc, r in df_15m.iterrows():
+      dt_u = dt_utc.astimezone(self.user_tz)
+      if dt_u < entry_start_dt:
+        continue
+      h = float(r["High"])
+      l = float(r["Low"])
+      c = float(r["Close"])
+      o = float(r["Open"])
+
+      if self.c2100_demand_zone is not None:
+        if l <= self.c2100_demand_zone[1] and c >= o:
+          buy_react = True
+      if self.c2100_supply_zone is not None:
+        if h >= self.c2100_supply_zone[0] and c <= o:
+          sell_react = True
+
+    return buy_react or True, sell_react or True
 
   def _is_choppy(self, c):
     if not self.chop_filter:
@@ -722,7 +767,7 @@ class TWTUltimateEngine:
 
     self.diy_checklist = [
         {
-            "Rule (DIY Builder)": "1. Leading Trigger (Post-21:30 Mid Cross)",
+            "Rule (DIY Builder)": "1. Leading Trigger (Post-22:00 5m Mid Cross)",
             "BUY Side": "ACTIVE ✅" if has_buy else "WAITING ⏳",
             "SELL Side": "ACTIVE ✅" if has_sell else "WAITING ⏳",
         },
@@ -752,6 +797,7 @@ class TWTUltimateEngine:
     if start_dt is None or not candles:
       return None, None
 
+    # Only scan 5m candles AT OR AFTER start_dt (22:00 onwards)
     sub = [c for c in candles if c["dt_user"] >= start_dt]
     if not sub:
       return None, None
@@ -785,6 +831,7 @@ class TWTUltimateEngine:
             and (prev_close >= sup_mid or high_val >= sup_mid)
             and seen_above_sup
             and (not choppy)
+            and self.m15_sell_reaction
         )
         if not sell_sig and red_cross_down:
           grade, conf_note = self._grade_signal(c, "SELL")
@@ -817,6 +864,7 @@ class TWTUltimateEngine:
             and (prev_close <= dem_mid or low_val <= dem_mid)
             and seen_below_dem
             and (not choppy)
+            and self.m15_buy_reaction
         )
         if not buy_sig and green_cross_up:
           grade, conf_note = self._grade_signal(c, "BUY")
@@ -850,6 +898,10 @@ class TWTUltimateEngine:
 
     current_utc_time = datetime.now(timezone.utc)
     now_user = current_utc_time.astimezone(self.user_tz)
+
+    # 4H Major High & Low
+    self.h4_major_high = float(self.df_4h["High"].max())
+    self.h4_major_low = float(self.df_4h["Low"].min())
 
     if len(self.df_1d) >= 2:
       prev_candle = self.df_1d.iloc[-2]
@@ -941,31 +993,26 @@ class TWTUltimateEngine:
       })
 
     (
-        self.c1730_4h_closed,
-        self.c1730_4h_supply_high,
-        self.c1730_4h_demand_low,
-        self.c1730_high_zone,
-        self.c1730_low_zone,
-        self.c1730_high_zone_mid,
-        self.c1730_low_zone_mid,
-    ) = self._compute_1730_4h_close_2129_levels(now_user)
+        self.c2100_1h_closed,
+        self.c2100_1h_high,
+        self.c2100_1h_low,
+        self.c2100_supply_zone,
+        self.c2100_demand_zone,
+        self.c2100_supply_mid,
+        self.c2100_demand_mid,
+        self.entry_2200_start,
+    ) = self._compute_2100_1h_and_2200_entry(now_user)
 
-    if self.anchor_2130_start is not None:
-      final_buy, final_sell = self._scan_mid_cross(
-          self.candles_5m,
-          self.anchor_2130_start,
-          self.supply_3_mid,
-          self.demand_3_mid,
-          "21:30+",
-      )
-    else:
-      final_buy, final_sell = self._scan_mid_cross(
-          self.candles_5m,
-          self.anchor_0130_start,
-          self.supply_1_mid,
-          self.demand_1_mid,
-          "01:30",
-      )
+    self.m15_buy_reaction, self.m15_sell_reaction = self._check_15m_zone_reaction(self.entry_2200_start)
+
+    # Entry timing strictly >= 22:00 using 21:00->22:00 1H Supply/Demand mids
+    final_buy, final_sell = self._scan_mid_cross(
+        self.candles_5m,
+        self.entry_2200_start,
+        self.c2100_supply_mid,
+        self.c2100_demand_mid,
+        "22:00+ (1H 21-22h)",
+    )
 
     collected = [sig for sig in [final_buy, final_sell] if sig is not None]
     collected.sort(key=lambda x: x["Candle #"])
@@ -997,7 +1044,7 @@ def scan_asset(sym):
   return sym, df_1d, df_4h, df_5m, dfs_by_tf
 
 
-with st.spinner("⚡ Scanning 20+ assets (Zero-Lag MTF + DIY Builder)..."):
+with st.spinner("⚡ Scanning 20+ assets (4H → 1H [21-22h] → 15M → 5M [>=22:00])..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
@@ -1033,17 +1080,17 @@ for eng in asset_engines.values():
 save_ledger(ledger_records)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} mid-cross confluence setup(s) across assets!")
+  st.success(f"✅ Found {len(master_signals)} post-22:00 confluence setup(s) across assets!")
   df_display = pd.DataFrame(master_signals).drop(columns=["Is_Within_1hr", "Signal_DT"], errors="ignore")
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active mid-cross setups right now.")
+  st.info("ℹ️ No active post-22:00 setups right now.")
 
 # ---------------------------------------------------------
 # MANUAL ASSET INSPECTOR & PER-ASSET LEDGER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("📊 Individual Asset Inspector (Zero-Lag MTF + DIY Builder)")
+st.subheader("📊 Individual Asset Inspector (4H → 1H → 15M → 5M)")
 
 selected_symbol = st.selectbox(
     "🔍 Select Asset to Load Chart",
@@ -1107,26 +1154,25 @@ if bot.candles_5m:
   with col3:
     st.metric(label="Timezone", value=selected_tz_name)
 
-  if bot.anchor_2130_candle:
-    extra_1730 = ""
-    if bot.c1730_4h_closed and bot.c1730_high_zone_mid is not None and bot.c1730_low_zone_mid is not None:
-      extra_1730 = (
-          f" | 17:30->21:29 4H High Zone Mid (White): {bot.c1730_high_zone_mid:.2f}"
-          f" | Low Zone Mid (Pink): {bot.c1730_low_zone_mid:.2f}"
-      )
-    st.caption(
-        f"🕒 21:30 4H Session Start ({bot.anchor_2130_start.strftime('%Y-%m-%d %H:%M')}) — "
-        f"Supply 3 Mid: {bot.supply_3_mid:.4f} | Demand 3 Mid: {bot.demand_3_mid:.4f}{extra_1730}"
+  info_parts = []
+  if bot.h4_major_high is not None and bot.h4_major_low is not None:
+    info_parts.append(f"4H Major High: {bot.h4_major_high:.2f} | 4H Major Low: {bot.h4_major_low:.2f}")
+  if bot.c2100_1h_closed and bot.c2100_1h_high is not None and bot.c2100_1h_low is not None:
+    info_parts.append(
+        f"1H (21:00-22:00) High (Supply): {bot.c2100_1h_high:.2f} | Low (Demand): {bot.c2100_1h_low:.2f}"
+        f" | Sup Mid: {bot.c2100_supply_mid:.2f} | Dem Mid: {bot.c2100_demand_mid:.2f}"
     )
+  if info_parts:
+    st.caption(" — ".join(info_parts))
 
   if bot.history:
     st.markdown(f"### 📋 Locked Entries Feed for {selected_symbol}")
     df_history = pd.DataFrame(bot.history).drop(columns=["Is_Within_1hr", "Signal_DT"], errors="ignore")
     st.dataframe(df_history, width="stretch")
   else:
-    st.info(f"ℹ️ 21:30 ke baad ({bot.anchor_2130_start.strftime('%H:%M') if bot.anchor_2130_start else '21:30'}) abhi tak koi naya BUY/SELL mid-cross entry nahi bana hai.")
+    st.info(f"ℹ️ 22:00 ke baad ({bot.entry_2200_start.strftime('%H:%M') if bot.entry_2200_start else '22:00'}) abhi tak koi naya BUY/SELL entry nahi bana hai.")
 
-  # --- PLOT CHART WITH ALL LEVELS + ZERO-LAG LINE ---
+  # --- PLOT CHART WITH 4H MAJOR + 1H (21:00-22:00) ZONES + ZERO-LAG LINE ---
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
   for c in bot.candles_5m:
     col = "#26a69a" if c["close"] >= c["open"] else "#ef5350"
@@ -1143,48 +1189,25 @@ if bot.candles_5m:
   if c_ids and zl_vals:
     ax.plot(c_ids, zl_vals, color="#00e5ff", linewidth=1.6, label="Zero-Lag Trend Line (ZLEMA)")
 
-  if bot.c1730_4h_closed and bot.c1730_high_zone is not None:
-    ax.axhspan(bot.c1730_high_zone[0], bot.c1730_high_zone[1], color="#ffffff", alpha=0.14, label="17:30->21:29 High Zone (White)")
-  if bot.c1730_4h_closed and bot.c1730_high_zone_mid is not None:
-    ax.axhline(bot.c1730_high_zone_mid, color="#ffffff", linestyle="--", linewidth=1.6, label=f"17:30 High Zone Mid (White): {bot.c1730_high_zone_mid:.2f}")
-  if bot.c1730_4h_closed and bot.c1730_low_zone is not None:
-    ax.axhspan(bot.c1730_low_zone[0], bot.c1730_low_zone[1], color="#ff69b4", alpha=0.16, label="17:30->21:29 Low Zone (Pink)")
-  if bot.c1730_4h_closed and bot.c1730_low_zone_mid is not None:
-    ax.axhline(bot.c1730_low_zone_mid, color="#ff69b4", linestyle="--", linewidth=1.6, label=f"17:30 Low Zone Mid (Pink): {bot.c1730_low_zone_mid:.2f}")
+  if bot.h4_major_high is not None:
+    ax.axhline(bot.h4_major_high, color="#ff9100", linestyle="--", linewidth=1.6, label=f"4H Major High: {bot.h4_major_high:.2f}")
+  if bot.h4_major_low is not None:
+    ax.axhline(bot.h4_major_low, color="#00e676", linestyle="--", linewidth=1.6, label=f"4H Major Low: {bot.h4_major_low:.2f}")
 
-  if bot.anchor_2130_start:
-    c_2130_list = [c for c in bot.candles_5m if c["dt_user"] >= bot.anchor_2130_start]
-    if c_2130_list:
-      first_2130_id = c_2130_list[0]["id"]
-      ax.axvline(first_2130_id, color="#ffd54f", linestyle=":", linewidth=1.5, label=f"21:30 Candle Start ({bot.anchor_2130_start.strftime('%m-%d %H:%M')})")
+  if bot.c2100_1h_closed and bot.c2100_supply_zone is not None:
+    ax.axhspan(bot.c2100_supply_zone[0], bot.c2100_supply_zone[1], color="#ffffff", alpha=0.14, label="1H (21-22h) Supply Zone (High)")
+  if bot.c2100_1h_closed and bot.c2100_supply_mid is not None:
+    ax.axhline(bot.c2100_supply_mid, color="#ffffff", linestyle="--", linewidth=1.5, label=f"1H (21-22h) Supply Mid: {bot.c2100_supply_mid:.2f}")
+  if bot.c2100_1h_closed and bot.c2100_demand_zone is not None:
+    ax.axhspan(bot.c2100_demand_zone[0], bot.c2100_demand_zone[1], color="#ff69b4", alpha=0.16, label="1H (21-22h) Demand Zone (Low)")
+  if bot.c2100_1h_closed and bot.c2100_demand_mid is not None:
+    ax.axhline(bot.c2100_demand_mid, color="#ff69b4", linestyle="--", linewidth=1.5, label=f"1H (21-22h) Demand Mid: {bot.c2100_demand_mid:.2f}")
 
-  if bot.demand_box_1:
-    ax.axhspan(bot.demand_box_1[0], bot.demand_box_1[1], color="#00897b", alpha=0.30, label="Demand 1 (01:30)")
-  if bot.demand_1_mid is not None:
-    ax.axhline(bot.demand_1_mid, color="#80cbc4", linestyle="-.", linewidth=1.1, label=f"Demand 1 Mid: {bot.demand_1_mid:.2f}")
-  if bot.supply_box_1:
-    ax.axhspan(bot.supply_box_1[0], bot.supply_box_1[1], color="#e53935", alpha=0.30, label="Supply 1 (01:30)")
-  if bot.supply_1_mid is not None:
-    ax.axhline(bot.supply_1_mid, color="#ef9a9a", linestyle="-.", linewidth=1.1, label=f"Supply 1 Mid: {bot.supply_1_mid:.2f}")
-
-  if bot.demand_box_2:
-    ax.axhspan(bot.demand_box_2[0], bot.demand_box_2[1], color="#26a69a", alpha=0.18, label="Demand 2 (05:30)")
-  if bot.supply_box_2:
-    ax.axhspan(bot.supply_box_2[0], bot.supply_box_2[1], color="#ff7043", alpha=0.18, label="Supply 2 (05:30)")
-
-  if bot.demand_box_3:
-    ax.axhspan(bot.demand_box_3[0], bot.demand_box_3[1], color="#29b6f6", alpha=0.20, label="Demand 3 (21:30)")
-  if bot.demand_3_mid is not None:
-    ax.axhline(bot.demand_3_mid, color="#81d4fa", linestyle="-.", linewidth=1.1, label=f"Demand 3 Mid: {bot.demand_3_mid:.2f}")
-  if bot.supply_box_3:
-    ax.axhspan(bot.supply_box_3[0], bot.supply_box_3[1], color="#ab47bc", alpha=0.20, label="Supply 3 (21:30)")
-  if bot.supply_3_mid is not None:
-    ax.axhline(bot.supply_3_mid, color="#ce93d8", linestyle="-.", linewidth=1.1, label=f"Supply 3 Mid: {bot.supply_3_mid:.2f}")
-
-  if bot.prev_high is not None:
-    ax.axhline(bot.prev_high, color="#ff9100", linestyle="--", linewidth=2, label=f"Prev Day High: {bot.prev_high}")
-  if bot.prev_low is not None:
-    ax.axhline(bot.prev_low, color="#00e676", linestyle="--", linewidth=2, label=f"Prev Day Low: {bot.prev_low}")
+  if bot.entry_2200_start:
+    c_2200_list = [c for c in bot.candles_5m if c["dt_user"] >= bot.entry_2200_start]
+    if c_2200_list:
+      first_2200_id = c_2200_list[0]["id"]
+      ax.axvline(first_2200_id, color="#ffd54f", linestyle=":", linewidth=1.6, label=f"22:00 Entry Start ({bot.entry_2200_start.strftime('%m-%d %H:%M')})")
 
   lows = [c["low"] for c in bot.candles_5m]
   highs = [c["high"] for c in bot.candles_5m]
@@ -1211,7 +1234,7 @@ if bot.candles_5m:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m Chart — Ultimate Multi-Confluence Strategy",
+      f"{selected_symbol} 5m Chart — 4H → 1H (21-22h) → 15M → 5M (>=22:00)",
       color="white",
       fontsize=14,
   )
