@@ -259,16 +259,16 @@ ledger_start_date = st.sidebar.text_input(
 
 selected_tf = "5m"
 st.sidebar.text("⏱️ Entry Timeframe : 5m (Post-22:00)")
-st.sidebar.text("📊 Flow : 4H → 1H (21-22h) → 15M → 5M")
+st.sidebar.text("📊 Flow : 4H → 1H (21-22h) → 15M MSS → 5M")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Master Confluence Rules")
-st.sidebar.text("4H       : Major High & Low")
-st.sidebar.text("1H 21-22 : Supply (High) & Demand (Low)")
-st.sidebar.text("15M      : Zone Reaction Confirmation")
-st.sidebar.text("5M Entry : Only >= 22:00 After 1H Close")
-st.sidebar.text("SELL     : Red Candle Crosses Below Mid")
-st.sidebar.text("BUY      : Green Candle Crosses Above Mid")
+st.sidebar.text("4H       : Prev 4H High & Low")
+st.sidebar.text("1H 21-22 : Strong Supply & Demand")
+st.sidebar.text("15M      : Zone Reaction + MSS")
+st.sidebar.text("5M Entry : >= 22:00 Confirmation")
+st.sidebar.text("SELL     : Red Cross Below Mid + MSS")
+st.sidebar.text("BUY      : Green Cross Above Mid + MSS")
 st.sidebar.text("Strength : Locked Until Next 21:30 4H")
 st.sidebar.text("Zero-Lag : ZLEMA + ATR Band Trend")
 st.sidebar.text("A-Grade  : HTF + Wick + Zero-Lag")
@@ -502,7 +502,7 @@ def fetch_data(symbol):
         ohlcv_1d = exchange.fetch_ohlcv(sym, timeframe="1d", limit=35)
         ohlcv_4h = exchange.fetch_ohlcv(sym, timeframe="4h", limit=50)
         ohlcv_1h = exchange.fetch_ohlcv(sym, timeframe="1h", limit=35)
-        ohlcv_15m = exchange.fetch_ohlcv(sym, timeframe="15m", limit=35)
+        ohlcv_15m = exchange.fetch_ohlcv(sym, timeframe="15m", limit=60)
         ohlcv_5m = exchange.fetch_ohlcv(sym, timeframe="5m", limit=300)
         if ohlcv_1d and ohlcv_4h and ohlcv_5m:
           dfs_by_tf = {
@@ -519,7 +519,7 @@ def fetch_data(symbol):
 
 
 # ---------------------------------------------------------
-# MULTI-CONFLUENCE ENGINE (4H -> 1H [21:00-22:00] -> 15M -> 5M [>=22:00])
+# MULTI-CONFLUENCE ENGINE (4H -> 1H [21-22h] -> 15M MSS -> 5M [>=22:00])
 # ---------------------------------------------------------
 class TWTUltimateEngine:
 
@@ -547,27 +547,13 @@ class TWTUltimateEngine:
     self.signals = []
     self.diy_checklist = []
 
-    # 4H Major High & Low
+    # 4H Previous High & Low
+    self.prev_4h_high = None
+    self.prev_4h_low = None
     self.h4_major_high = None
     self.h4_major_low = None
 
-    # Levels & Zones
-    self.prev_high = None
-    self.prev_low = None
-    self.demand_box_1 = None
-    self.supply_box_1 = None
-    self.demand_1_mid = None
-    self.supply_1_mid = None
-
-    self.demand_box_2 = None
-    self.supply_box_2 = None
-
-    self.demand_box_3 = None
-    self.supply_box_3 = None
-    self.demand_3_mid = None
-    self.supply_3_mid = None
-
-    # 21:00 -> 22:00 1H candle (Supply = High, Demand = Low) & Post-22:00 5m Entry
+    # 21:00 -> 22:00 1H candle (Strong Supply = High, Strong Demand = Low) & Post-22:00 5m Entry
     self.c2100_1h_closed = False
     self.c2100_1h_high = None
     self.c2100_1h_low = None
@@ -575,61 +561,15 @@ class TWTUltimateEngine:
     self.c2100_demand_zone = None
     self.c2100_supply_mid = None
     self.c2100_demand_mid = None
+    self.strong_1h_supply = False
+    self.strong_1h_demand = False
+
     self.entry_2200_start = None
     self.m15_buy_reaction = False
     self.m15_sell_reaction = False
-
-    # Keep 17:30->21:29 fields for compatibility
-    self.c1730_4h_closed = False
-    self.c1730_4h_supply_high = None
-    self.c1730_4h_demand_low = None
-    self.c1730_high_zone = None
-    self.c1730_low_zone = None
-    self.c1730_high_zone_mid = None
-    self.c1730_low_zone_mid = None
-
-    self.anchor_2130_candle = None
-    self.anchor_2130_start = None
-    self.anchor_0130_start = None
-    self.session_2130_active = False
-
-  def _build_zones(self, anchor_candle):
-    high_val = anchor_candle["high"]
-    low_val = anchor_candle["low"]
-    rng = high_val - low_val
-    zone_thickness = (rng * 0.25) if rng > 0 else (high_val * 0.002)
-    dem_box = (low_val, low_val + zone_thickness)
-    sup_box = (high_val - zone_thickness, high_val)
-    dem_mid = (dem_box[0] + dem_box[1]) / 2.0
-    sup_mid = (sup_box[0] + sup_box[1]) / 2.0
-    return dem_box, sup_box, dem_mid, sup_mid
-
-  def _get_2130_session_anchor(self, candles_4h, now_user):
-    anchor_2130_today = datetime.combine(now_user.date(), time(21, 30), tzinfo=now_user.tzinfo)
-    if now_user >= anchor_2130_today:
-      target_dt = anchor_2130_today
-    else:
-      target_dt = anchor_2130_today - timedelta(days=1)
-
-    matching = [
-        c for c in candles_4h
-        if abs((c["dt_user"] - target_dt).total_seconds()) <= 5400
-    ]
-    if matching:
-      best = min(matching, key=lambda x: abs((x["dt_user"] - target_dt).total_seconds()))
-      return best, target_dt, (now_user >= anchor_2130_today)
-
-    if now_user >= anchor_2130_today:
-      synthetic = {
-          "date": now_user.date(),
-          "time_obj": time(21, 30),
-          "dt_user": target_dt,
-          "high": float(self.df_4h["High"].iloc[-1]),
-          "low": float(self.df_4h["Low"].iloc[-1]),
-      }
-      return synthetic, target_dt, True
-
-    return None, None, False
+    self.m15_bull_mss = False
+    self.m15_bear_mss = False
+    self.m15_status_text = "Waiting"
 
   def _compute_2100_1h_and_2200_entry(self, now_user):
     """21:00 -> 22:00 1H candle High (Supply) & Low (Demand) zones + mids; entries allowed only >= 22:00."""
@@ -641,7 +581,7 @@ class TWTUltimateEngine:
       entry_start = t2200_today
       closed = True
     elif now_user >= t2100_today:
-      return False, None, None, None, None, None, None, None
+      return False, None, None, None, None, None, None, None, False, False
     else:
       prev_d = now_user.date() - timedelta(days=1)
       candle_start = datetime.combine(prev_d, time(21, 0), tzinfo=now_user.tzinfo)
@@ -650,6 +590,8 @@ class TWTUltimateEngine:
 
     high_val = None
     low_val = None
+    open_val = None
+    close_val = None
     df_1h = self.dfs_by_tf.get("1h")
     if df_1h is not None and not df_1h.empty:
       for dt_utc, r in df_1h.iterrows():
@@ -657,6 +599,8 @@ class TWTUltimateEngine:
         if abs((dt_u - candle_start).total_seconds()) <= 1800:
           high_val = float(r["High"])
           low_val = float(r["Low"])
+          open_val = float(r["Open"])
+          close_val = float(r["Close"])
           break
 
     if high_val is None or low_val is None:
@@ -664,43 +608,84 @@ class TWTUltimateEngine:
       if sub_5m:
         high_val = max(c["high"] for c in sub_5m)
         low_val = min(c["low"] for c in sub_5m)
+        open_val = sub_5m[0]["open"]
+        close_val = sub_5m[-1]["close"]
 
     if high_val is not None and low_val is not None:
-      rng = high_val - low_val
-      zone_thickness = (rng * 0.25) if rng > 0 else (high_val * 0.002)
+      rng = max(high_val - low_val, 1e-9)
+      body = abs((close_val or low_val) - (open_val or low_val))
+      # Strong 1H zone check: solid impulse / non-doji candle range
+      is_strong_1h = (rng > 0) and ((body / rng) >= 0.30 or rng >= ((self.prev_4h_high or high_val) - (self.prev_4h_low or low_val)) * 0.12)
+      zone_thickness = rng * 0.25
       sup_zone = (high_val - zone_thickness, high_val)
       dem_zone = (low_val, low_val + zone_thickness)
       sup_mid = (sup_zone[0] + sup_zone[1]) / 2.0
       dem_mid = (dem_zone[0] + dem_zone[1]) / 2.0
-      return closed, high_val, low_val, sup_zone, dem_zone, sup_mid, dem_mid, entry_start
+      return closed, high_val, low_val, sup_zone, dem_zone, sup_mid, dem_mid, entry_start, is_strong_1h, is_strong_1h
 
-    return False, None, None, None, None, None, None, None
+    return False, None, None, None, None, None, None, None, False, False
 
-  def _check_15m_zone_reaction(self, entry_start_dt):
-    """15M -> Zone reaction confirmation on/after 22:00."""
+  def _check_15m_zone_and_mss(self, entry_start_dt):
+    """15M -> Zone reaction + Market Structure Shift (MSS) confirmation."""
     df_15m = self.dfs_by_tf.get("15m")
     if df_15m is None or df_15m.empty or entry_start_dt is None:
-      return True, True
+      return False, False, False, False, "No 15M Data"
+
+    post_15m = df_15m[df_15m.index.tz_convert(self.user_tz) >= entry_start_dt]
+    if post_15m.empty:
+      return False, False, False, False, "Waiting Post-22:00 15M"
 
     buy_react = False
     sell_react = False
-    for dt_utc, r in df_15m.iterrows():
-      dt_u = dt_utc.astimezone(self.user_tz)
-      if dt_u < entry_start_dt:
-        continue
-      h = float(r["High"])
-      l = float(r["Low"])
-      c = float(r["Close"])
-      o = float(r["Open"])
+    bull_mss = False
+    bear_mss = False
+
+    highs = post_15m["High"].astype(float).tolist()
+    lows = post_15m["Low"].astype(float).tolist()
+    opens = post_15m["Open"].astype(float).tolist()
+    closes = post_15m["Close"].astype(float).tolist()
+
+    rolling_swing_high = None
+    rolling_swing_low = None
+
+    for i in range(len(post_15m)):
+      h = highs[i]
+      l = lows[i]
+      o = opens[i]
+      c = closes[i]
 
       if self.c2100_demand_zone is not None:
         if l <= self.c2100_demand_zone[1] and c >= o:
           buy_react = True
+
       if self.c2100_supply_zone is not None:
         if h >= self.c2100_supply_zone[0] and c <= o:
           sell_react = True
 
-    return buy_react or True, sell_react or True
+      if buy_react and rolling_swing_high is not None and c > rolling_swing_high:
+        bull_mss = True
+
+      if sell_react and rolling_swing_low is not None and c < rolling_swing_low:
+        bear_mss = True
+
+      if i >= 1:
+        if highs[i - 1] >= h:
+          rolling_swing_high = highs[i - 1] if rolling_swing_high is None else max(rolling_swing_high, highs[i - 1])
+        if lows[i - 1] <= l:
+          rolling_swing_low = lows[i - 1] if rolling_swing_low is None else min(rolling_swing_low, lows[i - 1])
+
+    status_parts = []
+    if buy_react and bull_mss:
+      status_parts.append("BUY: Demand React + Bull MSS ✅")
+    elif buy_react:
+      status_parts.append("BUY: Demand React (Wait MSS) ⏳")
+    if sell_react and bear_mss:
+      status_parts.append("SELL: Supply React + Bear MSS ✅")
+    elif sell_react:
+      status_parts.append("SELL: Supply React (Wait MSS) ⏳")
+
+    status = " | ".join(status_parts) if status_parts else "No 15M Reaction/MSS Yet ⏳"
+    return buy_react, sell_react, bull_mss, bear_mss, status
 
   def _is_choppy(self, c):
     if not self.chop_filter:
@@ -765,31 +750,34 @@ class TWTUltimateEngine:
     htf_buy = bool(ref_info.get("htf_buy_aligned", False))
     htf_sell = bool(ref_info.get("htf_sell_aligned", False))
 
+    buy_15m_ok = self.m15_buy_reaction and self.m15_bull_mss
+    sell_15m_ok = self.m15_sell_reaction and self.m15_bear_mss
+
     self.diy_checklist = [
         {
-            "Rule (DIY Builder)": "1. Leading Trigger (Post-22:00 5m Mid Cross)",
+            "Rule (4H → 1H → 15M → 5M)": "1. 4H Prev High/Low + 1H Strong Zone (21-22h)",
+            "BUY Side": "STRONG ✅" if self.strong_1h_demand else "WAIT ⏳",
+            "SELL Side": "STRONG ✅" if self.strong_1h_supply else "WAIT ⏳",
+        },
+        {
+            "Rule (4H → 1H → 15M → 5M)": "2. 15M Zone Reaction + Market Structure Shift (MSS)",
+            "BUY Side": "MSS CONFIRMED ✅" if buy_15m_ok else "WAITING MSS ⏳",
+            "SELL Side": "MSS CONFIRMED ✅" if sell_15m_ok else "WAITING MSS ⏳",
+        },
+        {
+            "Rule (4H → 1H → 15M → 5M)": "3. 5M Entry Confirmation (>= 22:00)",
             "BUY Side": "ACTIVE ✅" if has_buy else "WAITING ⏳",
             "SELL Side": "ACTIVE ✅" if has_sell else "WAITING ⏳",
         },
         {
-            "Rule (DIY Builder)": "2. Zero-Lag Trend (ZLEMA + ATR Band)",
-            "BUY Side": "BULLISH ✅" if last_zl == "BULL" else "BEARISH ⏳",
-            "SELL Side": "BEARISH ✅" if last_zl == "BEAR" else "BULLISH ⏳",
+            "Rule (4H → 1H → 15M → 5M)": "4. Zero-Lag Trend (5M + 4H/1D)",
+            "BUY Side": "BULLISH ✅" if (last_zl == "BULL" or zl_htf_buy) else "BEARISH ⏳",
+            "SELL Side": "BEARISH ✅" if (last_zl == "BEAR" or zl_htf_sell) else "BULLISH ⏳",
         },
         {
-            "Rule (DIY Builder)": "3. Zero-Lag MTF (4H + 1D Trend)",
-            "BUY Side": "ALIGNED ✅" if zl_htf_buy else "NOT ALIGNED ⏳",
-            "SELL Side": "ALIGNED ✅" if zl_htf_sell else "NOT ALIGNED ⏳",
-        },
-        {
-            "Rule (DIY Builder)": "4. HTF Candle Strength (4H + 1D)",
-            "BUY Side": "STRONG ✅" if htf_buy else "MIXED ⏳",
-            "SELL Side": "STRONG ✅" if htf_sell else "MIXED ⏳",
-        },
-        {
-            "Rule (DIY Builder)": "5. Chop / Sideways Filter",
-            "BUY Side": "CLEAR ✅" if self.chop_filter else "OFF ⚪",
-            "SELL Side": "CLEAR ✅" if self.chop_filter else "OFF ⚪",
+            "Rule (4H → 1H → 15M → 5M)": "5. HTF Strength & Chop Filter",
+            "BUY Side": "CLEAR ✅" if (htf_buy and self.chop_filter) else ("OFF ⚪" if not self.chop_filter else "MIXED ⏳"),
+            "SELL Side": "CLEAR ✅" if (htf_sell and self.chop_filter) else ("OFF ⚪" if not self.chop_filter else "MIXED ⏳"),
         },
     ]
 
@@ -811,6 +799,9 @@ class TWTUltimateEngine:
     b_lock = float(self.strength_info.get("buyer_pct", 50.0))
     s_lock = float(self.strength_info.get("seller_pct", 50.0))
 
+    can_sell = self.strong_1h_supply and self.m15_sell_reaction and self.m15_bear_mss
+    can_buy = self.strong_1h_demand and self.m15_buy_reaction and self.m15_bull_mss
+
     for c in sub:
       atr = c["atr"]
       dec = get_decimals(c["close"])
@@ -821,8 +812,10 @@ class TWTUltimateEngine:
       is_red = c["color"] == "Red"
       choppy = self._is_choppy(c)
       prev_close = prev_c["close"] if prev_c is not None else close_val
+      zl_ok_sell = (c.get("zl_trend") == "BEAR") or bool(self.strength_info.get("zl_sell_aligned", False))
+      zl_ok_buy = (c.get("zl_trend") == "BULL") or bool(self.strength_info.get("zl_buy_aligned", False))
 
-      if sup_mid is not None:
+      if sup_mid is not None and can_sell:
         if high_val >= sup_mid or prev_close >= sup_mid:
           seen_above_sup = True
         red_cross_down = (
@@ -831,7 +824,7 @@ class TWTUltimateEngine:
             and (prev_close >= sup_mid or high_val >= sup_mid)
             and seen_above_sup
             and (not choppy)
-            and self.m15_sell_reaction
+            and zl_ok_sell
         )
         if not sell_sig and red_cross_down:
           grade, conf_note = self._grade_signal(c, "SELL")
@@ -845,7 +838,7 @@ class TWTUltimateEngine:
               "Grade": grade,
               "Locked Buyer %": f"{b_lock}%",
               "Locked Seller %": f"{s_lock}%",
-              "Setup": f"{label} Supply Mid Cross SELL ({conf_note})",
+              "Setup": f"{label} Supply Mid + 15M Bear MSS ({conf_note})",
               "Entry Price": round(close_val, dec),
               "Stop Loss (SL)": sl,
               "TP 1": round(close_val - (1.2 * atr), dec),
@@ -855,7 +848,7 @@ class TWTUltimateEngine:
               "Signal_DT": c["dt_user"].isoformat(),
           }
 
-      if dem_mid is not None:
+      if dem_mid is not None and can_buy:
         if low_val <= dem_mid or prev_close <= dem_mid:
           seen_below_dem = True
         green_cross_up = (
@@ -864,7 +857,7 @@ class TWTUltimateEngine:
             and (prev_close <= dem_mid or low_val <= dem_mid)
             and seen_below_dem
             and (not choppy)
-            and self.m15_buy_reaction
+            and zl_ok_buy
         )
         if not buy_sig and green_cross_up:
           grade, conf_note = self._grade_signal(c, "BUY")
@@ -878,7 +871,7 @@ class TWTUltimateEngine:
               "Grade": grade,
               "Locked Buyer %": f"{b_lock}%",
               "Locked Seller %": f"{s_lock}%",
-              "Setup": f"{label} Demand Mid Cross BUY ({conf_note})",
+              "Setup": f"{label} Demand Mid + 15M Bull MSS ({conf_note})",
               "Entry Price": round(close_val, dec),
               "Stop Loss (SL)": sl,
               "TP 1": round(close_val + (1.2 * atr), dec),
@@ -899,58 +892,15 @@ class TWTUltimateEngine:
     current_utc_time = datetime.now(timezone.utc)
     now_user = current_utc_time.astimezone(self.user_tz)
 
-    # 4H Major High & Low
+    # 4H Previous High & Low (latest closed 4H candle)
+    if len(self.df_4h) >= 2:
+      prev_4h = self.df_4h.iloc[-2]
+    else:
+      prev_4h = self.df_4h.iloc[-1]
+    self.prev_4h_high = float(prev_4h["High"])
+    self.prev_4h_low = float(prev_4h["Low"])
     self.h4_major_high = float(self.df_4h["High"].max())
     self.h4_major_low = float(self.df_4h["Low"].min())
-
-    if len(self.df_1d) >= 2:
-      prev_candle = self.df_1d.iloc[-2]
-    else:
-      prev_candle = self.df_1d.iloc[-1]
-
-    self.prev_high = float(prev_candle["High"])
-    self.prev_low = float(prev_candle["Low"])
-
-    candles_4h = []
-    for row in self.df_4h.iterrows():
-      dt_utc = row[0]
-      dt_user = dt_utc.astimezone(self.user_tz)
-      r = row[1]
-      candles_4h.append({
-          "date": dt_user.date(),
-          "time_obj": dt_user.time(),
-          "dt_user": dt_user,
-          "high": float(r["High"]),
-          "low": float(r["Low"])
-      })
-
-    latest_date = candles_4h[-1]["date"] if candles_4h else now_user.date()
-    today_4h = [c for c in candles_4h if c["date"] == latest_date]
-    if not today_4h:
-      today_4h = candles_4h
-
-    anchor_1 = min(
-        today_4h,
-        key=lambda x: abs(datetime.combine(latest_date, x["time_obj"]) - datetime.combine(latest_date, time(1, 30))),
-        default=today_4h[0]
-    )
-    self.anchor_0130_start = anchor_1["dt_user"]
-    self.demand_box_1, self.supply_box_1, self.demand_1_mid, self.supply_1_mid = self._build_zones(anchor_1)
-
-    anchor_2_candidates = [c for c in today_4h if c["time_obj"] >= time(5, 0)]
-    if anchor_2_candidates:
-      anchor_2 = min(
-          anchor_2_candidates,
-          key=lambda x: abs(datetime.combine(latest_date, x["time_obj"]) - datetime.combine(latest_date, time(5, 30)))
-      )
-      self.demand_box_2, self.supply_box_2, _, _ = self._build_zones(anchor_2)
-
-    anchor_3, anchor_dt_3, is_post_2130_today = self._get_2130_session_anchor(candles_4h, now_user)
-    self.session_2130_active = is_post_2130_today
-    if anchor_3 and anchor_dt_3:
-      self.anchor_2130_candle = anchor_3
-      self.anchor_2130_start = anchor_dt_3
-      self.demand_box_3, self.supply_box_3, self.demand_3_mid, self.supply_3_mid = self._build_zones(anchor_3)
 
     self.df_5m["TR"] = np.maximum(
         self.df_5m["High"] - self.df_5m["Low"],
@@ -1001,11 +951,18 @@ class TWTUltimateEngine:
         self.c2100_supply_mid,
         self.c2100_demand_mid,
         self.entry_2200_start,
+        self.strong_1h_supply,
+        self.strong_1h_demand,
     ) = self._compute_2100_1h_and_2200_entry(now_user)
 
-    self.m15_buy_reaction, self.m15_sell_reaction = self._check_15m_zone_reaction(self.entry_2200_start)
+    (
+        self.m15_buy_reaction,
+        self.m15_sell_reaction,
+        self.m15_bull_mss,
+        self.m15_bear_mss,
+        self.m15_status_text,
+    ) = self._check_15m_zone_and_mss(self.entry_2200_start)
 
-    # Entry timing strictly >= 22:00 using 21:00->22:00 1H Supply/Demand mids
     final_buy, final_sell = self._scan_mid_cross(
         self.candles_5m,
         self.entry_2200_start,
@@ -1044,7 +1001,7 @@ def scan_asset(sym):
   return sym, df_1d, df_4h, df_5m, dfs_by_tf
 
 
-with st.spinner("⚡ Scanning 20+ assets (4H → 1H [21-22h] → 15M → 5M [>=22:00])..."):
+with st.spinner("⚡ Scanning 20+ assets (4H → 1H [21-22h] → 15M MSS → 5M [>=22:00])..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
@@ -1080,17 +1037,17 @@ for eng in asset_engines.values():
 save_ledger(ledger_records)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} post-22:00 confluence setup(s) across assets!")
+  st.success(f"✅ Found {len(master_signals)} confirmed post-22:00 MSS setup(s) across assets!")
   df_display = pd.DataFrame(master_signals).drop(columns=["Is_Within_1hr", "Signal_DT"], errors="ignore")
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active post-22:00 setups right now.")
+  st.info("ℹ️ No active confirmed post-22:00 (4H → 1H → 15M MSS → 5M) setups right now.")
 
 # ---------------------------------------------------------
 # MANUAL ASSET INSPECTOR & PER-ASSET LEDGER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("📊 Individual Asset Inspector (4H → 1H → 15M → 5M)")
+st.subheader("📊 Individual Asset Inspector (4H → 1H → 15M MSS → 5M)")
 
 selected_symbol = st.selectbox(
     "🔍 Select Asset to Load Chart",
@@ -1136,7 +1093,7 @@ if display_strength and display_strength.get("rows"):
   st.dataframe(pd.DataFrame(display_strength["rows"]), width="stretch")
 
 if bot.diy_checklist:
-  st.markdown(f"#### 🧩 {selected_symbol} DIY Custom Strategy Builder Status")
+  st.markdown(f"#### 🧩 {selected_symbol} Confluence Checklist (4H → 1H → 15M MSS → 5M)")
   st.dataframe(pd.DataFrame(bot.diy_checklist), width="stretch")
 
 st.markdown(f"### 📈 {selected_symbol} Performance Ledger (From {ledger_start_date})")
@@ -1152,14 +1109,14 @@ if bot.candles_5m:
   with col2:
     st.metric(label="Locked Signals", value=len(bot.history))
   with col3:
-    st.metric(label="Timezone", value=selected_tz_name)
+    st.metric(label="15M Structure", value=bot.m15_status_text)
 
   info_parts = []
-  if bot.h4_major_high is not None and bot.h4_major_low is not None:
-    info_parts.append(f"4H Major High: {bot.h4_major_high:.2f} | 4H Major Low: {bot.h4_major_low:.2f}")
+  if bot.prev_4h_high is not None and bot.prev_4h_low is not None:
+    info_parts.append(f"Prev 4H High: {bot.prev_4h_high:.2f} | Prev 4H Low: {bot.prev_4h_low:.2f}")
   if bot.c2100_1h_closed and bot.c2100_1h_high is not None and bot.c2100_1h_low is not None:
     info_parts.append(
-        f"1H (21:00-22:00) High (Supply): {bot.c2100_1h_high:.2f} | Low (Demand): {bot.c2100_1h_low:.2f}"
+        f"1H (21:00-22:00) Strong Supply: {bot.c2100_1h_high:.2f} | Strong Demand: {bot.c2100_1h_low:.2f}"
         f" | Sup Mid: {bot.c2100_supply_mid:.2f} | Dem Mid: {bot.c2100_demand_mid:.2f}"
     )
   if info_parts:
@@ -1170,9 +1127,9 @@ if bot.candles_5m:
     df_history = pd.DataFrame(bot.history).drop(columns=["Is_Within_1hr", "Signal_DT"], errors="ignore")
     st.dataframe(df_history, width="stretch")
   else:
-    st.info(f"ℹ️ 22:00 ke baad ({bot.entry_2200_start.strftime('%H:%M') if bot.entry_2200_start else '22:00'}) abhi tak koi naya BUY/SELL entry nahi bana hai.")
+    st.info(f"ℹ️ 22:00 ke baad ({bot.entry_2200_start.strftime('%H:%M') if bot.entry_2200_start else '22:00'}) 15M MSS + 5M confirmation ke saath abhi tak koi entry nahi bani hai.")
 
-  # --- PLOT CHART WITH 4H MAJOR + 1H (21:00-22:00) ZONES + ZERO-LAG LINE ---
+  # --- PLOT CHART WITH PREV 4H HIGH/LOW + 1H (21-22h) ZONES + ZERO-LAG LINE ---
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
   for c in bot.candles_5m:
     col = "#26a69a" if c["close"] >= c["open"] else "#ef5350"
@@ -1189,17 +1146,17 @@ if bot.candles_5m:
   if c_ids and zl_vals:
     ax.plot(c_ids, zl_vals, color="#00e5ff", linewidth=1.6, label="Zero-Lag Trend Line (ZLEMA)")
 
-  if bot.h4_major_high is not None:
-    ax.axhline(bot.h4_major_high, color="#ff9100", linestyle="--", linewidth=1.6, label=f"4H Major High: {bot.h4_major_high:.2f}")
-  if bot.h4_major_low is not None:
-    ax.axhline(bot.h4_major_low, color="#00e676", linestyle="--", linewidth=1.6, label=f"4H Major Low: {bot.h4_major_low:.2f}")
+  if bot.prev_4h_high is not None:
+    ax.axhline(bot.prev_4h_high, color="#ff9100", linestyle="--", linewidth=1.6, label=f"Prev 4H High: {bot.prev_4h_high:.2f}")
+  if bot.prev_4h_low is not None:
+    ax.axhline(bot.prev_4h_low, color="#00e676", linestyle="--", linewidth=1.6, label=f"Prev 4H Low: {bot.prev_4h_low:.2f}")
 
   if bot.c2100_1h_closed and bot.c2100_supply_zone is not None:
-    ax.axhspan(bot.c2100_supply_zone[0], bot.c2100_supply_zone[1], color="#ffffff", alpha=0.14, label="1H (21-22h) Supply Zone (High)")
+    ax.axhspan(bot.c2100_supply_zone[0], bot.c2100_supply_zone[1], color="#ffffff", alpha=0.14, label="1H (21-22h) Strong Supply Zone")
   if bot.c2100_1h_closed and bot.c2100_supply_mid is not None:
     ax.axhline(bot.c2100_supply_mid, color="#ffffff", linestyle="--", linewidth=1.5, label=f"1H (21-22h) Supply Mid: {bot.c2100_supply_mid:.2f}")
   if bot.c2100_1h_closed and bot.c2100_demand_zone is not None:
-    ax.axhspan(bot.c2100_demand_zone[0], bot.c2100_demand_zone[1], color="#ff69b4", alpha=0.16, label="1H (21-22h) Demand Zone (Low)")
+    ax.axhspan(bot.c2100_demand_zone[0], bot.c2100_demand_zone[1], color="#ff69b4", alpha=0.16, label="1H (21-22h) Strong Demand Zone")
   if bot.c2100_1h_closed and bot.c2100_demand_mid is not None:
     ax.axhline(bot.c2100_demand_mid, color="#ff69b4", linestyle="--", linewidth=1.5, label=f"1H (21-22h) Demand Mid: {bot.c2100_demand_mid:.2f}")
 
@@ -1212,10 +1169,17 @@ if bot.candles_5m:
   lows = [c["low"] for c in bot.candles_5m]
   highs = [c["high"] for c in bot.candles_5m]
   if lows and highs:
-    margin = (max(highs) - min(lows)) * 0.09
+    y_min = min(lows)
+    y_max = max(highs)
+    # Keep Prev 4H High/Low visible if within reasonable range around current price
+    if bot.prev_4h_high is not None and abs(bot.prev_4h_high - curr_p) <= (y_max - y_min) * 1.2:
+      y_max = max(y_max, bot.prev_4h_high)
+    if bot.prev_4h_low is not None and abs(curr_p - bot.prev_4h_low) <= (y_max - y_min) * 1.2:
+      y_min = min(y_min, bot.prev_4h_low)
+    margin = (y_max - y_min) * 0.09
     if margin == 0:
       margin = curr_p * 0.005
-    ax.set_ylim(min(lows) - margin, max(highs) + margin)
+    ax.set_ylim(y_min - margin, y_max + margin)
 
   for sig in bot.history:
     is_b = "BUY" in sig["Type"]
@@ -1234,7 +1198,7 @@ if bot.candles_5m:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m Chart — 4H → 1H (21-22h) → 15M → 5M (>=22:00)",
+      f"{selected_symbol} 5m Chart — 4H → 1H (21-22h) → 15M MSS → 5M (>=22:00)",
       color="white",
       fontsize=14,
   )
