@@ -30,13 +30,14 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
 count = st_autorefresh(interval=30000, key="twt_multi_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA — 4H POI Engine (Bearish MTF + Retest + Wick)")
+st.title("⚡ TRADE WITH TUCKYAA — 4H POI Engine (MTF Red/Green Bias + Lock)")
 
-LEDGER_FILE = Path("twt_signals_ledger_v7.json")
-LOCKED_ENTRIES_FILE = Path("twt_locked_entries_v3.json")
+LEDGER_FILE = Path("twt_signals_ledger_v8.json")
+LOCKED_ENTRIES_FILE = Path("twt_locked_entries_v4.json")
 LIVE_WINDOW_MINUTES = 60.0
 MIN_ZONE_STRENGTH = 55.0
 MIN_WICK_RATIO = 0.12
+MTF_TIMEFRAMES = ("5m", "15m", "30m", "4h", "1d")
 
 
 # ---------------------------------------------------------
@@ -252,7 +253,7 @@ use_chop_filter = st.sidebar.checkbox(
 )
 
 require_full_confluence = st.sidebar.checkbox(
-    "🎯 Extra Strict Wick & Trend Filter", value=False
+    "🎯 Strict 4/5 Candle Color Alignment", value=False
 )
 
 ledger_start_date = st.sidebar.text_input(
@@ -260,11 +261,11 @@ ledger_start_date = st.sidebar.text_input(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### POI + Bearish MTF + Lock Rules")
+st.sidebar.markdown("#### MTF Red/Green + POI Lock Rules")
 st.sidebar.text("Anchor   : 01:30→05:30 4H Candle")
-st.sidebar.text("MTF Check: 5m, 15m, 30m, 4H, 1D")
-st.sidebar.text("Entry Cap: Max 1 BUY + 1 SELL")
-st.sidebar.text("Strength : Buyer>=55% | Seller>=55%")
+st.sidebar.text("MTF Bias : 5m, 15m, 30m, 4H, 1D")
+st.sidebar.text("Red>=3   : Only SELL @ Supply")
+st.sidebar.text("Green>=3 : Only BUY @ Demand")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -356,9 +357,6 @@ def _wick_ratios(c):
 
 
 def _candle_zone_strength(c, zone_type):
-  """
-  Calculates Buyer Strength % in Demand Zone and Seller Strength % in Supply Zone.
-  """
   o = float(c["open"])
   h = float(c["high"])
   l = float(c["low"])
@@ -389,25 +387,48 @@ def _candle_zone_strength(c, zone_type):
     return buyer_pct, seller_pct
 
 
-def _mtf_bearish_count(dfs_by_tf, dt_utc=None):
+def evaluate_mtf_candle_bias(dfs_by_tf, dt_utc=None, strict_mode=False):
   """
-  Checks 5m, 15m, 30m, 4h, 1d trend/candle direction and returns how many timeframes are bearish.
+  Evaluates 5m, 15m, 30m, 4h, 1d candles and Zero-Lag trend.
+  Returns:
+    bias_state: 'ONLY_SELL_RED' | 'ONLY_BUY_GREEN' | 'MIXED'
+    red_count, green_count, tf_summary_str, tf_colors_dict
   """
-  bear_tfs = []
-  for tf in ("5m", "15m", "30m", "4h", "1d"):
+  red_count = 0
+  green_count = 0
+  tf_colors = {}
+  tf_tags = []
+
+  for tf in MTF_TIMEFRAMES:
     df = dfs_by_tf.get(tf)
     if df is None or df.empty:
+      tf_colors[tf] = "NA"
       continue
     sub = df[df.index <= dt_utc] if dt_utc is not None else df
     if sub.empty:
       sub = df
-    row = sub.iloc[-1]
-    _, _, zl_s = _compute_zero_lag_series(sub, length=21, band_mult=1.2)
-    is_bear_zl = (not zl_s.empty and str(zl_s.iloc[-1]) == "BEAR")
-    is_bear_c = float(row["Close"]) < float(row["Open"])
-    if is_bear_zl or is_bear_c:
-      bear_tfs.append(tf)
-  return len(bear_tfs), bear_tfs
+    # Use closed candle if enough bars exist, else latest
+    row = sub.iloc[-2] if len(sub) >= 2 else sub.iloc[-1]
+    is_green = float(row["Close"]) >= float(row["Open"])
+    if is_green:
+      green_count += 1
+      tf_colors[tf] = "GREEN"
+      tf_tags.append(f"{tf}:🟢")
+    else:
+      red_count += 1
+      tf_colors[tf] = "RED"
+      tf_tags.append(f"{tf}:🔴")
+
+  min_majority = 4 if strict_mode else 3
+
+  if red_count >= min_majority and green_count < min_majority:
+    bias_state = "ONLY_SELL_RED"
+  elif green_count >= min_majority and red_count < min_majority:
+    bias_state = "ONLY_BUY_GREEN"
+  else:
+    bias_state = "MIXED"
+
+  return bias_state, red_count, green_count, " ".join(tf_tags), tf_colors
 
 
 # ---------------------------------------------------------
@@ -446,7 +467,7 @@ def fetch_data(symbol):
 
 
 # ---------------------------------------------------------
-# 01:30 -> 05:30 4H POI ENGINE (BEARISH MTF + RETEST + WICK + LOCK)
+# 01:30 -> 05:30 4H POI ENGINE (MTF RED/GREEN GATED + LOCKED)
 # ---------------------------------------------------------
 class TWTUltimateEngine:
 
@@ -489,6 +510,12 @@ class TWTUltimateEngine:
     self.supply_poi_zone = None
     self.demand_poi_zone = None
 
+    self.mtf_bias_state = "MIXED"
+    self.mtf_red_cnt = 0
+    self.mtf_green_cnt = 0
+    self.mtf_tf_str = ""
+    self.mtf_tf_colors = {}
+
   def _is_choppy(self, c):
     if not self.chop_filter:
       return False
@@ -519,27 +546,27 @@ class TWTUltimateEngine:
     if not retest_wick_ok:
       return False, "REJECTED", ""
 
-    bear_cnt, bear_tfs = _mtf_bearish_count(self.dfs_by_tf, dt_utc=c["dt_utc"])
+    bias_state, red_cnt, green_cnt, tf_str, _ = evaluate_mtf_candle_bias(
+        self.dfs_by_tf, dt_utc=c["dt_utc"], strict_mode=self.strict_confluence
+    )
 
     if side == "BUY":
-      strength_ok = buyer_pct >= MIN_ZONE_STRENGTH
-      zl_ok = c.get("zl_trend") == "BULL"
-      not_heavy_bear = bear_cnt <= 2
-      if not strength_ok or not zl_ok or (self.strict_confluence and not not_heavy_bear):
+      # Only BUY when majority of 5m, 15m, 30m, 4h, 1d candles are GREEN
+      if bias_state != "ONLY_BUY_GREEN":
         return False, "REJECTED", ""
-      grade = "A+ GRADE 🔥" if not_heavy_bear else "CONFIRMED ⚡"
-      note = f"Retest+Wick:OK | Buyer:{buyer_pct}% | ZL:BULL"
+      if buyer_pct < MIN_ZONE_STRENGTH or c.get("zl_trend") != "BULL":
+        return False, "REJECTED", ""
+      grade = "GREEN MTF BUY 🟢"
+      note = f"GreenMTF({green_cnt}/5) | Buyer:{buyer_pct}% | Retest+Wick:OK"
       return True, grade, note
     else:
-      strength_ok = seller_pct >= MIN_ZONE_STRENGTH
-      mtf_bear_ok = (bear_cnt >= 3) or (c.get("zl_trend") == "BEAR")
-      if not strength_ok or not mtf_bear_ok:
+      # Only SELL when majority of 5m, 15m, 30m, 4h, 1d candles are RED
+      if bias_state != "ONLY_SELL_RED":
         return False, "REJECTED", ""
-      if self.strict_confluence and bear_cnt < 4:
+      if seller_pct < MIN_ZONE_STRENGTH or c.get("zl_trend") != "BEAR":
         return False, "REJECTED", ""
-      tf_str = "/".join(bear_tfs[-3:]) if bear_tfs else "BEAR"
-      grade = "A+ BEAR 🔥" if bear_cnt >= 4 else "BEAR SELL ⚡"
-      note = f"Retest+Wick:OK | Seller:{seller_pct}% | BearTF({bear_cnt}/5:{tf_str})"
+      grade = "RED MTF SELL 🔴"
+      note = f"RedMTF({red_cnt}/5) | Seller:{seller_pct}% | Retest+Wick:OK | {tf_str}"
       return True, grade, note
 
   def _find_latest_completed_0130_4h(self, now_user):
@@ -677,12 +704,16 @@ class TWTUltimateEngine:
   def _build_diy_checklist(self):
     buy_cnt = sum(1 for s in self.signals if "BUY" in s["Type"])
     sell_cnt = sum(1 for s in self.signals if "SELL" in s["Type"])
-    bear_cnt, bear_tfs = _mtf_bearish_count(self.dfs_by_tf, dt_utc=None)
+    allowed_txt = (
+        "SELL Only (Red Majority) 🔴"
+        if self.mtf_bias_state == "ONLY_SELL_RED"
+        else ("BUY Only (Green Majority) 🟢" if self.mtf_bias_state == "ONLY_BUY_GREEN" else "MIXED (No Bias) ⚖️")
+    )
     self.diy_checklist = [
         {
-            "Rule (01:30–05:30 POI)": "1. 4H Closed High / Low",
-            "BUY Side (Demand POI)": f"Low: {self.c0130_low:.2f}" if self.c0130_low else "WAIT ⏳",
-            "SELL Side (Supply POI)": f"High: {self.c0130_high:.2f} (BearTF: {bear_cnt}/5)" if self.c0130_high else "WAIT ⏳",
+            "Rule (01:30–05:30 POI)": "1. MTF Candle Bias (5m–1D)",
+            "BUY Side (Demand POI)": f"Green: {self.mtf_green_cnt}/5 | {self.mtf_tf_str}",
+            "SELL Side (Supply POI)": f"Red: {self.mtf_red_cnt}/5 | Allowed: {allowed_txt}",
         },
         {
             "Rule (01:30–05:30 POI)": "2. POI Zone Range",
@@ -691,8 +722,8 @@ class TWTUltimateEngine:
         },
         {
             "Rule (01:30–05:30 POI)": "3. Locked Entries (Max 1 BUY + 1 SELL)",
-            "BUY Side (Demand POI)": f"{buy_cnt} / 1 BUY (Buyer>={MIN_ZONE_STRENGTH:.0f}%)",
-            "SELL Side (Supply POI)": f"{sell_cnt} / 1 SELL (Seller>={MIN_ZONE_STRENGTH:.0f}%)",
+            "BUY Side (Demand POI)": f"{buy_cnt} / 1 BUY",
+            "SELL Side (Supply POI)": f"{sell_cnt} / 1 SELL",
         },
     ]
 
@@ -702,6 +733,15 @@ class TWTUltimateEngine:
 
     current_utc_time = datetime.now(timezone.utc)
     now_user = current_utc_time.astimezone(self.user_tz)
+
+    bias_state, red_cnt, green_cnt, tf_str, tf_colors = evaluate_mtf_candle_bias(
+        self.dfs_by_tf, dt_utc=None, strict_mode=self.strict_confluence
+    )
+    self.mtf_bias_state = bias_state
+    self.mtf_red_cnt = red_cnt
+    self.mtf_green_cnt = green_cnt
+    self.mtf_tf_str = tf_str
+    self.mtf_tf_colors = tf_colors
 
     self.df_5m["TR"] = np.maximum(
         self.df_5m["High"] - self.df_5m["Low"],
@@ -761,19 +801,20 @@ class TWTUltimateEngine:
 
 
 # ---------------------------------------------------------
-# MASTER SCANNER (LAST 1 HOUR LOCKED SIGNALS ON LIVE DASHBOARD)
+# MASTER SCANNER (LAST 1 HOUR LOCKED SIGNALS + 20-ASSET MTF BIAS)
 # ---------------------------------------------------------
 st.markdown("---")
 st.subheader("🔥 TWT Master Live Signal Dashboard (Last 1 Hour | Locked)")
 
-if "twt_locked_entries_v3" not in st.session_state:
-  st.session_state.twt_locked_entries_v3 = load_locked_entries()
+if "twt_locked_entries_v4" not in st.session_state:
+  st.session_state.twt_locked_entries_v4 = load_locked_entries()
 
-locked_entries = st.session_state.twt_locked_entries_v3
+locked_entries = st.session_state.twt_locked_entries_v4
 locks_updated = False
 
 master_signals = []
 asset_engines = {}
+mtf_bias_rows = []
 
 
 def scan_asset(sym):
@@ -781,7 +822,7 @@ def scan_asset(sym):
   return sym, df_1d, df_4h, df_5m, dfs_by_tf
 
 
-with st.spinner("⚡ Scanning 20+ assets (Bearish MTF + Retest + Wick + Lock)..."):
+with st.spinner("⚡ Scanning 20 assets (5m, 15m, 30m, 4H, 1D Red/Green Bias + POI Lock)..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
@@ -806,6 +847,21 @@ with st.spinner("⚡ Scanning 20+ assets (Bearish MTF + Retest + Wick + Lock)...
         if engine.live_1hr_signals:
           master_signals.extend(engine.live_1hr_signals)
 
+        mtf_bias_rows.append({
+            "Asset": sym,
+            "5m": "🟢" if engine.mtf_tf_colors.get("5m") == "GREEN" else "🔴",
+            "15m": "🟢" if engine.mtf_tf_colors.get("15m") == "GREEN" else "🔴",
+            "30m": "🟢" if engine.mtf_tf_colors.get("30m") == "GREEN" else "🔴",
+            "4H": "🟢" if engine.mtf_tf_colors.get("4h") == "GREEN" else "🔴",
+            "1D": "🟢" if engine.mtf_tf_colors.get("1d") == "GREEN" else "🔴",
+            "Red/Green": f"{engine.mtf_red_cnt}R / {engine.mtf_green_cnt}G",
+            "Allowed Side": (
+                "ONLY SELL 🔴"
+                if engine.mtf_bias_state == "ONLY_SELL_RED"
+                else ("ONLY BUY 🟢" if engine.mtf_bias_state == "ONLY_BUY_GREEN" else "MIXED ⚖️")
+            ),
+        })
+
 if locks_updated:
   save_locked_entries(locked_entries)
 
@@ -821,7 +877,13 @@ if master_signals:
   )
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ Pichhle 1 hour mein naya locked signal nahi aaya hai. Neeche asset select karke locked entries aur ussi asset ki history dekho.")
+  st.info("ℹ️ Pichhle 1 hour mein MTF Red/Green bias + POI condition ke saath koi naya signal nahi aaya hai.")
+
+if mtf_bias_rows:
+  order_map = {s: i for i, s in enumerate(ASSET_LIST)}
+  mtf_bias_rows.sort(key=lambda x: order_map.get(x["Asset"], 999))
+  st.markdown("#### 🌐 20-Asset MTF Candle Scanner (5m, 15m, 30m, 4H, 1D)")
+  st.dataframe(pd.DataFrame(mtf_bias_rows), width="stretch")
 
 # ---------------------------------------------------------
 # INDIVIDUAL ASSET INSPECTOR & SELECTED ASSET HISTORY ONLY
@@ -898,7 +960,7 @@ if bot.candles_5m:
   with col2:
     st.metric(label="Locked Entries (Max 2)", value=len(bot.signals))
   with col3:
-    st.metric(label="4H POI Close Time", value=bot.c0530_close.strftime("%H:%M") if bot.c0530_close else "Waiting ⏳")
+    st.metric(label="MTF Red / Green", value=f"{bot.mtf_red_cnt}R / {bot.mtf_green_cnt}G")
 
   if bot.c0130_high is not None and bot.c0130_low is not None:
     st.caption(
@@ -970,7 +1032,7 @@ if bot.candles_5m:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m Chart — 01:30–05:30 POI (Bearish MTF + Retest + Wick)",
+      f"{selected_symbol} 5m Chart — 01:30–05:30 POI (MTF Red/Green Bias + Lock)",
       color="white",
       fontsize=13,
   )
