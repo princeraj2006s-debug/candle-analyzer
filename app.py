@@ -30,13 +30,13 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
 count = st_autorefresh(interval=30000, key="twt_multi_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA — 4H POI Engine (Strict Retest + Wick + Strength)")
+st.title("⚡ TRADE WITH TUCKYAA — 4H POI Engine (Bearish MTF + Retest + Wick)")
 
-LEDGER_FILE = Path("twt_signals_ledger_v6.json")
-LOCKED_ENTRIES_FILE = Path("twt_locked_entries_v2.json")
+LEDGER_FILE = Path("twt_signals_ledger_v7.json")
+LOCKED_ENTRIES_FILE = Path("twt_locked_entries_v3.json")
 LIVE_WINDOW_MINUTES = 60.0
-MIN_ZONE_STRENGTH = 65.0
-MIN_WICK_RATIO = 0.25
+MIN_ZONE_STRENGTH = 55.0
+MIN_WICK_RATIO = 0.12
 
 
 # ---------------------------------------------------------
@@ -260,11 +260,11 @@ ledger_start_date = st.sidebar.text_input(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Strict POI + Lock Rules")
+st.sidebar.markdown("#### POI + Bearish MTF + Lock Rules")
 st.sidebar.text("Anchor   : 01:30→05:30 4H Candle")
+st.sidebar.text("MTF Check: 5m, 15m, 30m, 4H, 1D")
 st.sidebar.text("Entry Cap: Max 1 BUY + 1 SELL")
-st.sidebar.text("Strength : Buyer>=65% | Seller>=65%")
-st.sidebar.text("Wick/Ret : >=25% Wick + Zone Retest")
+st.sidebar.text("Strength : Buyer>=55% | Seller>=55%")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -357,8 +357,7 @@ def _wick_ratios(c):
 
 def _candle_zone_strength(c, zone_type):
   """
-  Calculates Buyer Strength % in Demand Zone and Seller Strength % in Supply Zone,
-  incorporating wick rejection, close position, and candle direction.
+  Calculates Buyer Strength % in Demand Zone and Seller Strength % in Supply Zone.
   """
   o = float(c["open"])
   h = float(c["high"])
@@ -372,26 +371,47 @@ def _candle_zone_strength(c, zone_type):
 
   if zone_type == "DEMAND":
     if cl <= o:
-      return 25.0, 75.0
+      return 30.0, 70.0
     buyer_pct = round(
-        max(5.0, min(99.0, 35.0 + (lower_ratio * 35.0) + (close_pos * 20.0) + (body_ratio * 10.0))),
+        max(5.0, min(99.0, 42.0 + (lower_ratio * 30.0) + (close_pos * 18.0) + (body_ratio * 10.0))),
         1,
     )
     seller_pct = round(max(1.0, 100.0 - buyer_pct), 1)
     return buyer_pct, seller_pct
   else:
     if cl >= o:
-      return 75.0, 25.0
+      return 70.0, 30.0
     seller_pct = round(
-        max(5.0, min(99.0, 35.0 + (upper_ratio * 35.0) + ((1.0 - close_pos) * 20.0) + (body_ratio * 10.0))),
+        max(5.0, min(99.0, 42.0 + (upper_ratio * 30.0) + ((1.0 - close_pos) * 18.0) + (body_ratio * 10.0))),
         1,
     )
     buyer_pct = round(max(1.0, 100.0 - seller_pct), 1)
     return buyer_pct, seller_pct
 
 
+def _mtf_bearish_count(dfs_by_tf, dt_utc=None):
+  """
+  Checks 5m, 15m, 30m, 4h, 1d trend/candle direction and returns how many timeframes are bearish.
+  """
+  bear_tfs = []
+  for tf in ("5m", "15m", "30m", "4h", "1d"):
+    df = dfs_by_tf.get(tf)
+    if df is None or df.empty:
+      continue
+    sub = df[df.index <= dt_utc] if dt_utc is not None else df
+    if sub.empty:
+      sub = df
+    row = sub.iloc[-1]
+    _, _, zl_s = _compute_zero_lag_series(sub, length=21, band_mult=1.2)
+    is_bear_zl = (not zl_s.empty and str(zl_s.iloc[-1]) == "BEAR")
+    is_bear_c = float(row["Close"]) < float(row["Open"])
+    if is_bear_zl or is_bear_c:
+      bear_tfs.append(tf)
+  return len(bear_tfs), bear_tfs
+
+
 # ---------------------------------------------------------
-# DATA FETCHING MODULE (1d + 4h + 1h + 15m + 5m)
+# DATA FETCHING MODULE (1d + 4h + 30m + 15m + 5m)
 # ---------------------------------------------------------
 @st.cache_data(ttl=30)
 def fetch_data(symbol):
@@ -408,14 +428,14 @@ def fetch_data(symbol):
       if sym in exchange.markets:
         ohlcv_1d = exchange.fetch_ohlcv(sym, timeframe="1d", limit=35)
         ohlcv_4h = exchange.fetch_ohlcv(sym, timeframe="4h", limit=50)
-        ohlcv_1h = exchange.fetch_ohlcv(sym, timeframe="1h", limit=35)
+        ohlcv_30m = exchange.fetch_ohlcv(sym, timeframe="30m", limit=40)
         ohlcv_15m = exchange.fetch_ohlcv(sym, timeframe="15m", limit=35)
         ohlcv_5m = exchange.fetch_ohlcv(sym, timeframe="5m", limit=400)
         if ohlcv_1d and ohlcv_4h and ohlcv_5m:
           dfs_by_tf = {
               "5m": _df_from_ohlcv(ohlcv_5m),
               "15m": _df_from_ohlcv(ohlcv_15m) if ohlcv_15m else None,
-              "1h": _df_from_ohlcv(ohlcv_1h) if ohlcv_1h else None,
+              "30m": _df_from_ohlcv(ohlcv_30m) if ohlcv_30m else None,
               "4h": _df_from_ohlcv(ohlcv_4h),
               "1d": _df_from_ohlcv(ohlcv_1d),
           }
@@ -426,7 +446,7 @@ def fetch_data(symbol):
 
 
 # ---------------------------------------------------------
-# 01:30 -> 05:30 4H POI ENGINE (STRICT RETEST + WICK + STRENGTH)
+# 01:30 -> 05:30 4H POI ENGINE (BEARISH MTF + RETEST + WICK + LOCK)
 # ---------------------------------------------------------
 class TWTUltimateEngine:
 
@@ -440,6 +460,7 @@ class TWTUltimateEngine:
       chop_filter=True,
       strict_confluence=False,
       locked_entries=None,
+      dfs_by_tf=None,
       live_window_min=LIVE_WINDOW_MINUTES,
   ):
     self.df_1d = df_1d
@@ -450,6 +471,7 @@ class TWTUltimateEngine:
     self.chop_filter = chop_filter
     self.strict_confluence = strict_confluence
     self.locked_entries = locked_entries if locked_entries is not None else {}
+    self.dfs_by_tf = dfs_by_tf or {}
     self.locks_mutated = False
     self.live_window_min = live_window_min
 
@@ -472,37 +494,24 @@ class TWTUltimateEngine:
       return False
     atr = c["atr"]
     atr_sma = c["atr_sma"]
-    ema = c["ema50"]
-    close_val = c["close"]
-    low_atr = (atr_sma is not None and atr_sma > 0 and atr < (0.60 * atr_sma))
-    near_ema_chop = (atr > 0 and abs(close_val - ema) < (0.10 * atr))
-    return low_atr or near_ema_chop
+    low_atr = (atr_sma is not None and atr_sma > 0 and atr < (0.45 * atr_sma))
+    return low_atr
 
   def _has_proper_retest_and_wick(self, prev_c, c, side, zone_low, zone_high):
-    """
-    Requires:
-    1) Prior candle/move approached/tested the POI zone (proper retest)
-    2) Current candle touches/retests inside POI zone and closes back on confirmed side
-    3) Strong wick rejection (>= MIN_WICK_RATIO)
-    """
     lower_ratio, upper_ratio = _wick_ratios(c)
     o, h, l, cl = c["open"], c["high"], c["low"], c["close"]
 
     if side == "BUY":
-      retested_zone = (l <= zone_high) and (l >= zone_low * 0.992)
-      prior_approached = (prev_c is None) or (prev_c["low"] <= zone_high * 1.004)
-      bull_close = (cl > o) and (cl > zone_low)
-      wick_ok = lower_ratio >= MIN_WICK_RATIO
-      if self.strict_confluence:
-        wick_ok = lower_ratio >= 0.35
+      retested_zone = (l <= zone_high) and (l >= zone_low * 0.990)
+      prior_approached = (prev_c is None) or (prev_c["low"] <= zone_high * 1.005)
+      bull_close = (cl > o) and (cl >= zone_low)
+      wick_ok = lower_ratio >= (0.20 if self.strict_confluence else MIN_WICK_RATIO)
       return retested_zone and prior_approached and bull_close and wick_ok
     else:
-      retested_zone = (h >= zone_low) and (h <= zone_high * 1.008)
-      prior_approached = (prev_c is None) or (prev_c["high"] >= zone_low * 0.996)
-      bear_close = (cl < o) and (cl < zone_high)
-      wick_ok = upper_ratio >= MIN_WICK_RATIO
-      if self.strict_confluence:
-        wick_ok = upper_ratio >= 0.35
+      retested_zone = (h >= zone_low) and (h <= zone_high * 1.012)
+      prior_approached = (prev_c is None) or (prev_c["high"] >= zone_low * 0.994)
+      bear_close = (cl < o) and (cl <= zone_high * 1.010)
+      wick_ok = upper_ratio >= (0.22 if self.strict_confluence else MIN_WICK_RATIO)
       return retested_zone and prior_approached and bear_close and wick_ok
 
   def _evaluate_strict_confirmation(self, prev_c, c, side, buyer_pct, seller_pct, zone_low, zone_high):
@@ -510,24 +519,28 @@ class TWTUltimateEngine:
     if not retest_wick_ok:
       return False, "REJECTED", ""
 
+    bear_cnt, bear_tfs = _mtf_bearish_count(self.dfs_by_tf, dt_utc=c["dt_utc"])
+
     if side == "BUY":
       strength_ok = buyer_pct >= MIN_ZONE_STRENGTH
       zl_ok = c.get("zl_trend") == "BULL"
-      above_ema = c["close"] >= c["ema50"]
+      not_heavy_bear = bear_cnt <= 2
+      if not strength_ok or not zl_ok or (self.strict_confluence and not not_heavy_bear):
+        return False, "REJECTED", ""
+      grade = "A+ GRADE 🔥" if not_heavy_bear else "CONFIRMED ⚡"
+      note = f"Retest+Wick:OK | Buyer:{buyer_pct}% | ZL:BULL"
+      return True, grade, note
     else:
       strength_ok = seller_pct >= MIN_ZONE_STRENGTH
-      zl_ok = c.get("zl_trend") == "BEAR"
-      above_ema = c["close"] <= c["ema50"]
-
-    if not strength_ok or not zl_ok:
-      return False, "REJECTED", ""
-
-    if self.strict_confluence and not above_ema:
-      return False, "REJECTED", ""
-
-    grade = "A+ GRADE 🔥" if above_ema else "CONFIRMED ⚡"
-    note = f"Retest+Wick:OK | ZL:{'BULL' if side == 'BUY' else 'BEAR'} | Str>={MIN_ZONE_STRENGTH:.0f}%"
-    return True, grade, note
+      mtf_bear_ok = (bear_cnt >= 3) or (c.get("zl_trend") == "BEAR")
+      if not strength_ok or not mtf_bear_ok:
+        return False, "REJECTED", ""
+      if self.strict_confluence and bear_cnt < 4:
+        return False, "REJECTED", ""
+      tf_str = "/".join(bear_tfs[-3:]) if bear_tfs else "BEAR"
+      grade = "A+ BEAR 🔥" if bear_cnt >= 4 else "BEAR SELL ⚡"
+      note = f"Retest+Wick:OK | Seller:{seller_pct}% | BearTF({bear_cnt}/5:{tf_str})"
+      return True, grade, note
 
   def _find_latest_completed_0130_4h(self, now_user):
     today_0130 = datetime.combine(now_user.date(), time(1, 30), tzinfo=self.user_tz)
@@ -556,11 +569,6 @@ class TWTUltimateEngine:
     return False, None, None, None, None
 
   def _scan_and_lock_first_signals(self, now_user):
-    """
-    Locks the FIRST confirmed SELL near Supply POI (with high seller strength, retest & wick)
-    and the FIRST confirmed BUY near Demand POI (with high buyer strength, retest & wick)
-    for the current POI session. Once locked, it never shifts on re-hits.
-    """
     if not self.c0130_closed or self.c0530_close is None:
       return []
 
@@ -669,11 +677,12 @@ class TWTUltimateEngine:
   def _build_diy_checklist(self):
     buy_cnt = sum(1 for s in self.signals if "BUY" in s["Type"])
     sell_cnt = sum(1 for s in self.signals if "SELL" in s["Type"])
+    bear_cnt, bear_tfs = _mtf_bearish_count(self.dfs_by_tf, dt_utc=None)
     self.diy_checklist = [
         {
             "Rule (01:30–05:30 POI)": "1. 4H Closed High / Low",
             "BUY Side (Demand POI)": f"Low: {self.c0130_low:.2f}" if self.c0130_low else "WAIT ⏳",
-            "SELL Side (Supply POI)": f"High: {self.c0130_high:.2f}" if self.c0130_high else "WAIT ⏳",
+            "SELL Side (Supply POI)": f"High: {self.c0130_high:.2f} (BearTF: {bear_cnt}/5)" if self.c0130_high else "WAIT ⏳",
         },
         {
             "Rule (01:30–05:30 POI)": "2. POI Zone Range",
@@ -739,9 +748,9 @@ class TWTUltimateEngine:
 
     if closed and h_val is not None and l_val is not None:
       rng = max(h_val - l_val, 1e-9)
-      poi_thick = max(rng * 0.22, h_val * 0.0015)
-      self.supply_poi_zone = (h_val - poi_thick, h_val + poi_thick * 0.4)
-      self.demand_poi_zone = (l_val - poi_thick * 0.4, l_val + poi_thick)
+      poi_thick = max(rng * 0.25, h_val * 0.0020)
+      self.supply_poi_zone = (h_val - poi_thick, h_val + poi_thick * 0.5)
+      self.demand_poi_zone = (l_val - poi_thick * 0.5, l_val + poi_thick)
 
     locked_sigs = self._scan_and_lock_first_signals(now_user)
     self.all_detected_signals = locked_sigs
@@ -757,10 +766,10 @@ class TWTUltimateEngine:
 st.markdown("---")
 st.subheader("🔥 TWT Master Live Signal Dashboard (Last 1 Hour | Locked)")
 
-if "twt_locked_entries_v2" not in st.session_state:
-  st.session_state.twt_locked_entries_v2 = load_locked_entries()
+if "twt_locked_entries_v3" not in st.session_state:
+  st.session_state.twt_locked_entries_v3 = load_locked_entries()
 
-locked_entries = st.session_state.twt_locked_entries_v2
+locked_entries = st.session_state.twt_locked_entries_v3
 locks_updated = False
 
 master_signals = []
@@ -768,15 +777,15 @@ asset_engines = {}
 
 
 def scan_asset(sym):
-  df_1d, df_4h, df_5m, _ = fetch_data(sym)
-  return sym, df_1d, df_4h, df_5m
+  df_1d, df_4h, df_5m, dfs_by_tf = fetch_data(sym)
+  return sym, df_1d, df_4h, df_5m, dfs_by_tf
 
 
-with st.spinner("⚡ Scanning 20+ assets (Strict Retest + Wick + Strength Lock)..."):
+with st.spinner("⚡ Scanning 20+ assets (Bearish MTF + Retest + Wick + Lock)..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
-      sym, df_1d, df_4h, df_5m = future.result()
+      sym, df_1d, df_4h, df_5m, dfs_by_tf = future.result()
       if df_1d is not None and df_4h is not None and df_5m is not None:
         engine = TWTUltimateEngine(
             df_1d,
@@ -787,6 +796,7 @@ with st.spinner("⚡ Scanning 20+ assets (Strict Retest + Wick + Strength Lock).
             chop_filter=use_chop_filter,
             strict_confluence=require_full_confluence,
             locked_entries=locked_entries,
+            dfs_by_tf=dfs_by_tf,
             live_window_min=LIVE_WINDOW_MINUTES,
         )
         engine.calculate_and_scan()
@@ -811,7 +821,7 @@ if master_signals:
   )
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ Pichhle 1 hour mein strict retest + wick + strength wala koi naya signal nahi aaya hai. Neeche asset select karke locked entries aur ussi asset ki history dekho.")
+  st.info("ℹ️ Pichhle 1 hour mein naya locked signal nahi aaya hai. Neeche asset select karke locked entries aur ussi asset ki history dekho.")
 
 # ---------------------------------------------------------
 # INDIVIDUAL ASSET INSPECTOR & SELECTED ASSET HISTORY ONLY
@@ -828,7 +838,7 @@ selected_symbol = st.selectbox(
 if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
-  df_1d, df_4h, df_5m, _ = fetch_data(selected_symbol)
+  df_1d, df_4h, df_5m, dfs_by_tf = fetch_data(selected_symbol)
   bot = TWTUltimateEngine(
       df_1d,
       df_4h,
@@ -838,6 +848,7 @@ else:
       chop_filter=use_chop_filter,
       strict_confluence=require_full_confluence,
       locked_entries=locked_entries,
+      dfs_by_tf=dfs_by_tf,
       live_window_min=LIVE_WINDOW_MINUTES,
   )
   bot.calculate_and_scan()
@@ -959,7 +970,7 @@ if bot.candles_5m:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m Chart — 01:30–05:30 POI (Strict Retest + Wick + Strength)",
+      f"{selected_symbol} 5m Chart — 01:30–05:30 POI (Bearish MTF + Retest + Wick)",
       color="white",
       fontsize=13,
   )
