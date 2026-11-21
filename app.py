@@ -30,15 +30,17 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
 count = st_autorefresh(interval=30000, key="twt_multi_refresh")
 
-st.title("⚡ TRADE WITH TUCKYAA — 4H POI Engine (Locked 1 BUY + 1 SELL)")
+st.title("⚡ TRADE WITH TUCKYAA — 4H POI Engine (Strict Retest + Wick + Strength)")
 
-LEDGER_FILE = Path("twt_signals_ledger_v5.json")
-LOCKED_ENTRIES_FILE = Path("twt_locked_entries_v1.json")
+LEDGER_FILE = Path("twt_signals_ledger_v6.json")
+LOCKED_ENTRIES_FILE = Path("twt_locked_entries_v2.json")
 LIVE_WINDOW_MINUTES = 60.0
+MIN_ZONE_STRENGTH = 65.0
+MIN_WICK_RATIO = 0.25
 
 
 # ---------------------------------------------------------
-# SESSION & LOCK HELPERS (FIRST SIGNAL LOCKED PER SIDE)
+# SESSION & LOCK HELPERS (STRICTLY FIRST CONFIRMED SIGNAL LOCKED)
 # ---------------------------------------------------------
 def get_poi_session_key(c0530_close):
   if c0530_close is None:
@@ -93,7 +95,7 @@ def update_ledger_with_engine(records, engine):
   changed = False
 
   for sig in engine.all_detected_signals:
-    sig_id = f"{sig['Asset']}|{sig.get('Session', '')}|{sig['Type']}"
+    sig_id = f"{sig['Asset']}|{sig.get('Session', '')}|{sig['Direction']}"
     if sig_id not in by_id:
       by_id[sig_id] = {
           "id": sig_id,
@@ -101,11 +103,11 @@ def update_ledger_with_engine(records, engine):
           "Date": sig["Date"],
           "Time": sig["Time"],
           "Window": sig.get("Window", ""),
-          "Direction": "BUY" if "BUY" in sig["Type"] else "SELL",
+          "Direction": sig["Direction"],
           "Type": sig["Type"],
-          "Grade": sig.get("Grade", "NORMAL ⚡"),
-          "Zone Buyer %": sig.get("Zone Buyer %", "50.0%"),
-          "Zone Seller %": sig.get("Zone Seller %", "50.0%"),
+          "Grade": sig.get("Grade", "CONFIRMED ⚡"),
+          "Zone Buyer %": sig.get("Zone Buyer %", "0.0%"),
+          "Zone Seller %": sig.get("Zone Seller %", "0.0%"),
           "Setup": sig["Setup"],
           "Entry Price": float(sig["Entry Price"]),
           "Stop Loss (SL)": float(sig["Stop Loss (SL)"]),
@@ -117,7 +119,7 @@ def update_ledger_with_engine(records, engine):
           "TP2_Hit": False,
           "TP3_Hit": False,
           "SL_Hit": False,
-          "Status": "OPEN",
+          "Status": "OPEN ⏳",
       }
       changed = True
 
@@ -250,7 +252,7 @@ use_chop_filter = st.sidebar.checkbox(
 )
 
 require_full_confluence = st.sidebar.checkbox(
-    "🎯 Strict All-Confluence Filter", value=False
+    "🎯 Extra Strict Wick & Trend Filter", value=False
 )
 
 ledger_start_date = st.sidebar.text_input(
@@ -258,11 +260,11 @@ ledger_start_date = st.sidebar.text_input(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### 4H POI + Lock Rules")
+st.sidebar.markdown("#### Strict POI + Lock Rules")
 st.sidebar.text("Anchor   : 01:30→05:30 4H Candle")
 st.sidebar.text("Entry Cap: Max 1 BUY + 1 SELL")
-st.sidebar.text("Lock     : 1st Entry Locked (No Shift)")
-st.sidebar.text("Strength : Buyer@Demand | Seller@Supply")
+st.sidebar.text("Strength : Buyer>=65% | Seller>=65%")
+st.sidebar.text("Wick/Ret : >=25% Wick + Zone Retest")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -340,10 +342,23 @@ def _compute_zero_lag_series(df, length=21, band_mult=1.2):
   return zl_line, band, pd.Series(states, index=df.index)
 
 
+def _wick_ratios(c):
+  o = float(c["open"])
+  h = float(c["high"])
+  l = float(c["low"])
+  cl = float(c["close"])
+  rng = max(h - l, 1e-9)
+  body_top = max(o, cl)
+  body_bot = min(o, cl)
+  upper_wick = max(0.0, h - body_top)
+  lower_wick = max(0.0, body_bot - l)
+  return (lower_wick / rng), (upper_wick / rng)
+
+
 def _candle_zone_strength(c, zone_type):
   """
-  Calculates Buyer Strength % when price is in Demand Zone,
-  and Seller Strength % when price is in Supply Zone.
+  Calculates Buyer Strength % in Demand Zone and Seller Strength % in Supply Zone,
+  incorporating wick rejection, close position, and candle direction.
   """
   o = float(c["open"])
   h = float(c["high"])
@@ -351,23 +366,24 @@ def _candle_zone_strength(c, zone_type):
   cl = float(c["close"])
   rng = max(h - l, 1e-9)
 
+  lower_ratio, upper_ratio = _wick_ratios(c)
   body_ratio = min(1.0, abs(cl - o) / rng)
   close_pos = max(0.0, min(1.0, (cl - l) / rng))
 
   if zone_type == "DEMAND":
-    # Bullish reaction + lower wick rejection + high close in candle range
-    bull_bonus = 20.0 if cl >= o else -10.0
+    if cl <= o:
+      return 25.0, 75.0
     buyer_pct = round(
-        max(5.0, min(99.0, 45.0 + (body_ratio * 25.0) + (close_pos * 25.0) + bull_bonus)),
+        max(5.0, min(99.0, 35.0 + (lower_ratio * 35.0) + (close_pos * 20.0) + (body_ratio * 10.0))),
         1,
     )
     seller_pct = round(max(1.0, 100.0 - buyer_pct), 1)
     return buyer_pct, seller_pct
   else:
-    # Bearish rejection + upper wick rejection + low close in candle range
-    bear_bonus = 20.0 if cl <= o else -10.0
+    if cl >= o:
+      return 75.0, 25.0
     seller_pct = round(
-        max(5.0, min(99.0, 45.0 + (body_ratio * 25.0) + ((1.0 - close_pos) * 25.0) + bear_bonus)),
+        max(5.0, min(99.0, 35.0 + (upper_ratio * 35.0) + ((1.0 - close_pos) * 20.0) + (body_ratio * 10.0))),
         1,
     )
     buyer_pct = round(max(1.0, 100.0 - seller_pct), 1)
@@ -410,7 +426,7 @@ def fetch_data(symbol):
 
 
 # ---------------------------------------------------------
-# 01:30 -> 05:30 4H POI ENGINE (FIRST SIGNAL LOCKED PER SIDE)
+# 01:30 -> 05:30 4H POI ENGINE (STRICT RETEST + WICK + STRENGTH)
 # ---------------------------------------------------------
 class TWTUltimateEngine:
 
@@ -438,9 +454,9 @@ class TWTUltimateEngine:
     self.live_window_min = live_window_min
 
     self.candles_5m = []
-    self.all_detected_signals = []  # Locked 1 BUY + Locked 1 SELL for this session
-    self.live_1hr_signals = []      # Only locked signals within last 1 hour
-    self.signals = []               # Locked 1 BUY + Locked 1 SELL shown on screen/chart
+    self.all_detected_signals = []
+    self.live_1hr_signals = []
+    self.signals = []
     self.diy_checklist = []
 
     self.c0130_closed = False
@@ -458,41 +474,60 @@ class TWTUltimateEngine:
     atr_sma = c["atr_sma"]
     ema = c["ema50"]
     close_val = c["close"]
-    low_atr = (atr_sma is not None and atr_sma > 0 and atr < (0.55 * atr_sma))
-    near_ema_chop = (atr > 0 and abs(close_val - ema) < (0.08 * atr))
+    low_atr = (atr_sma is not None and atr_sma > 0 and atr < (0.60 * atr_sma))
+    near_ema_chop = (atr > 0 and abs(close_val - ema) < (0.10 * atr))
     return low_atr or near_ema_chop
 
-  def _check_candle_wick_rejection(self, c, side):
-    o = c["open"]
-    h = c["high"]
-    l = c["low"]
-    cl = c["close"]
-    rng = max(h - l, 1e-9)
-    body_top = max(o, cl)
-    body_bot = min(o, cl)
+  def _has_proper_retest_and_wick(self, prev_c, c, side, zone_low, zone_high):
+    """
+    Requires:
+    1) Prior candle/move approached/tested the POI zone (proper retest)
+    2) Current candle touches/retests inside POI zone and closes back on confirmed side
+    3) Strong wick rejection (>= MIN_WICK_RATIO)
+    """
+    lower_ratio, upper_ratio = _wick_ratios(c)
+    o, h, l, cl = c["open"], c["high"], c["low"], c["close"]
 
-    if side == "SELL":
-      upper_wick = max(0.0, h - body_top)
-      return (cl < o) and ((upper_wick / rng) >= 0.08 or upper_wick > 0)
+    if side == "BUY":
+      retested_zone = (l <= zone_high) and (l >= zone_low * 0.992)
+      prior_approached = (prev_c is None) or (prev_c["low"] <= zone_high * 1.004)
+      bull_close = (cl > o) and (cl > zone_low)
+      wick_ok = lower_ratio >= MIN_WICK_RATIO
+      if self.strict_confluence:
+        wick_ok = lower_ratio >= 0.35
+      return retested_zone and prior_approached and bull_close and wick_ok
     else:
-      lower_wick = max(0.0, body_bot - l)
-      return (cl > o) and ((lower_wick / rng) >= 0.08 or lower_wick > 0)
+      retested_zone = (h >= zone_low) and (h <= zone_high * 1.008)
+      prior_approached = (prev_c is None) or (prev_c["high"] >= zone_low * 0.996)
+      bear_close = (cl < o) and (cl < zone_high)
+      wick_ok = upper_ratio >= MIN_WICK_RATIO
+      if self.strict_confluence:
+        wick_ok = upper_ratio >= 0.35
+      return retested_zone and prior_approached and bear_close and wick_ok
 
-  def _evaluate_confirmation(self, c, side, buyer_pct, seller_pct):
-    wick_ok = self._check_candle_wick_rejection(c, side)
-    zl_ok = (c.get("zl_trend") == "BULL") if side == "BUY" else (c.get("zl_trend") == "BEAR")
-    zone_str_ok = (buyer_pct >= 55.0) if side == "BUY" else (seller_pct >= 55.0)
-    candle_dir_ok = (c["close"] > c["open"]) if side == "BUY" else (c["close"] < c["open"])
+  def _evaluate_strict_confirmation(self, prev_c, c, side, buyer_pct, seller_pct, zone_low, zone_high):
+    retest_wick_ok = self._has_proper_retest_and_wick(prev_c, c, side, zone_low, zone_high)
+    if not retest_wick_ok:
+      return False, "REJECTED", ""
 
-    score = sum([wick_ok, zl_ok, zone_str_ok, candle_dir_ok])
-    if self.strict_confluence:
-      passed = candle_dir_ok and wick_ok and (zl_ok or zone_str_ok) and (score >= 3)
+    if side == "BUY":
+      strength_ok = buyer_pct >= MIN_ZONE_STRENGTH
+      zl_ok = c.get("zl_trend") == "BULL"
+      above_ema = c["close"] >= c["ema50"]
     else:
-      passed = candle_dir_ok and (score >= 2)
+      strength_ok = seller_pct >= MIN_ZONE_STRENGTH
+      zl_ok = c.get("zl_trend") == "BEAR"
+      above_ema = c["close"] <= c["ema50"]
 
-    grade = "A-GRADE 🔥" if score >= 3 else "CONFIRMED ⚡"
-    note = f"Conf {score}/4 | Dir:OK | Wick:{'OK' if wick_ok else 'Lt'} | ZL:{'OK' if zl_ok else 'Mix'}"
-    return passed, grade, note
+    if not strength_ok or not zl_ok:
+      return False, "REJECTED", ""
+
+    if self.strict_confluence and not above_ema:
+      return False, "REJECTED", ""
+
+    grade = "A+ GRADE 🔥" if above_ema else "CONFIRMED ⚡"
+    note = f"Retest+Wick:OK | ZL:{'BULL' if side == 'BUY' else 'BEAR'} | Str>={MIN_ZONE_STRENGTH:.0f}%"
+    return True, grade, note
 
   def _find_latest_completed_0130_4h(self, now_user):
     today_0130 = datetime.combine(now_user.date(), time(1, 30), tzinfo=self.user_tz)
@@ -522,9 +557,9 @@ class TWTUltimateEngine:
 
   def _scan_and_lock_first_signals(self, now_user):
     """
-    Locks the FIRST confirmed SELL near Supply POI (01:30-05:30 High) and
-    the FIRST confirmed BUY near Demand POI (01:30-05:30 Low) for the session.
-    Once locked, entry time/price/SL/TP/strength never shift when price re-hits the zone.
+    Locks the FIRST confirmed SELL near Supply POI (with high seller strength, retest & wick)
+    and the FIRST confirmed BUY near Demand POI (with high buyer strength, retest & wick)
+    for the current POI session. Once locked, it never shifts on re-hits.
     """
     if not self.c0130_closed or self.c0530_close is None:
       return []
@@ -541,81 +576,81 @@ class TWTUltimateEngine:
     dem_low, dem_high = self.demand_poi_zone
 
     if not locked_sell or not locked_buy:
-      for c in sub:
+      for idx_c, c in enumerate(sub):
         if locked_sell and locked_buy:
           break
         if self._is_choppy(c):
           continue
 
+        prev_c = sub[idx_c - 1] if idx_c > 0 else None
         atr = c["atr"]
         dec = get_decimals(c["close"])
-        o, h, l, cl = c["open"], c["high"], c["low"], c["close"]
+        h, l, cl = c["high"], c["low"], c["close"]
 
-        # First SELL at Supply POI
         if not locked_sell:
-          near_supply = (h >= sup_low) and (cl <= sup_high * 1.005) and (cl < o)
-          if near_supply:
-            b_pct, s_pct = _candle_zone_strength(c, "SUPPLY")
-            ok, grade, conf_note = self._evaluate_confirmation(c, "SELL", b_pct, s_pct)
-            if ok:
-              sl = round(max(self.c0130_high, h) + (1.2 * atr), dec)
-              locked_sell = {
-                  "Asset": self.symbol,
-                  "Session": session_key,
-                  "Date": c["dt_user"].strftime("%Y-%m-%d"),
-                  "Time": c["dt_user"].strftime("%H:%M"),
-                  "Window": f"Post-{self.c0530_close.strftime('%H:%M')} Supply POI",
-                  "Candle #": c["id"],
-                  "Type": "SELL 🔴",
-                  "Grade": grade,
-                  "Zone Buyer %": f"{b_pct}%",
-                  "Zone Seller %": f"{s_pct}%",
-                  "Setup": f"1st Supply POI ({self.c0130_high:.{dec}f}) SELL | {conf_note}",
-                  "Entry Price": round(cl, dec),
-                  "Stop Loss (SL)": sl,
-                  "TP 1": round(cl - (1.2 * atr), dec),
-                  "TP 2": round(cl - (2.5 * atr), dec),
-                  "TP 3": round(cl - (4.0 * atr), dec),
-                  "Signal_DT": c["dt_user"].isoformat(),
-              }
-              self.locked_entries[sell_lock_key] = locked_sell
-              self.locks_mutated = True
+          b_pct, s_pct = _candle_zone_strength(c, "SUPPLY")
+          ok, grade, conf_note = self._evaluate_strict_confirmation(
+              prev_c, c, "SELL", b_pct, s_pct, sup_low, sup_high
+          )
+          if ok:
+            sl = round(max(self.c0130_high, h) + (1.2 * atr), dec)
+            locked_sell = {
+                "Asset": self.symbol,
+                "Session": session_key,
+                "Date": c["dt_user"].strftime("%Y-%m-%d"),
+                "Time": c["dt_user"].strftime("%H:%M"),
+                "Window": f"Post-{self.c0530_close.strftime('%H:%M')} Supply POI",
+                "Candle #": c["id"],
+                "Direction": "SELL",
+                "Type": "SELL 🔴",
+                "Grade": grade,
+                "Zone Buyer %": f"{b_pct}%",
+                "Zone Seller %": f"{s_pct}%",
+                "Setup": f"Supply POI ({self.c0130_high:.{dec}f}) SELL | {conf_note}",
+                "Entry Price": round(cl, dec),
+                "Stop Loss (SL)": sl,
+                "TP 1": round(cl - (1.2 * atr), dec),
+                "TP 2": round(cl - (2.5 * atr), dec),
+                "TP 3": round(cl - (4.0 * atr), dec),
+                "Signal_DT": c["dt_user"].isoformat(),
+            }
+            self.locked_entries[sell_lock_key] = locked_sell
+            self.locks_mutated = True
 
-        # First BUY at Demand POI
         if not locked_buy:
-          near_demand = (l <= dem_high) and (cl >= dem_low * 0.995) and (cl > o)
-          if near_demand:
-            b_pct, s_pct = _candle_zone_strength(c, "DEMAND")
-            ok, grade, conf_note = self._evaluate_confirmation(c, "BUY", b_pct, s_pct)
-            if ok:
-              sl = round(min(self.c0130_low, l) - (1.2 * atr), dec)
-              locked_buy = {
-                  "Asset": self.symbol,
-                  "Session": session_key,
-                  "Date": c["dt_user"].strftime("%Y-%m-%d"),
-                  "Time": c["dt_user"].strftime("%H:%M"),
-                  "Window": f"Post-{self.c0530_close.strftime('%H:%M')} Demand POI",
-                  "Candle #": c["id"],
-                  "Type": "BUY 🟢",
-                  "Grade": grade,
-                  "Zone Buyer %": f"{b_pct}%",
-                  "Zone Seller %": f"{s_pct}%",
-                  "Setup": f"1st Demand POI ({self.c0130_low:.{dec}f}) BUY | {conf_note}",
-                  "Entry Price": round(cl, dec),
-                  "Stop Loss (SL)": sl,
-                  "TP 1": round(cl + (1.2 * atr), dec),
-                  "TP 2": round(cl + (2.5 * atr), dec),
-                  "TP 3": round(cl + (4.0 * atr), dec),
-                  "Signal_DT": c["dt_user"].isoformat(),
-              }
-              self.locked_entries[buy_lock_key] = locked_buy
-              self.locks_mutated = True
+          b_pct, s_pct = _candle_zone_strength(c, "DEMAND")
+          ok, grade, conf_note = self._evaluate_strict_confirmation(
+              prev_c, c, "BUY", b_pct, s_pct, dem_low, dem_high
+          )
+          if ok:
+            sl = round(min(self.c0130_low, l) - (1.2 * atr), dec)
+            locked_buy = {
+                "Asset": self.symbol,
+                "Session": session_key,
+                "Date": c["dt_user"].strftime("%Y-%m-%d"),
+                "Time": c["dt_user"].strftime("%H:%M"),
+                "Window": f"Post-{self.c0530_close.strftime('%H:%M')} Demand POI",
+                "Candle #": c["id"],
+                "Direction": "BUY",
+                "Type": "BUY 🟢",
+                "Grade": grade,
+                "Zone Buyer %": f"{b_pct}%",
+                "Zone Seller %": f"{s_pct}%",
+                "Setup": f"Demand POI ({self.c0130_low:.{dec}f}) BUY | {conf_note}",
+                "Entry Price": round(cl, dec),
+                "Stop Loss (SL)": sl,
+                "TP 1": round(cl + (1.2 * atr), dec),
+                "TP 2": round(cl + (2.5 * atr), dec),
+                "TP 3": round(cl + (4.0 * atr), dec),
+                "Signal_DT": c["dt_user"].isoformat(),
+            }
+            self.locked_entries[buy_lock_key] = locked_buy
+            self.locks_mutated = True
 
     result = []
     for item in (locked_sell, locked_buy):
       if item:
         rec = dict(item)
-        # Match current candle id if present in visible 5m window
         matched_c = next((x for x in self.candles_5m if x["dt_user"].isoformat() == rec["Signal_DT"]), None)
         if matched_c:
           rec["Candle #"] = matched_c["id"]
@@ -647,8 +682,8 @@ class TWTUltimateEngine:
         },
         {
             "Rule (01:30–05:30 POI)": "3. Locked Entries (Max 1 BUY + 1 SELL)",
-            "BUY Side (Demand POI)": f"{buy_cnt} / 1 BUY (Buyer@Demand)",
-            "SELL Side (Supply POI)": f"{sell_cnt} / 1 SELL (Seller@Supply)",
+            "BUY Side (Demand POI)": f"{buy_cnt} / 1 BUY (Buyer>={MIN_ZONE_STRENGTH:.0f}%)",
+            "SELL Side (Supply POI)": f"{sell_cnt} / 1 SELL (Seller>={MIN_ZONE_STRENGTH:.0f}%)",
         },
     ]
 
@@ -722,10 +757,10 @@ class TWTUltimateEngine:
 st.markdown("---")
 st.subheader("🔥 TWT Master Live Signal Dashboard (Last 1 Hour | Locked)")
 
-if "twt_locked_entries" not in st.session_state:
-  st.session_state.twt_locked_entries = load_locked_entries()
+if "twt_locked_entries_v2" not in st.session_state:
+  st.session_state.twt_locked_entries_v2 = load_locked_entries()
 
-locked_entries = st.session_state.twt_locked_entries
+locked_entries = st.session_state.twt_locked_entries_v2
 locks_updated = False
 
 master_signals = []
@@ -733,11 +768,11 @@ asset_engines = {}
 
 
 def scan_asset(sym):
-  df_1d, df_4h, df_5m, dfs_by_tf = fetch_data(sym)
+  df_1d, df_4h, df_5m, _ = fetch_data(sym)
   return sym, df_1d, df_4h, df_5m
 
 
-with st.spinner("⚡ Scanning 20+ assets (Locking 1st BUY & 1st SELL per asset)..."):
+with st.spinner("⚡ Scanning 20+ assets (Strict Retest + Wick + Strength Lock)..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
     futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
     for future in as_completed(futures):
@@ -772,11 +807,11 @@ save_ledger(ledger_records)
 if master_signals:
   st.success(f"✅ {len(master_signals)} locked signal(s) from the last 1 hour!")
   df_display = pd.DataFrame(master_signals).drop(
-      columns=["Is_Live_1Hr", "Age_Min", "Signal_DT", "Session"], errors="ignore"
+      columns=["Is_Live_1Hr", "Age_Min", "Signal_DT", "Session", "Direction"], errors="ignore"
   )
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ Pichhle 1 hour mein koi naya locked signal nahi aaya hai. Neeche asset select karke locked BUY/SELL entries aur ussi asset ki history dekho.")
+  st.info("ℹ️ Pichhle 1 hour mein strict retest + wick + strength wala koi naya signal nahi aaya hai. Neeche asset select karke locked entries aur ussi asset ki history dekho.")
 
 # ---------------------------------------------------------
 # INDIVIDUAL ASSET INSPECTOR & SELECTED ASSET HISTORY ONLY
@@ -825,8 +860,8 @@ selected_asset_history = [
         "Window": r.get("Window", ""),
         "Type": r.get("Type"),
         "Grade": r.get("Grade"),
-        "Zone Buyer %": r.get("Zone Buyer %", "50.0%"),
-        "Zone Seller %": r.get("Zone Seller %", "50.0%"),
+        "Zone Buyer %": r.get("Zone Buyer %", "0.0%"),
+        "Zone Seller %": r.get("Zone Seller %", "0.0%"),
         "Entry Price": r.get("Entry Price"),
         "Stop Loss (SL)": r.get("Stop Loss (SL)"),
         "TP 1": r.get("TP 1"),
@@ -863,7 +898,7 @@ if bot.candles_5m:
   if bot.signals:
     st.markdown(f"### 🔒 Locked BUY & SELL Entries for {selected_symbol}")
     df_sig_asset = pd.DataFrame(bot.signals).drop(
-        columns=["Is_Live_1Hr", "Age_Min", "Signal_DT", "Session"], errors="ignore"
+        columns=["Is_Live_1Hr", "Age_Min", "Signal_DT", "Session", "Direction"], errors="ignore"
     )
     st.dataframe(df_sig_asset, width="stretch")
 
@@ -924,7 +959,7 @@ if bot.candles_5m:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m Chart — 01:30–05:30 POI (Locked 1 BUY + 1 SELL)",
+      f"{selected_symbol} 5m Chart — 01:30–05:30 POI (Strict Retest + Wick + Strength)",
       color="white",
       fontsize=13,
   )
