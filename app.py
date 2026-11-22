@@ -52,14 +52,14 @@ active_tz = ZoneInfo(selected_tz_name)
 
 selected_tf = "5m"
 st.sidebar.text("⏱️ Entry Timeframe : 5m (Fixed)")
-st.sidebar.text("📊 Confluence : 01:30 & 05:30 4H + Prev Day 1D")
+st.sidebar.text("📊 Confluence : 01:30, 05:30 & 21:30 4H + 1D")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Master Confluence Rules")
-st.sidebar.text("Demand Zones : 01:30 & 05:30 Lows + Prev Day Low")
-st.sidebar.text("Supply Zones : 01:30 & 05:30 Highs + Prev Day High")
-st.sidebar.text("BUY  : Strict Demand Zone Bounce + EMA50")
-st.sidebar.text("SELL : Strict Supply Zone Rejection + EMA50")
+st.sidebar.text("Demand Zones : 01:30, 05:30, 21:30 Lows + PDL")
+st.sidebar.text("Supply Zones : 01:30, 05:30, 21:30 Highs + PDH")
+st.sidebar.text("BUY  : Retest + Wick + Bull Shift + EMA50")
+st.sidebar.text("21:30 4H Sig : Active After 01:29 AM")
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -92,6 +92,34 @@ def get_decimals(price):
     return 3
   else:
     return 2
+
+
+def _has_demand_confirmation(prev_c, c, zone_bot, zone_top):
+  """
+  Strict confirmation for Demand Zone BUY entries:
+  1) Price sweeps/tests into the demand zone and closes back on/above zone floor
+  2) Meaningful lower rejection wick (>= 25% of candle range)
+  3) Bullish candle closing above EMA50 with momentum above prior candle close
+  """
+  o, h, l, cl = float(c["open"]), float(c["high"]), float(c["low"]), float(c["close"])
+  ema = float(c["ema50"])
+  rng = max(h - l, 1e-9)
+  lower_wick = max(0.0, min(o, cl) - l)
+  lower_wick_ratio = lower_wick / rng
+
+  in_or_tested_zone = (l <= zone_top) and (cl >= zone_bot)
+  bullish_candle = cl > o
+  above_ema = cl > ema
+  wick_confirmed = lower_wick_ratio >= 0.25
+  momentum_confirmed = True if prev_c is None else (cl > float(prev_c["close"]))
+
+  return (
+      in_or_tested_zone
+      and bullish_candle
+      and above_ema
+      and wick_confirmed
+      and momentum_confirmed
+  )
 
 
 # ---------------------------------------------------------
@@ -145,7 +173,7 @@ class TWTUltimateEngine:
     self.candles_5m = []
     self.history = []
     self.signals = []
-    
+
     # Levels & Zones
     self.prev_high = None
     self.prev_low = None
@@ -154,9 +182,21 @@ class TWTUltimateEngine:
     self.demand_box_2 = None
     self.supply_box_2 = None
 
+    # 21:30 4H Candle High / Low & Zones (signals active after 01:29 AM)
+    self.anchor_2130_high = None
+    self.anchor_2130_low = None
+    self.demand_box_2130 = None
+    self.supply_box_2130 = None
+    self.anchor_2130_dt = None
+
   def _build_zones(self, anchor_candle):
     high_val = anchor_candle["high"]
     low_val = anchor_candle["low"]
+    rng = high_val - low_val
+    zone_thickness = (rng * 0.25) if rng > 0 else (high_val * 0.002)
+    return (low_val, low_val + zone_thickness), (high_val - zone_thickness, high_val)
+
+  def _build_zones_from_hl(self, high_val, low_val):
     rng = high_val - low_val
     zone_thickness = (rng * 0.25) if rng > 0 else (high_val * 0.002)
     return (low_val, low_val + zone_thickness), (high_val - zone_thickness, high_val)
@@ -172,11 +212,11 @@ class TWTUltimateEngine:
       prev_candle = self.df_1d.iloc[-2]
     else:
       prev_candle = self.df_1d.iloc[-1]
-    
+
     self.prev_high = float(prev_candle["High"])
     self.prev_low = float(prev_candle["Low"])
 
-    # 2. 4H Anchor Zones (01:30 & 05:30)
+    # 2. 4H Anchor Zones (01:30, 05:30 & 21:30)
     candles_4h = []
     for row in self.df_4h.iterrows():
       dt_utc = row[0]
@@ -187,10 +227,10 @@ class TWTUltimateEngine:
           "time_obj": dt_user.time(),
           "dt_user": dt_user,
           "high": float(r["High"]),
-          "low": float(r["Low"])
+          "low": float(r["Low"]),
       })
 
-    latest_date = candles_4h[-1]["date"] if candles_4h else datetime.now().date()
+    latest_date = candles_4h[-1]["date"] if candles_4h else datetime.now(self.user_tz).date()
     today_4h = [c for c in candles_4h if c["date"] == latest_date]
     if not today_4h:
       today_4h = candles_4h
@@ -199,7 +239,7 @@ class TWTUltimateEngine:
     anchor_1 = min(
         today_4h,
         key=lambda x: abs(datetime.combine(latest_date, x["time_obj"]) - datetime.combine(latest_date, time(1, 30))),
-        default=today_4h[0]
+        default=today_4h[0],
     )
     anchor_dt_1 = anchor_1["dt_user"]
     self.demand_box_1, self.supply_box_1 = self._build_zones(anchor_1)
@@ -211,10 +251,26 @@ class TWTUltimateEngine:
     if anchor_2_candidates:
       anchor_2 = min(
           anchor_2_candidates,
-          key=lambda x: abs(datetime.combine(latest_date, x["time_obj"]) - datetime.combine(latest_date, time(5, 30)))
+          key=lambda x: abs(datetime.combine(latest_date, x["time_obj"]) - datetime.combine(latest_date, time(5, 30))),
       )
       anchor_dt_2 = anchor_2["dt_user"]
       self.demand_box_2, self.supply_box_2 = self._build_zones(anchor_2)
+
+    # 21:30 (9:30 PM) 4H Candle High & Low (from latest/previous session 21:30 4H candle)
+    c2130_candidates = [c for c in candles_4h if c["time_obj"] == time(21, 30)]
+    if not c2130_candidates:
+      c2130_candidates = [
+          c for c in candles_4h
+          if abs((c["time_obj"].hour * 60 + c["time_obj"].minute) - (21 * 60 + 30)) <= 30
+      ]
+    if c2130_candidates:
+      anchor_2130 = c2130_candidates[-1]
+      self.anchor_2130_dt = anchor_2130["dt_user"]
+      self.anchor_2130_high = anchor_2130["high"]
+      self.anchor_2130_low = anchor_2130["low"]
+      self.demand_box_2130, self.supply_box_2130 = self._build_zones_from_hl(
+          self.anchor_2130_high, self.anchor_2130_low
+      )
 
     # 3. Process 5M Candles & Indicators
     self.df_5m["TR"] = np.maximum(
@@ -242,9 +298,13 @@ class TWTUltimateEngine:
           "date": dt_user.date(),
           "dt_user": dt_user,
           "color": "Green" if c >= o else "Red",
-          "open": o, "high": h, "low": l, "close": c,
-          "atr": atr, "ema50": ema50,
-          "is_within_1hr": age_min <= 60.0
+          "open": o,
+          "high": h,
+          "low": l,
+          "close": c,
+          "atr": atr,
+          "ema50": ema50,
+          "is_within_1hr": age_min <= 60.0,
       })
 
     today_5m = [c for c in self.candles_5m if c["date"] == latest_date]
@@ -255,8 +315,11 @@ class TWTUltimateEngine:
     first_sell = None
     broke_above_pdh = False
     broke_below_pdl = False
+    pdl_thickness = max((self.prev_high - self.prev_low) * 0.03, self.prev_low * 0.002)
+    pdl_demand_zone = (self.prev_low - pdl_thickness, self.prev_low + pdl_thickness)
 
-    for c in today_5m:
+    for idx_c, c in enumerate(today_5m):
+      prev_c = today_5m[idx_c - 1] if idx_c > 0 else None
       atr = c["atr"]
       ema = c["ema50"]
       dec = get_decimals(c["close"])
@@ -264,16 +327,10 @@ class TWTUltimateEngine:
       low_val = c["low"]
       close_val = c["close"]
 
-      # Helper check for whether price is inside ANY Demand Zone (01:30, 05:30, or near Prev Day Low)
-      in_demand_zone_1 = self.demand_box_1 and (self.demand_box_1[0] <= close_val <= self.demand_box_1[1])
-      in_demand_zone_2 = self.demand_box_2 and (self.demand_box_2[0] <= close_val <= self.demand_box_2[1])
-      near_prev_low = low_val <= self.prev_low
-
       in_supply_zone_1 = self.supply_box_1 and (self.supply_box_1[0] <= close_val <= self.supply_box_1[1])
       in_supply_zone_2 = self.supply_box_2 and (self.supply_box_2[0] <= close_val <= self.supply_box_2[1])
-      near_prev_high = high_val >= self.prev_high
 
-      # --- A. PREVIOUS DAY HIGH / LOW REJECTION STRATEGY ---
+      # --- A. PREVIOUS DAY HIGH / LOW STRATEGY ---
       if high_val > self.prev_high:
         broke_above_pdh = True
       if not first_sell and broke_above_pdh and close_val < self.prev_high and c["color"] == "Red" and close_val < ema:
@@ -296,15 +353,19 @@ class TWTUltimateEngine:
 
       if low_val < self.prev_low:
         broke_below_pdl = True
-      if not first_buy and (broke_below_pdl or near_prev_low) and close_val >= self.prev_low and c["color"] == "Green" and close_val > ema:
-        sl = round(self.prev_low - (1.5 * atr), dec)
+      if (
+          not first_buy
+          and (broke_below_pdl or low_val <= self.prev_low)
+          and _has_demand_confirmation(prev_c, c, pdl_demand_zone[0], pdl_demand_zone[1])
+      ):
+        sl = round(min(self.prev_low, low_val) - (1.5 * atr), dec)
         first_buy = {
             "Asset": self.symbol,
             "Date": str(c["date"]),
             "Time": c["time"],
             "Candle #": c["id"],
             "Type": "BUY 🟢",
-            "Setup": "Prev Day Low Bounce",
+            "Setup": "Prev Day Low Confirmed Bounce",
             "Entry Price": round(close_val, dec),
             "Stop Loss (SL)": sl,
             "TP 1": round(close_val + (1.2 * atr), dec),
@@ -316,15 +377,15 @@ class TWTUltimateEngine:
 
       # --- B. 4H ANCHOR ZONE 1 (01:30 AM) ---
       if c["dt_user"] > anchor_dt_1 and self.demand_box_1 and self.supply_box_1:
-        if not first_buy and c["color"] == "Green" and in_demand_zone_1 and close_val > ema:
-          sl = round(self.demand_box_1[0] - (1.5 * atr), dec)
+        if not first_buy and _has_demand_confirmation(prev_c, c, self.demand_box_1[0], self.demand_box_1[1]):
+          sl = round(min(self.demand_box_1[0], low_val) - (1.5 * atr), dec)
           first_buy = {
               "Asset": self.symbol,
               "Date": str(c["date"]),
               "Time": c["time"],
               "Candle #": c["id"],
               "Type": "BUY 🟢",
-              "Setup": "01:30 Zone Demand Bounce",
+              "Setup": "01:30 Zone Confirmed Demand Bounce",
               "Entry Price": round(close_val, dec),
               "Stop Loss (SL)": sl,
               "TP 1": round(close_val + (1.2 * atr), dec),
@@ -352,15 +413,15 @@ class TWTUltimateEngine:
 
       # --- C. 4H ANCHOR ZONE 2 (05:30 AM) ---
       if anchor_dt_2 and c["dt_user"] > anchor_dt_2 and self.demand_box_2 and self.supply_box_2:
-        if not first_buy and c["color"] == "Green" and in_demand_zone_2 and close_val > ema:
-          sl = round(self.demand_box_2[0] - (1.5 * atr), dec)
+        if not first_buy and _has_demand_confirmation(prev_c, c, self.demand_box_2[0], self.demand_box_2[1]):
+          sl = round(min(self.demand_box_2[0], low_val) - (1.5 * atr), dec)
           first_buy = {
               "Asset": self.symbol,
               "Date": str(c["date"]),
               "Time": c["time"],
               "Candle #": c["id"],
               "Type": "BUY 🟢",
-              "Setup": "05:30 Zone Demand Bounce",
+              "Setup": "05:30 Zone Confirmed Demand Bounce",
               "Entry Price": round(close_val, dec),
               "Stop Loss (SL)": sl,
               "TP 1": round(close_val + (1.2 * atr), dec),
@@ -378,6 +439,44 @@ class TWTUltimateEngine:
               "Candle #": c["id"],
               "Type": "SELL 🔴",
               "Setup": "05:30 Zone Supply Rejection",
+              "Entry Price": round(close_val, dec),
+              "Stop Loss (SL)": sl,
+              "TP 1": round(close_val - (1.2 * atr), dec),
+              "TP 2": round(close_val - (2.5 * atr), dec),
+              "TP 3": round(close_val - (4.0 * atr), dec),
+              "Is_Within_1hr": c["is_within_1hr"],
+          }
+
+      # --- D. 21:30 (9:30 PM) 4H CANDLE LEVELS (SIGNALS ACTIVE AFTER 01:29 AM) ---
+      after_0129_am = c["dt_user"].time() > time(1, 29)
+      if after_0129_am and self.demand_box_2130 and self.supply_box_2130:
+        in_supply_2130 = self.supply_box_2130[0] <= close_val <= self.supply_box_2130[1]
+        if not first_buy and _has_demand_confirmation(prev_c, c, self.demand_box_2130[0], self.demand_box_2130[1]):
+          sl = round(min(self.demand_box_2130[0], low_val) - (1.5 * atr), dec)
+          first_buy = {
+              "Asset": self.symbol,
+              "Date": str(c["date"]),
+              "Time": c["time"],
+              "Candle #": c["id"],
+              "Type": "BUY 🟢",
+              "Setup": "21:30 4H Low Confirmed Bounce (>01:29)",
+              "Entry Price": round(close_val, dec),
+              "Stop Loss (SL)": sl,
+              "TP 1": round(close_val + (1.2 * atr), dec),
+              "TP 2": round(close_val + (2.5 * atr), dec),
+              "TP 3": round(close_val + (4.0 * atr), dec),
+              "Is_Within_1hr": c["is_within_1hr"],
+          }
+
+        if not first_sell and c["color"] == "Red" and in_supply_2130 and close_val < ema:
+          sl = round(self.supply_box_2130[1] + (1.5 * atr), dec)
+          first_sell = {
+              "Asset": self.symbol,
+              "Date": str(c["date"]),
+              "Time": c["time"],
+              "Candle #": c["id"],
+              "Type": "SELL 🔴",
+              "Setup": "21:30 4H High Supply Rejection (>01:29)",
               "Entry Price": round(close_val, dec),
               "Stop Loss (SL)": sl,
               "TP 1": round(close_val - (1.2 * atr), dec),
@@ -459,6 +558,12 @@ if bot.candles_5m:
   with col3:
     st.metric(label="Timezone", value=selected_tz_name)
 
+  if bot.anchor_2130_high is not None and bot.anchor_2130_low is not None:
+    st.caption(
+        f"🕒 21:30 4H Candle — High: {bot.anchor_2130_high} | Low: {bot.anchor_2130_low} "
+        f"(Signals active after 01:29 AM)"
+    )
+
   if bot.history:
     st.markdown(f"### 📋 Locked Entries Feed for {selected_symbol}")
     df_history = pd.DataFrame(bot.history).drop(columns=["Is_Within_1hr"], errors="ignore")
@@ -487,6 +592,16 @@ if bot.candles_5m:
     ax.axhspan(bot.demand_box_2[0], bot.demand_box_2[1], color="#26a69a", alpha=0.18, label="Demand 2 (05:30)")
   if bot.supply_box_2:
     ax.axhspan(bot.supply_box_2[0], bot.supply_box_2[1], color="#ff7043", alpha=0.18, label="Supply 2 (05:30)")
+
+  # Plot 21:30 4H High & Low + Zones
+  if bot.anchor_2130_high is not None:
+    ax.axhline(bot.anchor_2130_high, color="#ea80fc", linestyle="-.", linewidth=1.8, label=f"21:30 4H High: {bot.anchor_2130_high}")
+  if bot.anchor_2130_low is not None:
+    ax.axhline(bot.anchor_2130_low, color="#80d8ff", linestyle="-.", linewidth=1.8, label=f"21:30 4H Low: {bot.anchor_2130_low}")
+  if bot.demand_box_2130:
+    ax.axhspan(bot.demand_box_2130[0], bot.demand_box_2130[1], color="#80d8ff", alpha=0.12, label="Demand (21:30 4H)")
+  if bot.supply_box_2130:
+    ax.axhspan(bot.supply_box_2130[0], bot.supply_box_2130[1], color="#ea80fc", alpha=0.12, label="Supply (21:30 4H)")
 
   # Plot Previous Day High & Low Lines
   if bot.prev_high is not None:
