@@ -1,6 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, time, timedelta, timezone
-from zoneinfo import ZoneInfo
 import ccxt
 import matplotlib.pyplot as plt
 import numpy as np
@@ -8,16 +7,11 @@ import pandas as pd
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
-# ---------------------------------------------------------
-# STREAMLIT PAGE CONFIGURATION
-# ---------------------------------------------------------
 st.set_page_config(
-    page_title="TWT Ultimate Multi-Confluence Bot",
-    page_icon="⚡",
-    layout="wide",
+    page_title="TWT Delta Pro by TUCKYAA", page_icon="⚡", layout="wide"
 )
 
-# Hide Streamlit Default Elements
+# Hide Streamlit Header, Footer, Menu & GitHub Icon via CSS
 hide_streamlit_style = """
     <style>
     #MainMenu {visibility: hidden;}
@@ -27,39 +21,18 @@ hide_streamlit_style = """
     """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-# Safe Auto-refresh every 30 seconds
-count = st_autorefresh(interval=30000, key="twt_multi_refresh")
-
-st.title("⚡ TRADE WITH TUCKYAA — Ultimate Multi-Confluence Engine")
-
 # ---------------------------------------------------------
-# SIDEBAR CONFIGURATION
+# GLOBAL TRADING TIMEZONES & COMPLETE 20+ ASSETS LIST
 # ---------------------------------------------------------
-st.sidebar.markdown("### ⚙️ Multi-Asset Configurations")
-st.sidebar.markdown("---")
-
-IANA_TIMEZONES = [
-    "Asia/Kolkata",
-    "UTC",
-    "America/New_York",
-    "Europe/London",
-    "Asia/Singapore",
-]
-selected_tz_name = st.sidebar.selectbox(
-    "🌍 Trading Timezone (IANA)", options=IANA_TIMEZONES, index=0
-)
-active_tz = ZoneInfo(selected_tz_name)
-
-selected_tf = "5m"
-st.sidebar.text("⏱️ Entry Timeframe : 5m (Fixed)")
-st.sidebar.text("📊 Confluence : 01:30 & 05:30 4H + Prev Day 1D")
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("#### Master Confluence Rules")
-st.sidebar.text("Demand Zones : 01:30 & 05:30 Lows + Prev Day Low")
-st.sidebar.text("Supply Zones : 01:30 & 05:30 Highs + Prev Day High")
-st.sidebar.text("BUY  : Strict Demand Zone Bounce + EMA50")
-st.sidebar.text("SELL : Strict Supply Zone Rejection + EMA50")
+TRADING_TIMEZONES = {
+    "(UTC+5:30) Kolkata / India (IST)": timezone(
+        timedelta(hours=5, minutes=30)
+    ),
+    "(UTC+1:00) Berlin / Paris / CET": timezone(timedelta(hours=1)),
+    "(UTC+0:00) London / UTC / GMT": timezone.utc,
+    "(UTC-5:00) New York / US East (EST)": timezone(timedelta(hours=-5)),
+    "(UTC+8:00) Singapore / Hong Kong (SGT)": timezone(timedelta(hours=8)),
+}
 
 ASSET_LIST = [
     "BTC/USDT",
@@ -84,6 +57,45 @@ ASSET_LIST = [
     "RENDER/USDT",
 ]
 
+# Safe Auto-refresh every 30 seconds
+count = st_autorefresh(interval=30000, key="twt_delta_refresh")
+
+st.title(
+    "⚡ TRADE WITH TUCKYAA (PRO EDITION) — Optimized Dual Engine"
+)
+
+col_tf, col_tz = st.columns([1, 2])
+with col_tf:
+  selected_tf = st.selectbox(
+      "⏱️ Timeframe", options=["5m", "15m", "30m", "1h"], index=0
+  )
+with col_tz:
+  selected_tz_name = st.selectbox(
+      "🌍 Trading Timezone", options=list(TRADING_TIMEZONES.keys()), index=0
+  )
+  active_tz = TRADING_TIMEZONES[selected_tz_name]
+
+tz_short = selected_tz_name.split(")")[0] + ")"
+
+# Sidebar Panel
+st.sidebar.markdown("### 🤖 TWT Ultimate Price Action Panel")
+st.sidebar.markdown("---")
+server_time_target = datetime.now(active_tz)
+st.sidebar.text(
+    f"Server time          ———  {server_time_target.strftime('%H:%M')}"
+)
+st.sidebar.text("Support Ref (6H)   ———  05:30 IST Candle Low")
+st.sidebar.text("Resistance Ref (4H) ———  01:30 IST Candle High")
+st.sidebar.text("No-Trade Zone      ———  01:00 ➔ 06:00 IST")
+st.sidebar.markdown("---")
+st.sidebar.text("Exchange Platform  — Delta Exchange (20 Assets)")
+st.sidebar.markdown("---")
+st.sidebar.markdown("#### Strategy Settings")
+st.sidebar.text("Optimized Buy    : Red Exhaustion -> Flexible Green Rebound")
+st.sidebar.text("Hidden Sell      : D->C->B->A (Secret Mode Active)")
+st.sidebar.text("Take profit      : Multi-TP (TP1, TP2, TP3)")
+st.sidebar.text("Stop loss        : ATR Managed")
+
 
 def get_decimals(price):
   if price < 1:
@@ -94,11 +106,8 @@ def get_decimals(price):
     return 2
 
 
-# ---------------------------------------------------------
-# DATA FETCHING MODULE (1d + 4h + 5m)
-# ---------------------------------------------------------
 @st.cache_data(ttl=30)
-def fetch_data(symbol):
+def fetch_twt_delta_data(symbol, tf):
   exchanges_to_try = [
       (ccxt.binance, symbol),
       (ccxt.bybit, symbol),
@@ -110,402 +119,449 @@ def fetch_data(symbol):
       exchange = ex_class({"enableRateLimit": True, "timeout": 15000})
       exchange.load_markets()
       if sym in exchange.markets:
-        ohlcv_1d = exchange.fetch_ohlcv(sym, timeframe="1d", limit=5)
-        ohlcv_4h = exchange.fetch_ohlcv(sym, timeframe="4h", limit=50)
-        ohlcv_5m = exchange.fetch_ohlcv(sym, timeframe="5m", limit=300)
-        if ohlcv_1d and ohlcv_4h and ohlcv_5m:
-          df_1d = pd.DataFrame(ohlcv_1d, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
-          df_1d["timestamp"] = pd.to_datetime(df_1d["timestamp"], unit="ms", utc=True)
-          df_1d = df_1d.set_index("timestamp")
+        ohlcv_tf = exchange.fetch_ohlcv(sym, timeframe=tf, limit=100)
+        ohlcv_4h = exchange.fetch_ohlcv(sym, timeframe="4h", limit=25)
+        ohlcv_6h = exchange.fetch_ohlcv(sym, timeframe="6h", limit=25)
 
-          df_4h = pd.DataFrame(ohlcv_4h, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
-          df_4h["timestamp"] = pd.to_datetime(df_4h["timestamp"], unit="ms", utc=True)
-          df_4h = df_4h.set_index("timestamp")
+        if ohlcv_tf and ohlcv_4h:
+          df_5 = pd.DataFrame(
+              ohlcv_tf,
+              columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
+          )
+          df_5["timestamp"] = pd.to_datetime(df_5["timestamp"], unit="ms")
+          df_5 = df_5.set_index("timestamp")
 
-          df_5m = pd.DataFrame(ohlcv_5m, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
-          df_5m["timestamp"] = pd.to_datetime(df_5m["timestamp"], unit="ms", utc=True)
-          df_5m = df_5m.set_index("timestamp")
-          return df_1d, df_4h, df_5m
+          df_4 = pd.DataFrame(
+              ohlcv_4h,
+              columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
+          )
+          df_4["timestamp"] = pd.to_datetime(df_4["timestamp"], unit="ms")
+          df_4 = df_4.set_index("timestamp")
+
+          df_6 = (
+              pd.DataFrame(
+                  ohlcv_6h,
+                  columns=[
+                      "timestamp",
+                      "Open",
+                      "High",
+                      "Low",
+                      "Close",
+                      "Volume",
+                  ],
+              )
+              if ohlcv_6h
+              else df_4.copy()
+          )
+          df_6["timestamp"] = pd.to_datetime(df_6["timestamp"], unit="ms")
+          df_6 = df_6.set_index("timestamp")
+          return df_5, df_4, df_6
     except Exception:
       continue
   return None, None, None
 
 
-# ---------------------------------------------------------
-# ULTIMATE MULTI-CONFLUENCE ENGINE
-# ---------------------------------------------------------
-class TWTUltimateEngine:
+class TWTTrainingEnginePro:
 
-  def __init__(self, df_1d, df_4h, df_5m, symbol, user_tz):
-    self.df_1d = df_1d
-    self.df_4h = df_4h
-    self.df_5m = df_5m
+  def __init__(self, df_5, df_4, df_6, symbol, user_tz):
+    self.df_5 = df_5
+    self.df_4 = df_4
+    self.df_6 = df_6
     self.symbol = symbol
     self.user_tz = user_tz
-    self.candles_5m = []
-    self.history = []
+    self.candles = []
     self.signals = []
-    
-    # Levels & Zones
-    self.prev_high = None
-    self.prev_low = None
-    self.demand_box_1 = None
-    self.supply_box_1 = None
-    self.demand_box_2 = None
-    self.supply_box_2 = None
-
-  def _build_zones(self, anchor_candle):
-    high_val = anchor_candle["high"]
-    low_val = anchor_candle["low"]
-    rng = high_val - low_val
-    zone_thickness = (rng * 0.25) if rng > 0 else (high_val * 0.002)
-    return (low_val, low_val + zone_thickness), (high_val - zone_thickness, high_val)
+    self.resistance_lvl = 0
+    self.support_lvl = 0
 
   def calculate_and_scan(self):
-    if self.df_1d is None or self.df_1d.empty or self.df_4h is None or self.df_4h.empty or self.df_5m is None or self.df_5m.empty:
+    if self.df_5 is None or self.df_5.empty:
       return
 
+    IST = timezone(timedelta(hours=5, minutes=30))
     current_utc_time = datetime.now(timezone.utc)
 
-    # 1. Previous Day High & Low
-    if len(self.df_1d) >= 2:
-      prev_candle = self.df_1d.iloc[-2]
-    else:
-      prev_candle = self.df_1d.iloc[-1]
-    
-    self.prev_high = float(prev_candle["High"])
-    self.prev_low = float(prev_candle["Low"])
-
-    # 2. 4H Anchor Zones (01:30 & 05:30)
-    candles_4h = []
-    for row in self.df_4h.iterrows():
-      dt_utc = row[0]
-      dt_user = dt_utc.astimezone(self.user_tz)
-      r = row[1]
-      candles_4h.append({
-          "date": dt_user.date(),
-          "time_obj": dt_user.time(),
-          "dt_user": dt_user,
-          "high": float(r["High"]),
-          "low": float(r["Low"])
-      })
-
-    latest_date = candles_4h[-1]["date"] if candles_4h else datetime.now().date()
-    today_4h = [c for c in candles_4h if c["date"] == latest_date]
-    if not today_4h:
-      today_4h = candles_4h
-
-    # Anchor 1 (~01:30 AM)
-    anchor_1 = min(
-        today_4h,
-        key=lambda x: abs(datetime.combine(latest_date, x["time_obj"]) - datetime.combine(latest_date, time(1, 30))),
-        default=today_4h[0]
-    )
-    anchor_dt_1 = anchor_1["dt_user"]
-    self.demand_box_1, self.supply_box_1 = self._build_zones(anchor_1)
-
-    # Anchor 2 (~05:30 AM)
-    anchor_2_candidates = [c for c in today_4h if c["time_obj"] >= time(5, 0)]
-    anchor_2 = None
-    anchor_dt_2 = None
-    if anchor_2_candidates:
-      anchor_2 = min(
-          anchor_2_candidates,
-          key=lambda x: abs(datetime.combine(latest_date, x["time_obj"]) - datetime.combine(latest_date, time(5, 30)))
+    # 1. Calculate Key Levels
+    if self.df_4 is not None and not self.df_4.empty:
+      idx_utc = (
+          self.df_4.index.tz_localize("UTC")
+          if self.df_4.index.tz is None
+          else self.df_4.index
       )
-      anchor_dt_2 = anchor_2["dt_user"]
-      self.demand_box_2, self.supply_box_2 = self._build_zones(anchor_2)
+      df_4_ist = idx_utc.tz_convert(IST)
+      filtered_4h = self.df_4[df_4_ist.hour == 1]
+      self.resistance_lvl = (
+          float(filtered_4h["High"].iloc[-1])
+          if not filtered_4h.empty
+          else float(self.df_4["High"].iloc[-1])
+      )
 
-    # 3. Process 5M Candles & Indicators
-    self.df_5m["TR"] = np.maximum(
-        self.df_5m["High"] - self.df_5m["Low"],
+    if self.df_6 is not None and not self.df_6.empty:
+      idx_utc_6 = (
+          self.df_6.index.tz_localize("UTC")
+          if self.df_6.index.tz is None
+          else self.df_6.index
+      )
+      df_6_ist = idx_utc_6.tz_convert(IST)
+      filtered_6h = self.df_6[df_6_ist.hour == 5]
+      self.support_lvl = (
+          float(filtered_6h["Low"].iloc[-1])
+          if not filtered_6h.empty
+          else float(self.df_6["Low"].iloc[-1])
+      )
+    elif self.df_4 is not None:
+      self.support_lvl = float(self.df_4["Low"].iloc[-1])
+
+    # 2. Indicators Calculation
+    self.df_5["TR"] = np.maximum(
+        self.df_5["High"] - self.df_5["Low"],
         np.maximum(
-            abs(self.df_5m["High"] - self.df_5m["Close"].shift(1)),
-            abs(self.df_5m["Low"] - self.df_5m["Close"].shift(1)),
+            abs(self.df_5["High"] - self.df_5["Close"].shift(1)),
+            abs(self.df_5["Low"] - self.df_5["Close"].shift(1)),
         ),
     )
-    self.df_5m["ATR"] = self.df_5m["TR"].rolling(14).mean()
-    self.df_5m["EMA50"] = self.df_5m["Close"].ewm(span=50, adjust=False).mean()
+    self.df_5["ATR"] = self.df_5["TR"].rolling(14).mean()
 
-    for idx, row in enumerate(self.df_5m.iterrows()):
+    for idx, row in enumerate(self.df_5.iterrows()):
       dt_utc = row[0]
-      dt_user = dt_utc.astimezone(self.user_tz)
-      r = row[1]
-      o, h, l, c, v = float(r["Open"]), float(r["High"]), float(r["Low"]), float(r["Close"]), float(r["Volume"])
-      atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
-      ema50 = float(r["EMA50"]) if not pd.isna(r["EMA50"]) else c
-      age_min = (current_utc_time - dt_utc).total_seconds() / 60.0
+      if dt_utc.tzinfo is None:
+        dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+      dt_ist = dt_utc.astimezone(IST)
+      dt_user_tz = dt_utc.astimezone(self.user_tz)
+      timestamp_str = dt_user_tz.strftime("%H:%M")
 
-      self.candles_5m.append({
+      r = row[1]
+      o, h, l, c, v = (
+          float(r["Open"]),
+          float(r["High"]),
+          float(r["Low"]),
+          float(r["Close"]),
+          float(r["Volume"]),
+      )
+      atr = float(r["ATR"]) if not pd.isna(r["ATR"]) else (c * 0.002)
+
+      age_minutes = (current_utc_time - dt_utc).total_seconds() / 60.0
+      is_within_1hr = age_minutes <= 60.0
+
+      self.candles.append({
           "id": idx + 1,
-          "time": dt_user.strftime("%H:%M"),
-          "date": dt_user.date(),
-          "dt_user": dt_user,
+          "time": timestamp_str,
+          "dt_ist": dt_ist,
+          "dt_user": dt_user_tz,
           "color": "Green" if c >= o else "Red",
-          "open": o, "high": h, "low": l, "close": c,
-          "atr": atr, "ema50": ema50,
-          "is_within_1hr": age_min <= 60.0
+          "open": o,
+          "high": h,
+          "low": l,
+          "close": c,
+          "volume": v,
+          "atr": atr,
+          "is_within_1hr": is_within_1hr,
       })
 
-    today_5m = [c for c in self.candles_5m if c["date"] == latest_date]
-    if not today_5m:
-      today_5m = self.candles_5m
+    # --- HIGHLY SENSITIVE & ROBUST BUY STATE MACHINE ---
+    buy_state = 0
+    red_streak = 0
+    last_red_high = 0.0
 
-    first_buy = None
-    first_sell = None
-    broke_above_pdh = False
-    broke_below_pdl = False
+    # --- SELL STATE MACHINE ---
+    sell_state = 0
+    target_b_low = 0.0
+    level_a_ref = 0.0
+    level_b_ref = 0.0
 
-    for c in today_5m:
-      atr = c["atr"]
-      ema = c["ema50"]
+    for i in range(len(self.candles)):
+      c = self.candles[i]
+      if time(1, 0) <= c["dt_ist"].time() <= time(6, 0):
+        continue
+
+      atr = c["atr"] if not np.isnan(c["atr"]) else (c["close"] * 0.002)
       dec = get_decimals(c["close"])
-      high_val = c["high"]
-      low_val = c["low"]
-      close_val = c["close"]
 
-      # Helper check for whether price is inside ANY Demand Zone (01:30, 05:30, or near Prev Day Low)
-      in_demand_zone_1 = self.demand_box_1 and (self.demand_box_1[0] <= close_val <= self.demand_box_1[1])
-      in_demand_zone_2 = self.demand_box_2 and (self.demand_box_2[0] <= close_val <= self.demand_box_2[1])
-      near_prev_low = low_val <= self.prev_low
+      # BUY ENGINE (Optimized & Non-Missable)
+      if buy_state != 5 and c["close"] >= self.support_lvl:
+        buy_state = 0
+        red_streak = 0
+        last_red_high = 0.0
 
-      in_supply_zone_1 = self.supply_box_1 and (self.supply_box_1[0] <= close_val <= self.supply_box_1[1])
-      in_supply_zone_2 = self.supply_box_2 and (self.supply_box_2[0] <= close_val <= self.supply_box_2[1])
-      near_prev_high = high_val >= self.prev_high
+      if buy_state != 5 and c["close"] < self.support_lvl:
+        if c["color"] == "Red":
+          red_streak += 1
+          last_red_high = c["high"]
+          if red_streak >= 3:
+            buy_state = 1  # Exhaustion reached after 3+ red candles
+        elif c["color"] == "Green" and buy_state >= 1:
+          # Trigger Buy as soon as green candle appears after red streak near support
+          sl = round(c["low"] - (1.2 * atr), dec)
+          tp1 = round(c["close"] + (1.2 * atr), dec)
+          tp2 = round(c["close"] + (2.5 * atr), dec)
+          tp3 = round(c["close"] + (4.0 * atr), dec)
 
-      # --- A. PREVIOUS DAY HIGH / LOW REJECTION STRATEGY ---
-      if high_val > self.prev_high:
-        broke_above_pdh = True
-      if not first_sell and broke_above_pdh and close_val < self.prev_high and c["color"] == "Red" and close_val < ema:
-        sl = round(self.prev_high + (1.5 * atr), dec)
-        first_sell = {
-            "Asset": self.symbol,
-            "Date": str(c["date"]),
-            "Time": c["time"],
-            "Candle #": c["id"],
-            "Type": "SELL 🔴",
-            "Setup": "Prev Day High Rejection",
-            "Entry Price": round(close_val, dec),
-            "Stop Loss (SL)": sl,
-            "TP 1": round(close_val - (1.2 * atr), dec),
-            "TP 2": round(close_val - (2.5 * atr), dec),
-            "TP 3": round(close_val - (4.0 * atr), dec),
-            "Is_Within_1hr": c["is_within_1hr"],
-        }
-        broke_above_pdh = False
-
-      if low_val < self.prev_low:
-        broke_below_pdl = True
-      if not first_buy and (broke_below_pdl or near_prev_low) and close_val >= self.prev_low and c["color"] == "Green" and close_val > ema:
-        sl = round(self.prev_low - (1.5 * atr), dec)
-        first_buy = {
-            "Asset": self.symbol,
-            "Date": str(c["date"]),
-            "Time": c["time"],
-            "Candle #": c["id"],
-            "Type": "BUY 🟢",
-            "Setup": "Prev Day Low Bounce",
-            "Entry Price": round(close_val, dec),
-            "Stop Loss (SL)": sl,
-            "TP 1": round(close_val + (1.2 * atr), dec),
-            "TP 2": round(close_val + (2.5 * atr), dec),
-            "TP 3": round(close_val + (4.0 * atr), dec),
-            "Is_Within_1hr": c["is_within_1hr"],
-        }
-        broke_below_pdl = False
-
-      # --- B. 4H ANCHOR ZONE 1 (01:30 AM) ---
-      if c["dt_user"] > anchor_dt_1 and self.demand_box_1 and self.supply_box_1:
-        if not first_buy and c["color"] == "Green" and in_demand_zone_1 and close_val > ema:
-          sl = round(self.demand_box_1[0] - (1.5 * atr), dec)
-          first_buy = {
+          self.signals.append({
               "Asset": self.symbol,
-              "Date": str(c["date"]),
               "Time": c["time"],
               "Candle #": c["id"],
               "Type": "BUY 🟢",
-              "Setup": "01:30 Zone Demand Bounce",
-              "Entry Price": round(close_val, dec),
+              "Setup": "Red Exhaustion -> Green Rebound Entry",
+              "Action": "Buy / Long (B) [Optimized Rebound] 🟢",
+              "Entry Price": round(c["close"], dec),
               "Stop Loss (SL)": sl,
-              "TP 1": round(close_val + (1.2 * atr), dec),
-              "TP 2": round(close_val + (2.5 * atr), dec),
-              "TP 3": round(close_val + (4.0 * atr), dec),
+              "TP 1": tp1,
+              "TP 2": tp2,
+              "TP 3": tp3,
               "Is_Within_1hr": c["is_within_1hr"],
-          }
+          })
+          buy_state = 5  # Locked for support cycle
 
-        if not first_sell and c["color"] == "Red" and in_supply_zone_1 and close_val < ema:
-          sl = round(self.supply_box_1[1] + (1.5 * atr), dec)
-          first_sell = {
-              "Asset": self.symbol,
-              "Date": str(c["date"]),
-              "Time": c["time"],
-              "Candle #": c["id"],
-              "Type": "SELL 🔴",
-              "Setup": "01:30 Zone Supply Rejection",
-              "Entry Price": round(close_val, dec),
-              "Stop Loss (SL)": sl,
-              "TP 1": round(close_val - (1.2 * atr), dec),
-              "TP 2": round(close_val - (2.5 * atr), dec),
-              "TP 3": round(close_val - (4.0 * atr), dec),
-              "Is_Within_1hr": c["is_within_1hr"],
-          }
+      # SELL ENGINE (D -> C -> B -> A with Red Ignore)
+      if sell_state != 5 and c["close"] <= self.resistance_lvl - (atr * 2.5):
+        sell_state = 0
 
-      # --- C. 4H ANCHOR ZONE 2 (05:30 AM) ---
-      if anchor_dt_2 and c["dt_user"] > anchor_dt_2 and self.demand_box_2 and self.supply_box_2:
-        if not first_buy and c["color"] == "Green" and in_demand_zone_2 and close_val > ema:
-          sl = round(self.demand_box_2[0] - (1.5 * atr), dec)
-          first_buy = {
-              "Asset": self.symbol,
-              "Date": str(c["date"]),
-              "Time": c["time"],
-              "Candle #": c["id"],
-              "Type": "BUY 🟢",
-              "Setup": "05:30 Zone Demand Bounce",
-              "Entry Price": round(close_val, dec),
-              "Stop Loss (SL)": sl,
-              "TP 1": round(close_val + (1.2 * atr), dec),
-              "TP 2": round(close_val + (2.5 * atr), dec),
-              "TP 3": round(close_val + (4.0 * atr), dec),
-              "Is_Within_1hr": c["is_within_1hr"],
-          }
+      if sell_state != 5:
+        if sell_state == 0:
+          if (
+              c["high"] >= self.resistance_lvl
+              or c["close"] >= self.resistance_lvl
+          ) and c["color"] == "Green":
+            sell_state = 1
+        elif sell_state == 1:
+          if c["color"] == "Green":
+            sell_state = 2
+        elif sell_state == 2:
+          if c["color"] == "Green":
+            target_b_low = c["low"]
+            level_b_ref = c["high"]
+            sell_state = 3
+        elif sell_state == 3:
+          if c["color"] == "Green":
+            level_a_ref = c["high"]
+            sell_state = 4
+        elif sell_state == 4:
+          if c["color"] == "Red" and c["low"] < target_b_low:
+            sell_state = 5
+        elif sell_state == 5:
+          if c["color"] == "Green":
+            sell_state = 6
+        elif sell_state == 6:
+          if c["color"] == "Red" and (
+              c["close"] < level_a_ref or c["close"] < level_b_ref
+          ):
+            sl = round(c["high"] + (1.2 * atr), dec)
+            tp1 = round(c["close"] - (1.2 * atr), dec)
+            tp2 = round(c["close"] - (2.5 * atr), dec)
+            tp3 = round(c["close"] - (4.0 * atr), dec)
 
-        if not first_sell and c["color"] == "Red" and in_supply_zone_2 and close_val < ema:
-          sl = round(self.supply_box_2[1] + (1.5 * atr), dec)
-          first_sell = {
-              "Asset": self.symbol,
-              "Date": str(c["date"]),
-              "Time": c["time"],
-              "Candle #": c["id"],
-              "Type": "SELL 🔴",
-              "Setup": "05:30 Zone Supply Rejection",
-              "Entry Price": round(close_val, dec),
-              "Stop Loss (SL)": sl,
-              "TP 1": round(close_val - (1.2 * atr), dec),
-              "TP 2": round(close_val - (2.5 * atr), dec),
-              "TP 3": round(close_val - (4.0 * atr), dec),
-              "Is_Within_1hr": c["is_within_1hr"],
-          }
-
-    collected = [sig for sig in [first_buy, first_sell] if sig is not None]
-    collected.sort(key=lambda x: x["Candle #"])
-
-    self.history = collected
-    self.signals = [s for s in collected if s.get("Is_Within_1hr", False)]
+            self.signals.append({
+                "Asset": self.symbol,
+                "Time": c["time"],
+                "Candle #": c["id"],
+                "Type": "SELL 🔴",
+                "Setup": (
+                    "D->C->B->A (Red Ignored) -> B Low Break -> Green -> Red"
+                    " Short Entry"
+                ),
+                "Action": (
+                    "Sell / Short (S) [Secret D-C-B-A Reversal] 🔴"
+                ),
+                "Entry Price": round(c["close"], dec),
+                "Stop Loss (SL)": sl,
+                "TP 1": tp1,
+                "TP 2": tp2,
+                "TP 3": tp3,
+                "Is_Within_1hr": c["is_within_1hr"],
+            })
+            sell_state = 7
 
 
 # ---------------------------------------------------------
-# MASTER SCANNER
+# MASTER SCANNER (Global Feed for Top Dashboard)
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("🔥 TWT Master Live Signal Dashboard (20+ Assets)")
+st.subheader("🔥 TWT Master Live Signal Dashboard (Last 1 Hour)")
 
 master_signals = []
 asset_engines = {}
 
 
-def scan_asset(sym):
-  df_1d, df_4h, df_5m = fetch_data(sym)
-  if df_1d is not None and df_4h is not None and df_5m is not None:
-    engine = TWTUltimateEngine(df_1d, df_4h, df_5m, sym, active_tz)
+def scan_single_asset(sym):
+  df_5, df_4, df_6 = fetch_twt_delta_data(sym, selected_tf)
+  if df_5 is not None and not df_5.empty:
+    engine = TWTTrainingEnginePro(df_5, df_4, df_6, sym, active_tz)
     engine.calculate_and_scan()
-    return sym, engine, engine.signals
-  return sym, None, []
+    recent_sigs = [s for s in engine.signals if s.get("Is_Within_1hr", False)]
+    latest = recent_sigs[-1] if recent_sigs else None
+    return sym, engine, latest
+  return sym, None, None
 
 
-with st.spinner("⚡ Scanning 20+ assets with Ultimate Confluence Engine..."):
+with st.spinner("⚡ Scanning all 20 assets for optimized setups..."):
   with ThreadPoolExecutor(max_workers=5) as executor:
-    futures = {executor.submit(scan_asset, sym): sym for sym in ASSET_LIST}
+    futures = {
+        executor.submit(scan_single_asset, sym): sym for sym in ASSET_LIST
+    }
     for future in as_completed(futures):
-      sym, engine, sigs = future.result()
+      sym, engine, latest = future.result()
       if engine:
         asset_engines[sym] = engine
-      if sigs:
-        master_signals.extend(sigs)
+      if latest:
+        master_signals.append(latest)
 
 if master_signals:
-  st.success(f"✅ Found {len(master_signals)} perfect confluence setup(s) across assets!")
-  df_display = pd.DataFrame(master_signals).drop(columns=["Is_Within_1hr"], errors="ignore")
+  st.success(f"✅ Found {len(master_signals)} active setup(s)!")
+  df_display = pd.DataFrame(master_signals).drop(
+      columns=["Is_Within_1hr"], errors="ignore"
+  )
   st.dataframe(df_display, width="stretch")
 else:
-  st.info("ℹ️ No active perfect setups meeting strict rules. False entries avoided.")
+  st.info(
+      "ℹ️ No active signals in the last 1 hour. Waiting for setup triggers..."
+  )
 
 # ---------------------------------------------------------
-# MANUAL ASSET INSPECTOR & CHART VIEWER
+# MANUAL ASSET SELECTOR & CHART VIEWER
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("📊 Individual Asset Inspector (All Zones & Prev Day Levels)")
+st.subheader("📊 Manual Asset Inspector & Chart")
 
 selected_symbol = st.selectbox(
-    "🔍 Select Asset to Load Chart",
+    "🔍 Select Asset to Load Chart & Complete History",
     options=ASSET_LIST,
-    index=0,
+    index=1,  # Default to ETH
 )
 
 if selected_symbol in asset_engines:
   bot = asset_engines[selected_symbol]
 else:
-  df_1d, df_4h, df_5m = fetch_data(selected_symbol)
-  bot = TWTUltimateEngine(df_1d, df_4h, df_5m, selected_symbol, active_tz)
+  df_5, df_4, df_6 = fetch_twt_delta_data(selected_symbol, selected_tf)
+  bot = TWTTrainingEnginePro(df_5, df_4, df_6, selected_symbol, active_tz)
   bot.calculate_and_scan()
 
-if bot.candles_5m:
-  curr_p = bot.candles_5m[-1]["close"]
+if bot.df_5 is not None and not bot.df_5.empty:
+  curr_p = bot.candles[-1]["close"] if bot.candles else 0.0
 
-  col1, col2, col3 = st.columns(3)
+  col1, col2, col3, col4 = st.columns(4)
   with col1:
-    st.metric(label=f"Current {selected_symbol} Price", value=f"{curr_p:.2f}")
+    st.metric(
+        label="4H Resistance (01:30 High)", value=f"{bot.resistance_lvl:.2f}"
+    )
   with col2:
-    st.metric(label="Locked Perfect Signals", value=len(bot.history))
+    st.metric(label="6H Support (05:30 Low)", value=f"{bot.support_lvl:.2f}")
   with col3:
-    st.metric(label="Timezone", value=selected_tz_name)
+    st.metric(label="Current Market Price", value=f"{curr_p:.2f}")
+  with col4:
+    st.metric(label="Timezone", value=tz_short, delta="Pro Engine Active")
 
-  if bot.history:
-    st.markdown(f"### 📋 Locked Entries Feed for {selected_symbol}")
-    df_history = pd.DataFrame(bot.history).drop(columns=["Is_Within_1hr"], errors="ignore")
+  if bot.signals:
+    latest_sig = bot.signals[-1]
+    is_buy = "BUY" in latest_sig["Type"]
+    entry_p = latest_sig["Entry Price"]
+    signal_time = latest_sig["Time"]
+
+    st.warning("⚠️ **Don't use after 40 minutes!**")
+
+    if is_buy:
+      st.success(
+          f"🟢 **TWT BUY SETUP: {latest_sig['Action']}**\n\n"
+          f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
+          f" #{latest_sig['Candle #']})\n"
+          f"- **Entry Price:** `{entry_p}`\n"
+          f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
+          f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
+          f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`"
+      )
+    else:
+      st.error(
+          f"🔴 **TWT SELL SETUP: {latest_sig['Action']}**\n\n"
+          f"🕒 **Candle Time ({tz_short}):** `{signal_time}` (Candle"
+          f" #{latest_sig['Candle #']})\n"
+          f"- **Entry Price:** `{entry_p}`\n"
+          f"- **Stop Loss (SL):** `{latest_sig['Stop Loss (SL)']}`\n"
+          f"- **TP 1:** `{latest_sig['TP 1']}` | **TP 2:**"
+          f" `{latest_sig['TP 2']}` | **TP 3:** `{latest_sig['TP 3']}`"
+      )
+  else:
+    st.warning(
+        "🟡 **STATUS: WAITING FOR SETUP**\n\n"
+        "📌 *Instructions:* Monitoring support for Buy and resistance for Sell"
+        " setups (Strategy tags hidden from chart)."
+    )
+
+  # Complete Signal History
+  if bot.signals:
+    st.markdown("---")
+    st.subheader(
+        f"📋 Complete Signal History for {selected_symbol} (Pro Edition)"
+    )
+    df_history = pd.DataFrame(bot.signals).drop(
+        columns=["Is_Within_1hr"], errors="ignore"
+    )
     st.dataframe(df_history, width="stretch")
 
-  # --- PLOT CHART WITH ALL LEVELS ---
+  # Chart Rendering (Clean & Tag-Free, Original Dark TradingView Theme)
   fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
-  for c in bot.candles_5m:
-    col = "#26a69a" if c["close"] >= c["open"] else "#ef5350"
-    lower_val = min(c["open"], c["close"])
-    body_height = abs(c["close"] - c["open"])
-    if body_height == 0:
-      body_height = curr_p * 0.0005
+  for c in bot.candles:
+    col = "#26a69a" if c["color"] == "Green" else "#ef5350"
+    body_size = abs(c["close"] - c["open"])
+    min_body = curr_p * 0.0003
+    plot_height = max(body_size, min_body)
+    plot_bottom = (
+        min(c["open"], c["close"]) - ((min_body - body_size) / 2)
+        if body_size < min_body
+        else min(c["open"], c["close"])
+    )
 
-    ax.bar(c["id"], body_height, bottom=lower_val, color=col, width=0.6, edgecolor=col)
-    ax.vlines(c["id"], c["low"], c["high"], color=col, linewidth=1.2)
+    ax.bar(c["id"], plot_height, bottom=plot_bottom, color=col, width=0.7)
+    ax.vlines(c["id"], c["low"], c["high"], color="#b2b5be", linewidth=1.3)
 
-  # Plot 01:30 AM Zones
-  if bot.demand_box_1:
-    ax.axhspan(bot.demand_box_1[0], bot.demand_box_1[1], color="#00897b", alpha=0.30, label="Demand 1 (01:30)")
-  if bot.supply_box_1:
-    ax.axhspan(bot.supply_box_1[0], bot.supply_box_1[1], color="#e53935", alpha=0.30, label="Supply 1 (01:30)")
+  ax.axhline(
+      bot.resistance_lvl,
+      color="#ffeb3b",
+      linestyle="--",
+      linewidth=2,
+      label="4H Resistance",
+  )
+  ax.text(
+      2,
+      bot.resistance_lvl,
+      f"  4H Resistance ({bot.resistance_lvl:.1f})",
+      color="#ffeb3b",
+      weight="bold",
+      fontsize=10,
+  )
 
-  # Plot 05:30 AM Zones
-  if bot.demand_box_2:
-    ax.axhspan(bot.demand_box_2[0], bot.demand_box_2[1], color="#26a69a", alpha=0.18, label="Demand 2 (05:30)")
-  if bot.supply_box_2:
-    ax.axhspan(bot.supply_box_2[0], bot.supply_box_2[1], color="#ff7043", alpha=0.18, label="Supply 2 (05:30)")
+  ax.axhline(
+      bot.support_lvl,
+      color="#26a69a",
+      linestyle="--",
+      linewidth=2,
+      label="6H Support",
+  )
+  ax.text(
+      2,
+      bot.support_lvl,
+      f"  6H Support ({bot.support_lvl:.1f})",
+      color="#26a69a",
+      weight="bold",
+      fontsize=10,
+  )
 
-  # Plot Previous Day High & Low Lines
-  if bot.prev_high is not None:
-    ax.axhline(bot.prev_high, color="#ff9100", linestyle="--", linewidth=2, label=f"Prev Day High: {bot.prev_high}")
-  if bot.prev_low is not None:
-    ax.axhline(bot.prev_low, color="#00e676", linestyle="--", linewidth=2, label=f"Prev Day Low: {bot.prev_low}")
+  lows = [c["low"] for c in bot.candles]
+  highs = [c["high"] for c in bot.candles]
+  if bot.resistance_lvl > 0:
+    highs.append(bot.resistance_lvl)
+  if bot.support_lvl > 0:
+    lows.append(bot.support_lvl)
 
-  lows = [c["low"] for c in bot.candles_5m]
-  highs = [c["high"] for c in bot.candles_5m]
   if lows and highs:
     margin = (max(highs) - min(lows)) * 0.09
     if margin == 0:
       margin = curr_p * 0.005
     ax.set_ylim(min(lows) - margin, max(highs) + margin)
 
-  for sig in bot.history:
+  # Only Final Entries ('B' and 'S') are shown cleanly. All strategy text tags are hidden!
+  for sig in bot.signals:
     is_b = "BUY" in sig["Type"]
     bg_col = "#00e676" if is_b else "#ff5252"
-    txt = " BUY " if is_b else " SELL "
+    txt = " B " if is_b else " S "
     ax.text(
         sig["Candle #"],
         sig["Entry Price"],
@@ -518,7 +574,7 @@ if bot.candles_5m:
     )
 
   ax.set_title(
-      f"{selected_symbol} 5m Chart — Ultimate Multi-Confluence Strategy",
+      f"{selected_symbol} 5m — TRADE WITH TUCKYAA Pro Edition ({tz_short})",
       color="white",
       fontsize=14,
   )
@@ -530,8 +586,7 @@ if bot.candles_5m:
   for spine in ax.spines.values():
     spine.set_color("#363a45")
   ax.grid(color="#2a2e39", linestyle="--", linewidth=0.5)
-  ax.legend(loc="upper left", facecolor="#1e222d", edgecolor="none", labelcolor="white")
 
   st.pyplot(fig)
 else:
-  st.error("Market data fetch failed or empty.")
+  st.error("Market data load failed. Please check internet connection.")
